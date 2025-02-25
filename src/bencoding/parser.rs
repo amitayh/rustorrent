@@ -16,8 +16,8 @@ use nom::{
 fn parse_string(input: &str) -> IResult<&str, String> {
     let (input, length) = usize(input)?;
     let (input, _) = tag(":")(input)?;
-    let (input, string) = take(length)(input)?;
-    Ok((input, String::from(string)))
+    let (input, str) = take(length)(input)?;
+    Ok((input, String::from(str)))
 }
 
 fn parse(input: &str) -> IResult<&str, Value> {
@@ -58,10 +58,7 @@ mod tests {
 
     #[test]
     fn string() {
-        assert_eq!(
-            Value::try_from("3:foo"),
-            Ok(Value::String(String::from("foo")))
-        );
+        assert_eq!(Value::try_from("3:foo"), Ok(Value::string("foo")));
     }
 
     #[test]
@@ -79,15 +76,25 @@ mod tests {
         assert_eq!(Value::try_from("i-1e"), Ok(Value::Integer(-1)));
     }
 
-    // TODO: fail parsing for "i-0e", "i03e".
+    #[test]
+    #[ignore = "not implemented"]
+    fn fail_parsing_for_minus_zero() {
+        assert!(Value::try_from("i-0e").is_err());
+    }
+
+    #[test]
+    #[ignore = "not implemented"]
+    fn fail_parsing_for_leading_zero() {
+        assert!(Value::try_from("i03e").is_err());
+    }
 
     #[test]
     fn list() {
         assert_eq!(
             Value::try_from("l4:spam4:eggse"),
             Ok(Value::List(vec![
-                Value::String(String::from("spam")),
-                Value::String(String::from("eggs"))
+                Value::string("spam"),
+                Value::string("eggs")
             ]))
         );
     }
@@ -97,8 +104,8 @@ mod tests {
         assert_eq!(
             Value::try_from("d3:cow3:moo4:spam4:eggse"),
             Ok(Value::Dictionary(BTreeMap::from([
-                (String::from("cow"), Value::String(String::from("moo"))),
-                (String::from("spam"), Value::String(String::from("eggs")))
+                ("cow".to_string(), Value::string("moo")),
+                ("spam".to_string(), Value::string("eggs"))
             ])))
         );
     }
