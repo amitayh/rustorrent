@@ -63,7 +63,7 @@ impl TryFrom<Value> for Info {
             .try_into()
             .unwrap();
 
-        let pieces = entries.get("pieces").unwrap().get_string2().unwrap();
+        let pieces = entries.get("pieces").unwrap().get_str().unwrap();
         assert!(pieces.len() % 20 == 0, "Invalid length");
         let mut all = Vec::new();
         all.reserve(pieces.len() / 20);
@@ -107,7 +107,7 @@ pub struct File {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::HashMap;
 
     use super::*;
 
@@ -120,14 +120,14 @@ mod tests {
         pieces.extend(std::str::from_utf8(&piece1));
         pieces.extend(std::str::from_utf8(&piece2));
 
-        let contents = Value::Dictionary(BTreeMap::from([
+        let contents = Value::Dictionary(HashMap::from([
             (
                 "announce".to_string(),
                 Value::string("udp://tracker.opentrackr.org:1337/announce"),
             ),
             (
                 "info".to_string(),
-                Value::Dictionary(BTreeMap::from([
+                Value::Dictionary(HashMap::from([
                     ("piece length".to_string(), Value::Integer(1234)),
                     ("pieces".to_string(), Value::String(pieces)),
                 ])),

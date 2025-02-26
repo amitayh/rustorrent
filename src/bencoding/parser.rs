@@ -49,7 +49,7 @@ impl TryFrom<&str> for Value {
 mod tests {
     use super::*;
 
-    use std::collections::BTreeMap;
+    use std::collections::HashMap;
 
     #[test]
     fn parse_error() {
@@ -103,7 +103,7 @@ mod tests {
     fn dictionary() {
         assert_eq!(
             Value::try_from("d3:cow3:moo4:spam4:eggse"),
-            Ok(Value::Dictionary(BTreeMap::from([
+            Ok(Value::Dictionary(HashMap::from([
                 ("cow".to_string(), Value::string("moo")),
                 ("spam".to_string(), Value::string("eggs"))
             ])))
