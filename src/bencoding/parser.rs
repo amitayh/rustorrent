@@ -120,13 +120,14 @@ struct Parser2 {
 
 enum StackValue {
     List(Vec<Value>),
-    Dictionary(HashMap<String, Value>),
+    Dictionary(Option<String>, HashMap<String, Value>),
 }
 
 enum ParseState {
     Ready,
     Integer(Option<i32>, i32),
-    List(Vec<Value>),
+    StringLength(usize),
+    StringBody(Vec<u8>, usize),
     Done(Value),
 }
 
@@ -139,26 +140,25 @@ impl Parser2 {
     }
 
     fn consume(&mut self, byte: u8) -> std::io::Result<()> {
-        match (&self.state, byte) {
+        match (&mut self.state, byte) {
             (ParseState::Ready, b'i') => {
                 self.state = ParseState::Integer(None, 1);
                 Ok(())
             }
-            (ParseState::Integer(None, _), b'-') => {
-                self.state = ParseState::Integer(None, -1);
+            (ParseState::Integer(None, sign), b'-') => {
+                *sign = -1;
                 Ok(())
             }
             (ParseState::Integer(None, _), b'0') => Err(std::io::Error::new(
                 ErrorKind::InvalidInput,
                 "leading zeros not allowed",
             )),
-            (ParseState::Integer(integer, sign), digit) if digit.is_dec_digit() => {
-                let digit = (digit - b'0') as i32;
-                let integer = integer.unwrap_or(0) * 10 + digit;
-                self.state = ParseState::Integer(Some(integer), *sign);
+            (ParseState::Integer(integer, _), b'0'..=b'9') => {
+                let digit = (byte - b'0') as i32;
+                *integer = Some(integer.unwrap_or(0) * 10 + digit);
                 Ok(())
             }
-            (ParseState::Integer(Some(integer), sign), b'e') => {
+            (&mut ParseState::Integer(Some(integer), sign), b'e') => {
                 self.done(Value::Integer(integer * sign));
                 Ok(())
             }
@@ -167,12 +167,46 @@ impl Parser2 {
                 self.state = ParseState::Ready;
                 Ok(())
             }
+            (ParseState::Ready, b'd') => {
+                self.stack
+                    .push(StackValue::Dictionary(None, HashMap::new()));
+                self.state = ParseState::Ready;
+                Ok(())
+            }
+            (ParseState::Ready, b'1'..=b'9') => {
+                let digit = (byte - b'0') as usize;
+                self.state = ParseState::StringLength(digit);
+                Ok(())
+            }
+            (ParseState::StringLength(length), b'0'..=b'9') => {
+                let digit = (byte - b'0') as usize;
+                *length = *length * 10 + digit;
+                Ok(())
+            }
+            (&mut ParseState::StringLength(length), b':') => {
+                let string = Vec::with_capacity(length);
+                self.state = ParseState::StringBody(string, length);
+                Ok(())
+            }
+            (ParseState::StringBody(string, length), _) => {
+                string.push(byte);
+                if string.len() == *length {
+                    // TODO: move memory instead of cloning
+                    let string = String::from_utf8(string.clone()).unwrap();
+                    self.done(Value::String(string));
+                }
+                Ok(())
+            }
             (_, b'e') => match self.stack.pop() {
                 Some(StackValue::List(list)) => {
                     self.done(Value::List(list));
                     Ok(())
                 }
-                _ => Err(std::io::Error::new(
+                Some(StackValue::Dictionary(_, entries)) => {
+                    self.done(Value::Dictionary(entries));
+                    Ok(())
+                }
+                None => Err(std::io::Error::new(
                     ErrorKind::InvalidInput,
                     format!("unexpected byte: 0x{byte:x}"),
                 )),
@@ -185,12 +219,24 @@ impl Parser2 {
     }
 
     fn done(&mut self, value: Value) {
-        match self.stack.last_mut() {
-            Some(StackValue::List(list)) => {
+        match (self.stack.last_mut(), value) {
+            (Some(StackValue::List(list)), value) => {
                 list.push(value);
                 self.state = ParseState::Ready;
             }
-            _ => {
+            (Some(StackValue::Dictionary(a @ None, _)), Value::String(key)) => {
+                *a = Some(key);
+                self.state = ParseState::Ready;
+            }
+            (Some(StackValue::Dictionary(None, _)), _) => {
+                // Error
+            }
+            (Some(StackValue::Dictionary(key, entries)), value) => {
+                let key = key.take().expect("key must be present");
+                entries.insert(key, value);
+                self.state = ParseState::Ready;
+            }
+            (None, value) => {
                 self.state = ParseState::Done(value);
             }
         }
@@ -230,7 +276,11 @@ mod tests2 {
 
     #[test]
     fn string() {
-        assert_eq!(Value::try_from("3:foo"), Ok(Value::string("foo")));
+        let mut parser = Parser2::new();
+        let bytes_written = parser.write(b"3:foo").expect("unable to write");
+
+        assert_eq!(bytes_written, 5);
+        assert_eq!(parser.result(), Value::string("foo"));
     }
 
     #[test]
@@ -261,14 +311,14 @@ mod tests2 {
     }
 
     #[test]
-    fn fail_parsing_for_minus_zero() {
+    fn fail_for_minus_zero() {
         let mut parser = Parser2::new();
 
         assert!(parser.write(b"i-0e").is_err());
     }
 
     #[test]
-    fn fail_parsing_for_leading_zero() {
+    fn fail_for_leading_zero() {
         let mut parser = Parser2::new();
 
         assert!(parser.write(b"i03e").is_err());
@@ -314,25 +364,41 @@ mod tests2 {
         );
     }
 
-    //#[test]
-    //fn list() {
-    //    assert_eq!(
-    //        Value::try_from("l4:spam4:eggse"),
-    //        Ok(Value::List(vec![
-    //            Value::string("spam"),
-    //            Value::string("eggs")
-    //        ]))
-    //    );
-    //}
+    #[test]
+    fn heterogeneous_list() {
+        let mut parser = Parser2::new();
+        let bytes_written = parser.write(b"l3:fooi42ee").expect("unable to write");
 
-    //#[test]
-    //fn dictionary() {
-    //    assert_eq!(
-    //        Value::try_from("d3:cow3:moo4:spam4:eggse"),
-    //        Ok(Value::Dictionary(HashMap::from([
-    //            ("cow".to_string(), Value::string("moo")),
-    //            ("spam".to_string(), Value::string("eggs"))
-    //        ])))
-    //    );
-    //}
+        assert_eq!(bytes_written, 11);
+        assert_eq!(
+            parser.result(),
+            Value::List(vec![Value::string("foo"), Value::Integer(42),])
+        );
+    }
+
+    #[test]
+    fn empty_dictionary() {
+        let mut parser = Parser2::new();
+        let bytes_written = parser.write(b"de").expect("unable to write");
+
+        assert_eq!(bytes_written, 2);
+        assert_eq!(parser.result(), Value::Dictionary(HashMap::new()));
+    }
+
+    #[test]
+    fn non_empty_dictionary() {
+        let mut parser = Parser2::new();
+        let bytes_written = parser
+            .write(b"d3:cow3:moo4:spam4:eggse")
+            .expect("unable to write");
+
+        assert_eq!(bytes_written, 24);
+        assert_eq!(
+            parser.result(),
+            Value::Dictionary(HashMap::from([
+                ("cow".to_string(), Value::string("moo")),
+                ("spam".to_string(), Value::string("eggs"))
+            ]))
+        );
+    }
 }
