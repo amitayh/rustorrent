@@ -1,7 +1,9 @@
 use std::{collections::HashMap, io::ErrorKind};
+use tokio::io::AsyncWrite;
 
 use crate::bencoding::value::Value;
 
+/*
 use nom::{
     AsChar, IResult, Parser,
     branch::alt,
@@ -112,8 +114,9 @@ mod tests {
         );
     }
 }
+*/
 
-struct Parser2 {
+pub struct Parser2 {
     state: ParseState,
     stack: Vec<StackValue>,
 }
@@ -125,14 +128,14 @@ enum StackValue {
 
 enum ParseState {
     Ready,
-    Integer(Option<i32>, i32),
+    Integer(Option<i64>, i64),
     StringLength(usize),
     StringBody(Vec<u8>, usize),
     Done(Value),
 }
 
 impl Parser2 {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: ParseState::Ready,
             stack: Vec::new(),
@@ -154,7 +157,7 @@ impl Parser2 {
                 "leading zeros not allowed",
             )),
             (ParseState::Integer(integer, _), b'0'..=b'9') => {
-                let digit = (byte - b'0') as i32;
+                let digit = (byte - b'0') as i64;
                 *integer = Some(integer.unwrap_or(0) * 10 + digit);
                 Ok(())
             }
@@ -191,9 +194,9 @@ impl Parser2 {
             (ParseState::StringBody(string, length), _) => {
                 string.push(byte);
                 if string.len() == *length {
-                    // TODO: move memory instead of cloning
-                    let string = String::from_utf8(string.clone()).unwrap();
-                    self.done(Value::String(string));
+                    let mut temp = Vec::new();
+                    temp.append(string);
+                    self.done(Value::String(temp));
                 }
                 Ok(())
             }
@@ -211,6 +214,7 @@ impl Parser2 {
                     format!("unexpected byte: 0x{byte:x}"),
                 )),
             },
+            (ParseState::Done(_), _) if byte.is_ascii_whitespace() => Ok(()),
             _ => Err(std::io::Error::new(
                 ErrorKind::InvalidInput,
                 format!("unexpected byte: 0x{byte:x}"),
@@ -225,7 +229,7 @@ impl Parser2 {
                 self.state = ParseState::Ready;
             }
             (Some(StackValue::Dictionary(a @ None, _)), Value::String(key)) => {
-                *a = Some(key);
+                *a = Some(String::from_utf8(key).expect("what is this"));
                 self.state = ParseState::Ready;
             }
             (Some(StackValue::Dictionary(None, _)), _) => {
@@ -242,7 +246,7 @@ impl Parser2 {
         }
     }
 
-    fn result(self) -> Value {
+    pub fn result(self) -> Value {
         if let ParseState::Done(value) = self.state {
             return value;
         }
@@ -260,6 +264,33 @@ impl std::io::Write for Parser2 {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+impl AsyncWrite for Parser2 {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        for byte in buf {
+            self.consume(*byte)?;
+        }
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::task::Poll::Ready(Ok(()))
     }
 }
 
@@ -400,5 +431,14 @@ mod tests2 {
                 ("spam".to_string(), Value::string("eggs"))
             ]))
         );
+    }
+
+    #[test]
+    fn ignore_trailing_whitespace() {
+        let mut parser = Parser2::new();
+        let bytes_written = parser.write(b"i42e ").expect("unable to write");
+
+        assert_eq!(bytes_written, 5);
+        assert_eq!(parser.result(), Value::Integer(42));
     }
 }

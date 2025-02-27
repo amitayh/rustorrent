@@ -2,12 +2,19 @@ use std::collections::HashMap;
 
 #[derive(Debug, PartialEq)]
 pub enum Value {
-    String(String),
-    Integer(i32),
+    String(Vec<u8>),
+    Integer(i64),
     List(Vec<Value>),
     Dictionary(HashMap<String, Value>),
 }
 
+impl Value {
+    pub fn string(str: &str) -> Self {
+        Self::String(str.as_bytes().to_vec())
+    }
+}
+
+/*
 impl Value {
     pub fn string(str: &str) -> Self {
         Self::String(str.to_string())
@@ -27,7 +34,7 @@ impl Value {
         }
     }
 
-    pub fn get_integer(self) -> Option<i32> {
+    pub fn get_integer(self) -> Option<i64> {
         match self {
             Self::Integer(integer) => Some(integer),
             _ => None,
@@ -57,3 +64,4 @@ impl<'a> From<&'a Value> for Option<&'a str> {
         }
     }
 }
+*/

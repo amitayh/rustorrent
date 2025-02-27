@@ -12,6 +12,7 @@ pub struct Torrent {
     info: Info,
 }
 
+/*
 impl TryFrom<Value> for Torrent {
     type Error = String;
 
@@ -29,6 +30,7 @@ impl TryFrom<Value> for Torrent {
         });
     }
 }
+*/
 
 type Md5 = [u8; 16];
 
@@ -50,6 +52,7 @@ pub struct Info {
     download_type: DownloadType,
 }
 
+/*
 impl TryFrom<Value> for Info {
     type Error = String;
 
@@ -84,6 +87,7 @@ impl TryFrom<Value> for Info {
         })
     }
 }
+*/
 
 #[derive(Debug, PartialEq)]
 pub enum DownloadType {
@@ -105,6 +109,7 @@ pub struct File {
     mdsum: Option<Md5>,
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -151,3 +156,4 @@ mod tests {
         );
     }
 }
+*/
