@@ -270,7 +270,7 @@ mod tests {
         let bytes_written = parser.write(b"le").expect("unable to write");
 
         assert_eq!(bytes_written, 2);
-        assert_eq!(parser.result().unwrap(), Value::List(vec![]));
+        assert_eq!(parser.result().unwrap(), Value::list());
     }
 
     #[test]
@@ -281,11 +281,10 @@ mod tests {
         assert_eq!(bytes_written, 11);
         assert_eq!(
             parser.result().unwrap(),
-            Value::List(vec![
-                Value::Integer(1),
-                Value::Integer(2),
-                Value::Integer(3)
-            ])
+            Value::list()
+                .with_value(Value::Integer(1))
+                .with_value(Value::Integer(2))
+                .with_value(Value::Integer(3))
         );
     }
 
@@ -297,10 +296,11 @@ mod tests {
         assert_eq!(bytes_written, 13);
         assert_eq!(
             parser.result().unwrap(),
-            Value::List(vec![
-                Value::Integer(1),
-                Value::List(vec![Value::Integer(2), Value::Integer(3)])
-            ])
+            Value::list().with_value(Value::Integer(1)).with_value(
+                Value::list()
+                    .with_value(Value::Integer(2))
+                    .with_value(Value::Integer(3))
+            )
         );
     }
 
@@ -312,7 +312,9 @@ mod tests {
         assert_eq!(bytes_written, 11);
         assert_eq!(
             parser.result().unwrap(),
-            Value::List(vec![Value::string("foo"), Value::Integer(42),])
+            Value::list()
+                .with_value(Value::string("foo"))
+                .with_value(Value::Integer(42))
         );
     }
 
@@ -322,7 +324,7 @@ mod tests {
         let bytes_written = parser.write(b"de").expect("unable to write");
 
         assert_eq!(bytes_written, 2);
-        assert_eq!(parser.result().unwrap(), Value::Dictionary(HashMap::new()));
+        assert_eq!(parser.result().unwrap(), Value::dictionary());
     }
 
     #[test]
@@ -335,10 +337,9 @@ mod tests {
         assert_eq!(bytes_written, 24);
         assert_eq!(
             parser.result().unwrap(),
-            Value::Dictionary(HashMap::from([
-                ("cow".to_string(), Value::string("moo")),
-                ("spam".to_string(), Value::string("eggs"))
-            ]))
+            Value::dictionary()
+                .with_entry("cow", Value::string("moo"))
+                .with_entry("spam", Value::string("eggs"))
         );
     }
 
@@ -359,16 +360,13 @@ mod tests {
         assert_eq!(bytes_written, 30);
         assert_eq!(
             parser.result().unwrap(),
-            Value::Dictionary(HashMap::from([
-                (
-                    "foo".to_string(),
-                    Value::Dictionary(HashMap::from([(
-                        "bar".to_string(),
-                        Value::List(vec![Value::string("baz")])
-                    )]))
-                ),
-                ("qux".to_string(), Value::Integer(42))
-            ]))
+            Value::dictionary()
+                .with_entry(
+                    "foo",
+                    Value::dictionary()
+                        .with_entry("bar", Value::list().with_value(Value::string("baz")))
+                )
+                .with_entry("qux", Value::Integer(42))
         );
     }
 
@@ -381,7 +379,9 @@ mod tests {
 
         assert_eq!(
             parser.result().unwrap(),
-            Value::List(vec![Value::string("foo"), Value::string("bar")])
+            Value::list()
+                .with_value(Value::string("foo"))
+                .with_value(Value::string("bar"))
         );
     }
 

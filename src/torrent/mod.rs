@@ -1,5 +1,4 @@
-/*
-use std::path::PathBuf;
+// use std::path::PathBuf;
 
 use crate::bencoding::value::Value;
 
@@ -13,25 +12,54 @@ pub struct Torrent {
     info: Info,
 }
 
-/*
 impl TryFrom<Value> for Torrent {
     type Error = String;
 
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        let mut entries = value.get_dictionary().unwrap();
-        let announce = entries
-            .remove("announce")
-            .and_then(Value::get_string)
-            .unwrap();
-
-        let info = entries.remove("info").unwrap();
-        return Ok(Torrent {
-            announce,
-            info: Info::try_from(info).unwrap(),
-        });
+    fn try_from(mut value: Value) -> Result<Self, Self::Error> {
+        let announce = value.remove_entry("announce")?.try_into()?;
+        let info = value.remove_entry("info")?.try_into()?;
+        return Ok(Torrent { announce, info });
     }
 }
-*/
+
+impl TryFrom<Value> for String {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::String(bytes) => match String::from_utf8(bytes) {
+                Ok(string) => Ok(string),
+                Err(_) => Err("not valid utf8".to_string()),
+            },
+            _ => Err("type mismatch".to_string()),
+        }
+    }
+}
+
+impl TryFrom<Value> for usize {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Integer(integer) => match integer.try_into() {
+                Ok(usize) => Ok(usize),
+                Err(_) => Err("not valid usize".to_string()),
+            },
+            _ => Err("type mismatch".to_string()),
+        }
+    }
+}
+
+impl Value {
+    fn remove_entry(&mut self, key: &str) -> Result<Value, String> {
+        match self {
+            Value::Dictionary(entries) => {
+                entries.remove(key).ok_or(format!("key missing: {:?}", key))
+            }
+            _ => Err("type mismatch".to_string()),
+        }
+    }
+}
 
 type Md5 = [u8; 16];
 
@@ -39,7 +67,7 @@ type Sha1 = [u8; 20];
 
 #[derive(Debug, PartialEq)]
 pub struct Info {
-    info_hash: Sha1,
+    //info_hash: Sha1,
 
     // piece length maps to the number of bytes in each piece the file is split into. For the
     // purposes of transfer, files are split into fixed-size pieces which are all the same length
@@ -47,17 +75,20 @@ pub struct Info {
     // power of two, most commonly 2 18 = 256 K (BitTorrent prior to version 3.2 uses 2 20 = 1 M as
     // default).
     piece_length: usize,
+    //pieces: Vec<Sha1>,
 
-    pieces: Vec<Sha1>,
-
-    download_type: DownloadType,
+    //download_type: DownloadType,
 }
 
-/*
 impl TryFrom<Value> for Info {
     type Error = String;
 
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
+    fn try_from(mut value: Value) -> Result<Self, Self::Error> {
+        let piece_length = value.remove_entry("piece length")?.try_into()?;
+        Ok(Info { piece_length })
+    }
+}
+/*
         let mut entries = value.get_dictionary().unwrap();
         let piece_length = entries
             .remove("piece length")
@@ -86,8 +117,6 @@ impl TryFrom<Value> for Info {
                 files: vec![],
             },
         })
-    }
-}
 */
 
 #[derive(Debug, PartialEq)]
@@ -105,16 +134,13 @@ pub enum DownloadType {
 
 #[derive(Debug, PartialEq)]
 pub struct File {
-    path: PathBuf,
+    //path: PathBuf,
     length: usize,
     mdsum: Option<Md5>,
 }
 
-/*
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
 
     #[test]
@@ -126,36 +152,30 @@ mod tests {
         pieces.extend(std::str::from_utf8(&piece1));
         pieces.extend(std::str::from_utf8(&piece2));
 
-        let contents = Value::Dictionary(HashMap::from([
-            (
-                "announce".to_string(),
+        let contents = Value::dictionary()
+            .with_entry(
+                "announce",
                 Value::string("udp://tracker.opentrackr.org:1337/announce"),
-            ),
-            (
-                "info".to_string(),
-                Value::Dictionary(HashMap::from([
-                    ("piece length".to_string(), Value::Integer(1234)),
-                    ("pieces".to_string(), Value::String(pieces)),
-                ])),
-            ),
-        ]));
+            )
+            .with_entry(
+                "info",
+                Value::dictionary().with_entry("piece length", Value::Integer(1234)),
+            );
 
         assert_eq!(
             Torrent::try_from(contents),
             Ok(Torrent {
                 announce: "udp://tracker.opentrackr.org:1337/announce".to_string(),
                 info: Info {
-                    info_hash: [0; 20],
+                    //    info_hash: [0; 20],
                     piece_length: 1234,
-                    pieces: vec![piece1, piece2],
-                    download_type: DownloadType::MultiFile {
-                        directory_name: "".to_string(),
-                        files: vec![]
-                    }
+                    //    pieces: vec![piece1, piece2],
+                    //    download_type: DownloadType::MultiFile {
+                    //        directory_name: "".to_string(),
+                    //        files: vec![]
+                    //    }
                 }
             })
         );
     }
 }
-*/
-*/
