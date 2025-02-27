@@ -22,6 +22,17 @@ impl TryFrom<Value> for Torrent {
     }
 }
 
+impl TryFrom<Value> for Vec<u8> {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::String(bytes) => Ok(bytes),
+            _ => Err("type mismatch".to_string()),
+        }
+    }
+}
+
 impl TryFrom<Value> for String {
     type Error = String;
 
@@ -63,7 +74,15 @@ impl Value {
 
 type Md5 = [u8; 16];
 
-type Sha1 = [u8; 20];
+#[derive(PartialEq)]
+pub struct Sha1([u8; 20]);
+
+impl std::fmt::Debug for Sha1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hex: String = self.0.iter().map(|byte| format!("{:02x}", byte)).collect();
+        write!(f, "Sha1({})", hex)
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub struct Info {
@@ -75,9 +94,24 @@ pub struct Info {
     // power of two, most commonly 2 18 = 256 K (BitTorrent prior to version 3.2 uses 2 20 = 1 M as
     // default).
     piece_length: usize,
-    //pieces: Vec<Sha1>,
-
+    pieces: Vec<Sha1>,
     //download_type: DownloadType,
+}
+
+impl Info {
+    fn build_pieces(pieces: &[u8]) -> Result<Vec<Sha1>, String> {
+        if pieces.len() % 20 != 0 {
+            return Err("invalid length".to_string());
+        }
+        let mut all = Vec::new();
+        all.reserve(pieces.len() / 20);
+        for i in (0..pieces.len()).step_by(20) {
+            let mut sha = [0; 20];
+            sha.copy_from_slice(&pieces[i..(i + 20)]);
+            all.push(Sha1(sha));
+        }
+        Ok(all)
+    }
 }
 
 impl TryFrom<Value> for Info {
@@ -85,7 +119,12 @@ impl TryFrom<Value> for Info {
 
     fn try_from(mut value: Value) -> Result<Self, Self::Error> {
         let piece_length = value.remove_entry("piece length")?.try_into()?;
-        Ok(Info { piece_length })
+        let pieces: Vec<u8> = value.remove_entry("pieces")?.try_into()?;
+        let pieces = Info::build_pieces(&pieces)?;
+        Ok(Info {
+            piece_length,
+            pieces,
+        })
     }
 }
 /*
@@ -147,10 +186,10 @@ mod tests {
     fn valid_torrent_metainfo() {
         let piece1 = [1; 20];
         let piece2 = [2; 20];
-        let mut pieces = String::new();
+        let mut pieces = Vec::new();
         pieces.reserve(40);
-        pieces.extend(std::str::from_utf8(&piece1));
-        pieces.extend(std::str::from_utf8(&piece2));
+        pieces.extend_from_slice(&piece1);
+        pieces.extend_from_slice(&piece2);
 
         let contents = Value::dictionary()
             .with_entry(
@@ -159,7 +198,9 @@ mod tests {
             )
             .with_entry(
                 "info",
-                Value::dictionary().with_entry("piece length", Value::Integer(1234)),
+                Value::dictionary()
+                    .with_entry("piece length", Value::Integer(1234))
+                    .with_entry("pieces", Value::String(pieces)),
             );
 
         assert_eq!(
@@ -169,7 +210,7 @@ mod tests {
                 info: Info {
                     //    info_hash: [0; 20],
                     piece_length: 1234,
-                    //    pieces: vec![piece1, piece2],
+                    pieces: vec![Sha1(piece1), Sha1(piece2)],
                     //    download_type: DownloadType::MultiFile {
                     //        directory_name: "".to_string(),
                     //        files: vec![]
