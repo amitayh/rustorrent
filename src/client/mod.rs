@@ -1,3 +1,4 @@
+/*
 use crate::torrent::Torrent;
 
 struct Peer;
@@ -122,3 +123,4 @@ mod message {
     const ID_CANCEL: u8 = 8;
     const ID_PORT: u8 = 9;
 }
+*/

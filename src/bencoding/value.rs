@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub enum Value {
     String(Vec<u8>),
     Integer(i64),
@@ -9,8 +9,23 @@ pub enum Value {
 }
 
 impl Value {
+    #[allow(dead_code)]
     pub fn string(str: &str) -> Self {
         Self::String(str.as_bytes().to_vec())
+    }
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::String(bytes) => match String::from_utf8(bytes.clone()) {
+                Ok(string) => write!(f, "{:?}", string),
+                Err(_) => write!(f, "<binary length={}>", bytes.len()),
+            },
+            Self::Integer(integer) => write!(f, "{}", integer),
+            Self::List(list) => write!(f, "{:?}", list),
+            Self::Dictionary(dictionary) => write!(f, "{:?}", dictionary),
+        }
     }
 }
 
