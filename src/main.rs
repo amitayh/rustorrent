@@ -16,7 +16,8 @@ async fn main() -> io::Result<()> {
     let mut parser = Parser::new();
     tokio::io::copy(&mut file, &mut parser).await?;
     let value = parser.result()?;
-    let torrent = Torrent::try_from(value);
-    println!("@@@ result: {:?}", torrent);
+    let torrent = Torrent::try_from(value).unwrap();
+    println!("@@@ result: {:?}", torrent.announce);
+
     return Ok(());
 }

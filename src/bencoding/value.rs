@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[derive(PartialEq)]
 pub enum Value {
     String(Vec<u8>),
     Integer(i64),
     List(Vec<Value>),
-    Dictionary(HashMap<String, Value>),
+    Dictionary(BTreeMap<String, Value>),
 }
 
 impl Value {
@@ -26,7 +26,7 @@ impl Value {
     }
 
     pub fn dictionary() -> Self {
-        Self::Dictionary(HashMap::new())
+        Self::Dictionary(BTreeMap::new())
     }
 
     pub fn with_entry(mut self, key: &str, value: Value) -> Self {

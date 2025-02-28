@@ -1,5 +1,8 @@
 // use std::path::PathBuf;
 
+use anyhow::anyhow;
+use sha1::Digest;
+
 use crate::bencoding::value::Value;
 
 // https://wiki.theory.org/BitTorrentSpecification#Byte_Strings
@@ -8,12 +11,12 @@ use crate::bencoding::value::Value;
 pub struct Torrent {
     // The URL of the tracker.
     // TODO: use a real URL type?
-    announce: String,
-    info: Info,
+    pub announce: String,
+    pub info: Info,
 }
 
 impl TryFrom<Value> for Torrent {
-    type Error = String;
+    type Error = anyhow::Error;
 
     fn try_from(mut value: Value) -> Result<Self, Self::Error> {
         let announce = value.remove_entry("announce")?.try_into()?;
@@ -22,52 +25,53 @@ impl TryFrom<Value> for Torrent {
     }
 }
 
+// TODO: add expected / actual
 impl TryFrom<Value> for Vec<u8> {
-    type Error = String;
+    type Error = anyhow::Error;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::String(bytes) => Ok(bytes),
-            _ => Err("type mismatch".to_string()),
+            _ => Err(anyhow!("type mismatch")),
         }
     }
 }
 
 impl TryFrom<Value> for String {
-    type Error = String;
+    type Error = anyhow::Error;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::String(bytes) => match String::from_utf8(bytes) {
                 Ok(string) => Ok(string),
-                Err(_) => Err("not valid utf8".to_string()),
+                Err(err) => Err(err.into()),
             },
-            _ => Err("type mismatch".to_string()),
+            _ => Err(anyhow!("type mismatch")),
         }
     }
 }
 
 impl TryFrom<Value> for usize {
-    type Error = String;
+    type Error = anyhow::Error;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Integer(integer) => match integer.try_into() {
                 Ok(usize) => Ok(usize),
-                Err(_) => Err("not valid usize".to_string()),
+                Err(err) => Err(err.into()),
             },
-            _ => Err("type mismatch".to_string()),
+            _ => Err(anyhow!("type mismatch")),
         }
     }
 }
 
 impl Value {
-    fn remove_entry(&mut self, key: &str) -> Result<Value, String> {
+    fn remove_entry(&mut self, key: &str) -> Result<Value, anyhow::Error> {
         match self {
             Value::Dictionary(entries) => {
-                entries.remove(key).ok_or(format!("key missing: {:?}", key))
+                entries.remove(key).ok_or(anyhow!("key missing: {:?}", key))
             }
-            _ => Err("type mismatch".to_string()),
+            _ => Err(anyhow!("type mismatch")),
         }
     }
 }
@@ -99,9 +103,12 @@ pub struct Info {
 }
 
 impl Info {
-    fn build_pieces(pieces: &[u8]) -> Result<Vec<Sha1>, String> {
+    fn build_pieces(pieces: &[u8]) -> Result<Vec<Sha1>, anyhow::Error> {
         if pieces.len() % 20 != 0 {
-            return Err("invalid length".to_string());
+            return Err(anyhow!(
+                "invalid length {}. must be a multiple of 20",
+                pieces.len()
+            ));
         }
         let mut all = Vec::new();
         all.reserve(pieces.len() / 20);
@@ -115,9 +122,11 @@ impl Info {
 }
 
 impl TryFrom<Value> for Info {
-    type Error = String;
+    type Error = anyhow::Error;
 
     fn try_from(mut value: Value) -> Result<Self, Self::Error> {
+        let sha = sha1::Sha1::new();
+        //value.encode(sha).unwrap();
         let piece_length = value.remove_entry("piece length")?.try_into()?;
         let pieces: Vec<u8> = value.remove_entry("pieces")?.try_into()?;
         let pieces = Info::build_pieces(&pieces)?;
@@ -204,8 +213,8 @@ mod tests {
             );
 
         assert_eq!(
-            Torrent::try_from(contents),
-            Ok(Torrent {
+            Torrent::try_from(contents).unwrap(),
+            Torrent {
                 announce: "udp://tracker.opentrackr.org:1337/announce".to_string(),
                 info: Info {
                     //    info_hash: [0; 20],
@@ -216,7 +225,7 @@ mod tests {
                     //        files: vec![]
                     //    }
                 }
-            })
+            }
         );
     }
 }

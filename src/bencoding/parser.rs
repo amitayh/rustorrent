@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     io::{Error, ErrorKind, Result, Write},
     pin::Pin,
     task::{Context, Poll},
@@ -24,7 +24,7 @@ enum State {
 
 enum StackState {
     List(Vec<Value>),
-    Dictionary(Option<String>, HashMap<String, Value>),
+    Dictionary(Option<String>, BTreeMap<String, Value>),
 }
 
 impl StackState {
@@ -33,7 +33,7 @@ impl StackState {
     }
 
     fn new_dictionary() -> Self {
-        Self::Dictionary(None, HashMap::new())
+        Self::Dictionary(None, BTreeMap::new())
     }
 }
 
