@@ -1,6 +1,10 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fmt::{Debug, Display, Formatter, Result},
+};
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub enum Value {
     String(Vec<u8>),
     Integer(i64),
@@ -37,8 +41,8 @@ impl Value {
     }
 }
 
-impl std::fmt::Debug for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for Value {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
             Self::String(bytes) => match String::from_utf8(bytes.clone()) {
                 Ok(string) => write!(f, "{:?}", string),
@@ -50,3 +54,46 @@ impl std::fmt::Debug for Value {
         }
     }
 }
+
+#[derive(Debug)]
+pub enum ValueType {
+    String,
+    Integer,
+    List,
+    Dictionary,
+}
+
+impl From<&Value> for ValueType {
+    fn from(value: &Value) -> Self {
+        match value {
+            Value::String(_) => Self::String,
+            Value::Integer(_) => Self::Integer,
+            Value::List(_) => Self::List,
+            Value::Dictionary(_) => Self::Dictionary,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct TypeMismatch {
+    pub expected: ValueType,
+    pub got: Value,
+}
+
+impl TypeMismatch {
+    pub fn new(expected: ValueType, got: Value) -> Self {
+        Self { expected, got }
+    }
+}
+
+impl Display for TypeMismatch {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(
+            f,
+            "type mismatch. expected {:?}, got {:?}",
+            self.expected, self.got
+        )
+    }
+}
+
+impl Error for TypeMismatch {}

@@ -1,9 +1,9 @@
-// use std::path::PathBuf;
+use std::path::PathBuf;
 
-use anyhow::anyhow;
+use anyhow::{Error, Result, anyhow};
 use sha1::Digest;
 
-use crate::bencoding::value::Value;
+use crate::bencoding::value::{TypeMismatch, Value, ValueType};
 
 // https://wiki.theory.org/BitTorrentSpecification#Byte_Strings
 
@@ -16,62 +16,69 @@ pub struct Torrent {
 }
 
 impl TryFrom<Value> for Torrent {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_from(mut value: Value) -> Result<Self, Self::Error> {
+    fn try_from(mut value: Value) -> Result<Self> {
         let announce = value.remove_entry("announce")?.try_into()?;
         let info = value.remove_entry("info")?.try_into()?;
-        return Ok(Torrent { announce, info });
+        Ok(Torrent { announce, info })
     }
 }
 
-// TODO: add expected / actual
 impl TryFrom<Value> for Vec<u8> {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
+    fn try_from(value: Value) -> Result<Self> {
         match value {
             Value::String(bytes) => Ok(bytes),
-            _ => Err(anyhow!("type mismatch")),
+            _ => Err(Error::new(TypeMismatch::new(ValueType::String, value))),
         }
     }
 }
 
 impl TryFrom<Value> for String {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
+    fn try_from(value: Value) -> Result<Self> {
         match value {
-            Value::String(bytes) => match String::from_utf8(bytes) {
-                Ok(string) => Ok(string),
-                Err(err) => Err(err.into()),
-            },
-            _ => Err(anyhow!("type mismatch")),
+            Value::String(bytes) => String::from_utf8(bytes).map_err(Error::new),
+            _ => Err(Error::new(TypeMismatch::new(ValueType::String, value))),
         }
     }
 }
 
 impl TryFrom<Value> for usize {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
+    fn try_from(value: Value) -> Result<Self> {
         match value {
-            Value::Integer(integer) => match integer.try_into() {
-                Ok(usize) => Ok(usize),
-                Err(err) => Err(err.into()),
-            },
-            _ => Err(anyhow!("type mismatch")),
+            Value::Integer(integer) => integer.try_into().map_err(Error::new),
+            _ => Err(Error::new(TypeMismatch::new(ValueType::Integer, value))),
         }
     }
 }
 
+impl TryFrom<&Value> for Sha1 {
+    type Error = Error;
+
+    fn try_from(value: &Value) -> Result<Self> {
+        let mut hasher = sha1::Sha1::new();
+        value.encode(&mut hasher)?;
+        let sha1 = hasher.finalize();
+        Ok(Sha1(sha1.into()))
+    }
+}
+
 impl Value {
-    fn remove_entry(&mut self, key: &str) -> Result<Value, anyhow::Error> {
+    fn remove_entry(&mut self, key: &str) -> Result<Value> {
         match self {
             Value::Dictionary(entries) => {
                 entries.remove(key).ok_or(anyhow!("key missing: {:?}", key))
             }
-            _ => Err(anyhow!("type mismatch")),
+            _ => Err(Error::new(TypeMismatch::new(
+                ValueType::Dictionary,
+                self.clone(),
+            ))),
         }
     }
 }
@@ -83,35 +90,37 @@ pub struct Sha1([u8; 20]);
 
 impl std::fmt::Debug for Sha1 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let hex: String = self.0.iter().map(|byte| format!("{:02x}", byte)).collect();
-        write!(f, "Sha1({})", hex)
+        write!(f, "Sha1(")?;
+        for byte in self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        write!(f, ")")
     }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Info {
-    //info_hash: Sha1,
+    pub info_hash: Sha1,
 
     // piece length maps to the number of bytes in each piece the file is split into. For the
     // purposes of transfer, files are split into fixed-size pieces which are all the same length
     // except for possibly the last one which may be truncated. piece length is almost always a
     // power of two, most commonly 2 18 = 256 K (BitTorrent prior to version 3.2 uses 2 20 = 1 M as
     // default).
-    piece_length: usize,
-    pieces: Vec<Sha1>,
-    //download_type: DownloadType,
+    pub piece_length: usize,
+    pub pieces: Vec<Sha1>,
+    //pub download_type: DownloadType,
 }
 
 impl Info {
-    fn build_pieces(pieces: &[u8]) -> Result<Vec<Sha1>, anyhow::Error> {
+    fn build_pieces(pieces: &[u8]) -> Result<Vec<Sha1>> {
         if pieces.len() % 20 != 0 {
             return Err(anyhow!(
                 "invalid length {}. must be a multiple of 20",
                 pieces.len()
             ));
         }
-        let mut all = Vec::new();
-        all.reserve(pieces.len() / 20);
+        let mut all = Vec::with_capacity(pieces.len() / 20);
         for i in (0..pieces.len()).step_by(20) {
             let mut sha = [0; 20];
             sha.copy_from_slice(&pieces[i..(i + 20)]);
@@ -122,51 +131,22 @@ impl Info {
 }
 
 impl TryFrom<Value> for Info {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_from(mut value: Value) -> Result<Self, Self::Error> {
-        let sha = sha1::Sha1::new();
-        //value.encode(sha).unwrap();
+    fn try_from(mut value: Value) -> Result<Self> {
+        let info_hash = Sha1::try_from(&value)?;
         let piece_length = value.remove_entry("piece length")?.try_into()?;
-        let pieces: Vec<u8> = value.remove_entry("pieces")?.try_into()?;
+        let pieces: Vec<_> = value.remove_entry("pieces")?.try_into()?;
         let pieces = Info::build_pieces(&pieces)?;
         Ok(Info {
+            info_hash,
             piece_length,
             pieces,
         })
     }
 }
-/*
-        let mut entries = value.get_dictionary().unwrap();
-        let piece_length = entries
-            .remove("piece length")
-            .unwrap()
-            .get_integer()
-            .unwrap()
-            .try_into()
-            .unwrap();
 
-        let pieces = entries.get("pieces").unwrap().get_str().unwrap();
-        assert!(pieces.len() % 20 == 0, "Invalid length");
-        let mut all = Vec::new();
-        all.reserve(pieces.len() / 20);
-        for i in (0..pieces.len()).step_by(20) {
-            let mut sha = [0; 20];
-            sha.copy_from_slice(pieces[i..(i + 20)].as_bytes());
-            all.push(sha);
-        }
-
-        Ok(Info {
-            info_hash: [0; 20],
-            piece_length,
-            pieces: all,
-            download_type: DownloadType::MultiFile {
-                directory_name: "".to_string(),
-                files: vec![],
-            },
-        })
-*/
-
+#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub enum DownloadType {
     SingleFile {
@@ -182,7 +162,7 @@ pub enum DownloadType {
 
 #[derive(Debug, PartialEq)]
 pub struct File {
-    //path: PathBuf,
+    path: PathBuf,
     length: usize,
     mdsum: Option<Md5>,
 }
@@ -195,12 +175,11 @@ mod tests {
     fn valid_torrent_metainfo() {
         let piece1 = [1; 20];
         let piece2 = [2; 20];
-        let mut pieces = Vec::new();
-        pieces.reserve(40);
+        let mut pieces = Vec::with_capacity(40);
         pieces.extend_from_slice(&piece1);
         pieces.extend_from_slice(&piece2);
 
-        let contents = Value::dictionary()
+        let metainfo = Value::dictionary()
             .with_entry(
                 "announce",
                 Value::string("udp://tracker.opentrackr.org:1337/announce"),
@@ -212,20 +191,13 @@ mod tests {
                     .with_entry("pieces", Value::String(pieces)),
             );
 
+        let torrent = Torrent::try_from(metainfo).expect("invalid metainfo");
+
         assert_eq!(
-            Torrent::try_from(contents).unwrap(),
-            Torrent {
-                announce: "udp://tracker.opentrackr.org:1337/announce".to_string(),
-                info: Info {
-                    //    info_hash: [0; 20],
-                    piece_length: 1234,
-                    pieces: vec![Sha1(piece1), Sha1(piece2)],
-                    //    download_type: DownloadType::MultiFile {
-                    //        directory_name: "".to_string(),
-                    //        files: vec![]
-                    //    }
-                }
-            }
+            torrent.announce,
+            "udp://tracker.opentrackr.org:1337/announce".to_string()
         );
+        assert_eq!(torrent.info.piece_length, 1234);
+        assert_eq!(torrent.info.pieces, vec![Sha1(piece1), Sha1(piece2)]);
     }
 }
