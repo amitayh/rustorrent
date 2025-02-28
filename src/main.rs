@@ -1,5 +1,3 @@
-use std::io;
-
 use bencoding::parser::Parser;
 use tokio::fs::File;
 
@@ -7,17 +5,20 @@ use crate::torrent::Torrent;
 
 mod bencoding;
 mod client;
+mod crypto;
 mod torrent;
+mod tracker;
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
-    //let mut torrent = File::open("/home/amitay/dev/example.torrent").await?;
-    let mut file = File::open("/home/amitay/dev/ubuntu-24.10-desktop-amd64.iso.torrent").await?;
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<_> = std::env::args().collect();
+    let mut file = File::open(&args[1]).await?;
     let mut parser = Parser::new();
     tokio::io::copy(&mut file, &mut parser).await?;
     let value = parser.result()?;
-    let torrent = Torrent::try_from(value).unwrap();
-    println!("@@@ result: {:?}", torrent.info.info_hash);
+    let torrent = Torrent::try_from(value)?;
+    let result = tracker::request(&torrent).await?;
+    dbg!(&result);
 
     return Ok(());
 }

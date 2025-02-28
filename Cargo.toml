@@ -5,5 +5,12 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.96"
+hex = "0.4.3"
+reqwest = "0.12.12"
 sha1 = "0.10.6"
+size = "0.5.0"
 tokio = { version = "1.43.0", features = ["full"] }
+url = "2.5.4"
+
+[dev-dependencies]
+wiremock = "0.6.3"

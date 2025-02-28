@@ -9,11 +9,13 @@ use tokio::io::AsyncWrite;
 
 use crate::bencoding::value::Value;
 
+#[derive(Debug)]
 pub struct Parser {
     state: State,
     stack: Vec<StackState>,
 }
 
+#[derive(Debug)]
 enum State {
     Ready,
     Integer(Option<i64>, i64),
@@ -22,6 +24,7 @@ enum State {
     Done(Value),
 }
 
+#[derive(Debug)]
 enum StackState {
     List(Vec<Value>),
     Dictionary(Option<String>, BTreeMap<String, Value>),
@@ -71,13 +74,11 @@ impl Parser {
             // List
             (State::Ready, b'l') => {
                 self.stack.push(StackState::new_list());
-                self.state = State::Ready;
             }
 
             // Dictionary
             (State::Ready, b'd') => {
                 self.stack.push(StackState::new_dictionary());
-                self.state = State::Ready;
             }
 
             // String
@@ -121,7 +122,7 @@ impl Parser {
             _ => {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
-                    format!("unexpected byte: 0x{byte:x}"),
+                    format!("unexpected byte: 0x{byte:02x}, parser state: {self:?}"),
                 ));
             }
         }
