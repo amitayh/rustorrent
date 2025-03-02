@@ -1,6 +1,10 @@
-use std::{net::IpAddr, time::Duration};
+use std::{
+    fmt::{Debug, Formatter},
+    net::IpAddr,
+    time::Duration,
+};
 
-use anyhow::{Error, Result};
+use anyhow::{Error, Result, anyhow};
 
 use crate::bencoding::value::Value;
 
@@ -39,7 +43,7 @@ impl TryFrom<Value> for TrackerResponse {
 
 #[derive(Debug, PartialEq)]
 pub struct Peer {
-    pub peer_id: Option<Vec<u8>>,
+    pub peer_id: Option<PeerId>,
     pub ip: IpAddr,
     pub port: u16,
 }
@@ -48,14 +52,37 @@ impl TryFrom<Value> for Peer {
     type Error = Error;
 
     fn try_from(mut value: Value) -> Result<Self> {
-        let peer_id = match value.try_remove_entry("peer id") {
-            Ok(Some(peer_id)) => Some(peer_id.try_into()?),
+        let peer_id = match value.try_remove_entry("peer id")? {
+            Some(Value::String(bytes)) => Some(bytes.try_into()?),
             _ => None,
         };
         let port = value.remove_entry("port")?.try_into()?;
         let ip: String = value.remove_entry("ip")?.try_into()?;
         let ip = ip.parse()?;
         Ok(Peer { peer_id, ip, port })
+    }
+}
+
+#[derive(PartialEq)]
+pub struct PeerId(pub [u8; 20]);
+
+impl TryFrom<Vec<u8>> for PeerId {
+    type Error = Error;
+
+    fn try_from(value: Vec<u8>) -> Result<Self> {
+        let bytes = value
+            .try_into()
+            .map_err(|err| anyhow!("invalid peer id {:?}", err))?;
+        Ok(PeerId(bytes))
+    }
+}
+
+impl Debug for PeerId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match String::from_utf8(self.0.to_vec()) {
+            Ok(string) => write!(f, "{:?}", string),
+            Err(_) => write!(f, "<peer id={}>", hex::encode(self.0)),
+        }
     }
 }
 
@@ -91,7 +118,7 @@ mod tests {
                 incomplete: 34,
                 interval: Duration::from_secs(1800),
                 peers: vec![Peer {
-                    peer_id: Some(peer_id.as_bytes().to_vec()),
+                    peer_id: Some(PeerId(peer_id.as_bytes().try_into().unwrap())),
                     ip: IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)),
                     port: 51413
                 }]
