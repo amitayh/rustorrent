@@ -19,10 +19,26 @@ impl Sha1 {
     }
 }
 
-fn request_url(torrent: &Torrent) -> Url {
+pub enum Event {
+    Started,
+    Stopped,
+    Completed,
+}
+
+impl From<&Event> for &str {
+    fn from(value: &Event) -> Self {
+        match value {
+            Event::Started => "started",
+            Event::Stopped => "stopped",
+            Event::Completed => "completed",
+        }
+    }
+}
+
+fn request_url(torrent: &Torrent, event: Option<Event>) -> Url {
     let mut url = torrent.announce.clone();
-    let query = format!(
-        "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&event=started",
+    let mut query = format!(
+        "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}",
         torrent.info.info_hash.url_encoded(),
         PEER_ID,
         PORT,
@@ -30,14 +46,18 @@ fn request_url(torrent: &Torrent) -> Url {
         0,
         torrent.info.download_type.length().bytes()
     );
+    if let Some(event) = &event {
+        query.push_str("&event=");
+        query.push_str(event.into());
+    }
     // TODO: preseve old query if exists
     url.set_query(Some(&query));
     dbg!(&url);
     url
 }
 
-pub async fn request(torrent: &Torrent) -> Result<TrackerResponse> {
-    let mut response = reqwest::get(request_url(torrent)).await?;
+pub async fn request(torrent: &Torrent, event: Option<Event>) -> Result<TrackerResponse> {
+    let mut response = reqwest::get(request_url(torrent, event)).await?;
     if !response.status().is_success() {
         return Err(anyhow!("server returned status {}", response.status()));
     }
@@ -96,7 +116,10 @@ mod tests {
             },
         };
 
-        let result = request(&torrent).await.expect("failed to contact tracker");
+        let result = request(&torrent, None)
+            .await
+            .expect("failed to contact tracker");
+
         dbg!(&result);
 
         //assert_eq!(result, Value::string("hello"));

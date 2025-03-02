@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::io::copy(&mut file, &mut parser).await?;
     let value = parser.result()?;
     let torrent = Torrent::try_from(value)?;
-    let result = tracker::request(&torrent).await?;
+    let result = tracker::request(&torrent, None).await?;
     dbg!(&result);
 
     return Ok(());
