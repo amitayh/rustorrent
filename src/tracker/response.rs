@@ -13,6 +13,7 @@ pub struct TrackerResponse {
     pub complete: usize,
     pub incomplete: usize,
     pub interval: Duration,
+    pub min_interval: Option<Duration>,
     pub peers: Vec<Peer>,
 }
 
@@ -23,6 +24,10 @@ impl TryFrom<Value> for TrackerResponse {
         let complete = value.remove_entry("complete")?.try_into()?;
         let incomplete = value.remove_entry("incomplete")?.try_into()?;
         let interval = value.remove_entry("interval")?.try_into()?;
+        let min_interval = match value.try_remove_entry("min interval")? {
+            Some(value) => Some(value.try_into()?),
+            None => None,
+        };
         let peers = {
             let peers: Vec<Value> = value.remove_entry("peers")?.try_into()?;
             let mut result = Vec::with_capacity(peers.len());
@@ -36,6 +41,7 @@ impl TryFrom<Value> for TrackerResponse {
             complete,
             incomplete,
             interval,
+            min_interval,
             peers,
         })
     }
@@ -117,6 +123,7 @@ mod tests {
                 complete: 12,
                 incomplete: 34,
                 interval: Duration::from_secs(1800),
+                min_interval: None,
                 peers: vec![Peer {
                     peer_id: Some(PeerId(peer_id.as_bytes().try_into().unwrap())),
                     ip: IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)),
@@ -147,6 +154,20 @@ mod tests {
             response.peers[0].ip,
             IpAddr::V6("2600:1702:6aa3:b210::72".parse().unwrap())
         );
+    }
+
+    #[test]
+    fn support_min_interval() {
+        let body = Value::dictionary()
+            .with_entry("complete", Value::Integer(12))
+            .with_entry("incomplete", Value::Integer(34))
+            .with_entry("interval", Value::Integer(1800))
+            .with_entry("min interval", Value::Integer(900))
+            .with_entry("peers", Value::list());
+
+        let response = TrackerResponse::try_from(body).expect("invalid response body");
+
+        assert_eq!(response.min_interval, Some(Duration::from_secs(900)));
     }
 
     // TODO: support peer binary model
