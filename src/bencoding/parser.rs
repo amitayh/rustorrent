@@ -13,6 +13,7 @@ use crate::bencoding::value::Value;
 pub struct Parser {
     state: State,
     stack: Vec<StackState>,
+    position: usize,
 }
 
 #[derive(Debug)]
@@ -45,6 +46,7 @@ impl Parser {
         Self {
             state: State::Ready,
             stack: Vec::new(),
+            position: 0,
         }
     }
 
@@ -126,6 +128,7 @@ impl Parser {
                 ));
             }
         }
+        self.position += 1;
         Ok(())
     }
 

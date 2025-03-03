@@ -1,22 +1,17 @@
 use std::io::Write;
 
 use anyhow::{Result, anyhow};
+use log::{info, warn};
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
-use crate::{bencoding::parser::Parser, crypto::Sha1, torrent::Torrent};
-
-use self::response::TrackerResponse;
+use crate::tracker::response::TrackerResponse;
+use crate::{Config, bencoding::parser::Parser, torrent::Torrent};
 
 pub mod response;
 
-const PEER_ID: &str = "rustorrent-v0.1-----";
-const PORT: u16 = 6881;
-
-impl Sha1 {
-    fn url_encoded(&self) -> String {
-        String::from_iter(byte_serialize(&self.0))
-    }
+fn url_encode(bytes: &[u8]) -> String {
+    String::from_iter(byte_serialize(bytes))
 }
 
 pub enum Event {
@@ -35,13 +30,13 @@ impl From<&Event> for &str {
     }
 }
 
-fn request_url(torrent: &Torrent, event: Option<Event>) -> Url {
+fn request_url(torrent: &Torrent, config: &Config, event: Option<Event>) -> Url {
     let mut url = torrent.announce.clone();
     let mut query = format!(
         "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}",
-        torrent.info.info_hash.url_encoded(),
-        PEER_ID,
-        PORT,
+        url_encode(&torrent.info.info_hash.0),
+        url_encode(&config.clinet_id.0),
+        config.port,
         0,
         0,
         torrent.info.download_type.length().bytes()
@@ -52,13 +47,19 @@ fn request_url(torrent: &Torrent, event: Option<Event>) -> Url {
     }
     // TODO: preseve old query if exists
     url.set_query(Some(&query));
-    dbg!(&url);
     url
 }
 
-pub async fn request(torrent: &Torrent, event: Option<Event>) -> Result<TrackerResponse> {
-    let mut response = reqwest::get(request_url(torrent, event)).await?;
+pub async fn request(
+    torrent: &Torrent,
+    config: &Config,
+    event: Option<Event>,
+) -> Result<TrackerResponse> {
+    let url = request_url(torrent, config, event);
+    info!("sending request to tracker: {}", &url);
+    let mut response = reqwest::get(url).await?;
     if !response.status().is_success() {
+        warn!("request to tracker failed {}", response.status());
         return Err(anyhow!("server returned status {}", response.status()));
     }
     let value = {
@@ -68,34 +69,50 @@ pub async fn request(torrent: &Torrent, event: Option<Event>) -> Result<TrackerR
         }
         parser.result()?
     };
-    TrackerResponse::try_from(value)
+    let result = TrackerResponse::try_from(value)?;
+    info!(
+        "request to tracker succeeded. got {} peers",
+        result.peers.len()
+    );
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::torrent::{DownloadType, Info};
 
+    use self::response::PeerId;
+
     use super::*;
 
     use size::Size;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{method, path},
+        matchers::{method, path, query_param},
+    };
+
+    const PEER_ID: [u8; 20] = [0x2d; 20];
+    const PORT: u16 = 6881;
+    const CONFIG: Config = Config {
+        clinet_id: PeerId(PEER_ID),
+        port: PORT,
     };
 
     #[tokio::test]
-    #[ignore]
-    async fn test() {
+    async fn http_api() {
         let mock_tracker = MockServer::start().await;
+
         Mock::given(method("GET"))
             .and(path("/announce"))
-            //.and(query_param(
-            //    "info_hash",
-            //    "%01%02%03%04%05%06%07%08%09%0A%0B%0C%0D%0E%0F%10%11%12%13%14",
-            //))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_raw("5:hello", "application/octet-stream"),
-            )
+            //.and(query_param("peer_id", "%C4%7D%18pg%C6%CF%952E%F1%28%B5%FD%E6*%3B%8F%A3%B0"))
+            .and(query_param("peer_id", "--------------------"))
+            .and(query_param("port", "6881"))
+            .and(query_param("left", "1234"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "d8:completei12e10:incompletei34e8:intervali1800e5:peersld2:ip11:12.34.56.78\
+                        7:peer id20:-TR3000-47qm0ov7eav44:porti51413eeee",
+                "application/octet-stream",
+            ))
             .mount(&mock_tracker)
             .await;
 
@@ -116,12 +133,10 @@ mod tests {
             },
         };
 
-        let result = request(&torrent, None)
+        let result = request(&torrent, &CONFIG, None)
             .await
             .expect("failed to contact tracker");
 
-        dbg!(&result);
-
-        //assert_eq!(result, Value::string("hello"));
+        assert_eq!(result.peers.len(), 1);
     }
 }

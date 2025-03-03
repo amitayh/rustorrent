@@ -1,10 +1,11 @@
 use std::{
     fmt::{Debug, Formatter},
-    net::IpAddr,
+    net::SocketAddr,
     time::Duration,
 };
 
 use anyhow::{Error, Result, anyhow};
+use rand::RngCore;
 
 use crate::bencoding::value::Value;
 
@@ -50,8 +51,7 @@ impl TryFrom<Value> for TrackerResponse {
 #[derive(Debug, PartialEq)]
 pub struct Peer {
     pub peer_id: Option<PeerId>,
-    pub ip: IpAddr,
-    pub port: u16,
+    pub address: SocketAddr,
 }
 
 impl TryFrom<Value> for Peer {
@@ -62,15 +62,23 @@ impl TryFrom<Value> for Peer {
             Some(Value::String(bytes)) => Some(bytes.try_into()?),
             _ => None,
         };
-        let port = value.remove_entry("port")?.try_into()?;
         let ip: String = value.remove_entry("ip")?.try_into()?;
-        let ip = ip.parse()?;
-        Ok(Peer { peer_id, ip, port })
+        let port = value.remove_entry("port")?.try_into()?;
+        let address = SocketAddr::new(ip.parse()?, port);
+        Ok(Peer { peer_id, address })
     }
 }
 
 #[derive(PartialEq)]
 pub struct PeerId(pub [u8; 20]);
+
+impl PeerId {
+    pub fn random() -> Self {
+        let mut data = [0; 20];
+        rand::rng().fill_bytes(&mut data);
+        Self(data)
+    }
+}
 
 impl TryFrom<Vec<u8>> for PeerId {
     type Error = Error;
@@ -94,8 +102,6 @@ impl Debug for PeerId {
 
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv4Addr;
-
     use super::*;
 
     #[test]
@@ -126,8 +132,7 @@ mod tests {
                 min_interval: None,
                 peers: vec![Peer {
                     peer_id: Some(PeerId(peer_id.as_bytes().try_into().unwrap())),
-                    ip: IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)),
-                    port: 51413
+                    address: "12.34.56.78:51413".parse().unwrap()
                 }]
             }
         );
@@ -151,8 +156,8 @@ mod tests {
         let response = TrackerResponse::try_from(body).expect("invalid response body");
 
         assert_eq!(
-            response.peers[0].ip,
-            IpAddr::V6("2600:1702:6aa3:b210::72".parse().unwrap())
+            response.peers[0].address,
+            "[2600:1702:6aa3:b210::72]:51413".parse().unwrap()
         );
     }
 
