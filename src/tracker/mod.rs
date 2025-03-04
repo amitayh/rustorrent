@@ -79,9 +79,11 @@ pub async fn request(
 
 #[cfg(test)]
 mod tests {
-    use crate::torrent::{DownloadType, Info};
-
-    use self::response::PeerId;
+    use crate::{
+        crypto::Sha1,
+        peer::PeerId,
+        torrent::{DownloadType, Info},
+    };
 
     use super::*;
 

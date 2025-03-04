@@ -58,7 +58,7 @@ impl TryFrom<Value> for Info {
     type Error = Error;
 
     fn try_from(mut value: Value) -> Result<Self> {
-        let info_hash = Sha1::try_from(&value)?;
+        let info_hash = Sha1::from(&value);
         let piece_length = value.remove_entry("piece length")?.try_into()?;
         let pieces: Vec<_> = value.remove_entry("pieces")?.try_into()?;
         let pieces = Info::build_pieces(&pieces)?;

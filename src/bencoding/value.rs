@@ -5,10 +5,9 @@ use std::{
 };
 
 use anyhow::{Error, Result, anyhow};
-use sha1::Digest;
 use size::Size;
 
-use crate::crypto::{Md5, Sha1};
+use crate::crypto::Md5;
 
 #[derive(PartialEq, Clone)]
 pub enum Value {
@@ -180,17 +179,6 @@ impl TryFrom<Value> for Md5 {
             }
             _ => Err(Error::new(TypeMismatch::new(ValueType::String, value))),
         }
-    }
-}
-
-impl TryFrom<&Value> for Sha1 {
-    type Error = Error;
-
-    fn try_from(value: &Value) -> Result<Self> {
-        let mut hasher = sha1::Sha1::new();
-        value.encode(&mut hasher)?;
-        let sha1 = hasher.finalize();
-        Ok(Sha1(sha1.into()))
     }
 }
 

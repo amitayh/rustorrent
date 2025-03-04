@@ -5,9 +5,8 @@ use std::{
 };
 
 use anyhow::{Error, Result, anyhow};
-use rand::RngCore;
 
-use crate::bencoding::value::Value;
+use crate::{bencoding::value::Value, peer::PeerId};
 
 #[derive(Debug, PartialEq)]
 pub struct TrackerResponse {
@@ -66,17 +65,6 @@ impl TryFrom<Value> for Peer {
         let port = value.remove_entry("port")?.try_into()?;
         let address = SocketAddr::new(ip.parse()?, port);
         Ok(Peer { peer_id, address })
-    }
-}
-
-#[derive(PartialEq)]
-pub struct PeerId(pub [u8; 20]);
-
-impl PeerId {
-    pub fn random() -> Self {
-        let mut data = [0; 20];
-        rand::rng().fill_bytes(&mut data);
-        Self(data)
     }
 }
 
