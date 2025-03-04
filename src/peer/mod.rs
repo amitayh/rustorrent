@@ -2,7 +2,7 @@ pub mod message;
 
 use rand::RngCore;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct PeerId(pub [u8; 20]);
 
 impl PeerId {

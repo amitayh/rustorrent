@@ -9,7 +9,7 @@ use tokio::{fs::File, net::TcpListener};
 
 use crate::bencoding::parser::Parser;
 use crate::peer::PeerId;
-use crate::peer::message::Message;
+use crate::peer::message::{Handshake, Message};
 use crate::torrent::Torrent;
 
 mod bencoding;
@@ -72,29 +72,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match TcpStream::connect(peer.address).await {
             Ok(mut stream) => {
                 info!("connected");
-                let mut handshake = Vec::with_capacity(68);
-                handshake.push(19);
-                handshake.extend_from_slice("BitTorrent protocol".as_bytes());
-                handshake.extend_from_slice(&[0; 8]);
-                handshake.extend_from_slice(&torrent.info.info_hash.0);
-                handshake.extend_from_slice(&config.clinet_id.0);
+                let handshake =
+                    Handshake::new(torrent.info.info_hash.clone(), config.clinet_id.clone());
+                stream.writable().await?;
+                handshake.write(&mut stream).await?;
+                info!("sent handshake");
+
+                stream.readable().await?;
+                let handshake = Handshake::read(&mut stream).await?;
+                info!("got handshake {:?}", handshake);
 
                 loop {
-                    let _message = Message::read(&mut stream).await?;
-
-                    stream.writable().await.unwrap();
-                    match stream.try_write(&handshake) {
-                        Ok(n) => {
-                            info!("sent handshake {}", n);
-                            break;
-                        }
-                        Err(ref e) if e.kind() == tokio::io::ErrorKind::WouldBlock => {
-                            continue;
-                        }
-                        Err(_) => {
-                            panic!("wtf");
-                        }
-                    }
+                    stream.readable().await?;
+                    let message = Message::read(&mut stream).await?;
+                    info!("got message {:?}", message);
                 }
             }
             Err(err) => log::warn!("unable to connect to {}: {:?}", peer.address, err),

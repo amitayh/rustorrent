@@ -1,21 +1,82 @@
-use std::io::Error;
-use std::io::ErrorKind;
-use std::io::Result;
+use std::io::{Error, ErrorKind, Result};
 
 use bit_set::BitSet;
-use tokio::io::AsyncRead;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-const ID_CHOKE: u8 = b'0';
-const ID_UNCHOKE: u8 = b'1';
-const ID_INTERESTED: u8 = b'2';
-const ID_NOT_INTERESTED: u8 = b'3';
-const ID_HAVE: u8 = b'4';
-const ID_BITFIELD: u8 = b'5';
-const ID_REQUEST: u8 = b'6';
-const ID_PIECE: u8 = b'7';
-const ID_CANCEL: u8 = b'8';
-const ID_PORT: u8 = b'9';
+use crate::crypto::Sha1;
+use crate::peer::PeerId;
+
+const PROTOCOL: &str = "BitTorrent protocol";
+const ID_CHOKE: u8 = 0;
+const ID_UNCHOKE: u8 = 1;
+const ID_INTERESTED: u8 = 2;
+const ID_NOT_INTERESTED: u8 = 3;
+const ID_HAVE: u8 = 4;
+const ID_BITFIELD: u8 = 5;
+const ID_REQUEST: u8 = 6;
+const ID_PIECE: u8 = 7;
+const ID_CANCEL: u8 = 8;
+const ID_PORT: u8 = 9;
+
+#[derive(Debug, PartialEq)]
+pub struct Handshake {
+    pub protocol: String,
+    pub info_hash: Sha1,
+    pub peer_id: PeerId,
+}
+
+impl Handshake {
+    pub fn new(info_hash: Sha1, peer_id: PeerId) -> Self {
+        Self {
+            protocol: PROTOCOL.to_string(),
+            info_hash,
+            peer_id,
+        }
+    }
+
+    pub async fn read<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
+        let protocol = {
+            let length = stream.read_u8().await? as usize;
+            let mut buf = vec![0; length];
+            stream.read_exact(&mut buf).await?;
+            String::from_utf8(buf).map_err(|err| Error::new(ErrorKind::InvalidData, err))?
+        };
+        {
+            // Skip 8 reserved bytes
+            let mut buf = [0; 8];
+            stream.read_exact(&mut buf).await?;
+        };
+        let info_hash = {
+            let mut buf = [0; 20];
+            stream.read_exact(&mut buf).await?;
+            Sha1(buf)
+        };
+        let peer_id = {
+            let mut buf = [0; 20];
+            stream.read_exact(&mut buf).await?;
+            PeerId(buf)
+        };
+        Ok(Handshake {
+            protocol,
+            info_hash,
+            peer_id,
+        })
+    }
+
+    pub async fn write<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
+        let len = self
+            .protocol
+            .len()
+            .try_into()
+            .expect("protocol string too long");
+        stream.write_u8(len).await?;
+        stream.write_all(self.protocol.as_bytes()).await?;
+        stream.write_all(&[0; 8]).await?;
+        stream.write_all(&self.info_hash.0).await?;
+        stream.write_all(&self.peer_id.0).await?;
+        Ok(())
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum Message {
@@ -108,6 +169,16 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     use super::*;
+
+    #[tokio::test]
+    async fn handshake() {
+        let (mut client, mut server) = tokio::io::duplex(128);
+        let message_written = Handshake::new(Sha1([1; 20]), PeerId([2; 20]));
+        message_written.write(&mut server).await.unwrap();
+
+        let message_read = Handshake::read(&mut client).await.unwrap();
+        assert_eq!(message_read, message_written);
+    }
 
     #[tokio::test]
     async fn keep_alive() {

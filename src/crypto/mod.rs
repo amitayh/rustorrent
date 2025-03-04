@@ -2,7 +2,7 @@ use sha1::Digest;
 
 use crate::bencoding::value::Value;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct Md5(pub [u8; 16]);
 
 impl std::fmt::Debug for Md5 {
@@ -15,7 +15,7 @@ impl std::fmt::Debug for Md5 {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct Sha1(pub [u8; 20]);
 
 impl std::fmt::Debug for Sha1 {
