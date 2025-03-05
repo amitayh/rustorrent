@@ -3,7 +3,7 @@ use std::io::{Error, ErrorKind, Result};
 use bit_set::BitSet;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::codec::{Decoder, Encoder};
+use crate::codec::{AsyncDecoder, AsyncEncoder};
 use crate::crypto::Sha1;
 use crate::peer::PeerId;
 
@@ -36,7 +36,7 @@ impl Handshake {
     }
 }
 
-impl Decoder for Handshake {
+impl AsyncDecoder for Handshake {
     async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
         let protocol = {
             let length = stream.read_u8().await? as usize;
@@ -67,7 +67,7 @@ impl Decoder for Handshake {
     }
 }
 
-impl Encoder for Handshake {
+impl AsyncEncoder for Handshake {
     async fn encode<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
         let len = self
             .protocol
@@ -98,7 +98,7 @@ pub enum Message {
     Port(u16),
 }
 
-impl Decoder for Message {
+impl AsyncDecoder for Message {
     async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
         let length = stream.read_u32().await? as usize;
         if length == 0 {

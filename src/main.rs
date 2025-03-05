@@ -2,13 +2,13 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use log::info;
+use bencoding::value::Value;
+use log::{info, warn};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::{fs::File, net::TcpListener};
 
-use crate::bencoding::parser::Parser;
-use crate::codec::{Decoder, Encoder};
+use crate::codec::{AsyncDecoder, AsyncEncoder};
 use crate::peer::PeerId;
 use crate::peer::message::{Handshake, Message};
 use crate::torrent::Torrent;
@@ -27,9 +27,7 @@ struct Config {
 
 async fn load_torrent(path: &str) -> anyhow::Result<Torrent> {
     let mut file = File::open(path).await?;
-    let mut parser = Parser::new();
-    tokio::io::copy(&mut file, &mut parser).await?;
-    let value = parser.result()?;
+    let value = Value::decode(&mut file).await?;
     Torrent::try_from(value)
 }
 
@@ -47,22 +45,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&address).await?;
     info!("listening on {}", &address);
 
-    let state = Arc::new(Mutex::new(HashSet::new()));
-
     tokio::spawn(async move {
-        while let Ok((_socket, addr)) = listener.accept().await {
+        while let Ok((mut socket, addr)) = listener.accept().await {
             info!("new peer connected {}", addr);
-            {
-                let mut peers = state.lock().await;
-                peers.insert(addr);
-            }
-            // Clone the handle to the hash map.
-            //let db = db.clone();
+            let handshake = Handshake::decode(&mut socket).await?;
+            info!("< got handshake {:?}", handshake);
 
-            //tokio::spawn(async move {
-            //    process(socket, db).await;
-            //});
+            handshake.encode(&mut socket).await?;
+            info!("> sent handshake");
+
+            loop {
+                let message = Message::decode(&mut socket).await?;
+                info!("< got message {:?}", message);
+            }
         }
+        Ok::<(), std::io::Error>(())
     });
 
     let path = std::env::args().nth(1).expect("file must be provided");
@@ -72,22 +69,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         //tokio::spawn(async move {
         info!("connecting to peer {}...", peer.address);
         match TcpStream::connect(peer.address).await {
-            Ok(mut stream) => {
+            Ok(mut socket) => {
                 info!("connected");
                 let handshake =
                     Handshake::new(torrent.info.info_hash.clone(), config.clinet_id.clone());
-                stream.writable().await?;
-                handshake.encode(&mut stream).await?;
-                info!("sent handshake");
+                handshake.encode(&mut socket).await?;
+                info!("> sent handshake");
 
-                stream.readable().await?;
-                let handshake = Handshake::decode(&mut stream).await?;
-                info!("got handshake {:?}", handshake);
+                let handshake = Handshake::decode(&mut socket).await?;
+                info!("< got handshake {:?}", handshake);
+
+                let peer_ids_match = peer
+                    .peer_id
+                    .as_ref()
+                    .map_or(true, |peer_id| peer_id == &handshake.peer_id);
+                if !peer_ids_match {
+                    warn!("peer id mismatch");
+                    // disconnect peer
+                }
 
                 loop {
-                    stream.readable().await?;
-                    let message = Message::decode(&mut stream).await?;
-                    info!("got message {:?}", message);
+                    let message = Message::decode(&mut socket).await?;
+                    info!("< got message {:?}", message);
                 }
             }
             Err(err) => log::warn!("unable to connect to {}: {:?}", peer.address, err),

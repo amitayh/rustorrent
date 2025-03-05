@@ -1,9 +1,9 @@
 use std::io::{Result, Write};
 
-use crate::bencoding::value::Value;
+use crate::{bencoding::value::Value, codec::Encoder};
 
-impl Value {
-    pub fn encode(&self, dest: &mut impl Write) -> Result<()> {
+impl Encoder for Value {
+    fn encode(&self, dest: &mut impl Write) -> Result<()> {
         match self {
             Self::String(string) => encode_string(string, dest),
             Self::Integer(integer) => write!(dest, "i{}e", integer),

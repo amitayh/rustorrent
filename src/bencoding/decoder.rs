@@ -1,16 +1,31 @@
 use std::{
     collections::BTreeMap,
     io::{Error, ErrorKind, Result, Write},
-    pin::Pin,
-    task::{Context, Poll},
 };
 
-use tokio::io::AsyncWrite;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt;
 
 use crate::bencoding::value::Value;
+use crate::codec::AsyncDecoder;
+
+impl AsyncDecoder for Value {
+    async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
+        let mut parser = Parser::new();
+        let mut buf = [0; 1024 * 8];
+        loop {
+            let read = stream.read(&mut buf).await?;
+            if read == 0 {
+                break;
+            }
+            parser.write_all(&buf[0..read])?;
+        }
+        parser.result()
+    }
+}
 
 #[derive(Debug)]
-pub struct Parser {
+struct Parser {
     state: State,
     stack: Vec<StackState>,
     position: usize,
@@ -42,7 +57,7 @@ impl StackState {
 }
 
 impl Parser {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             state: State::Ready,
             stack: Vec::new(),
@@ -166,7 +181,7 @@ impl Parser {
         Ok(())
     }
 
-    pub fn result(self) -> Result<Value> {
+    fn result(self) -> Result<Value> {
         match self.state {
             State::Done(value) => Ok(value),
             _ => Err(Error::new(ErrorKind::UnexpectedEof, "incomplete")),
@@ -184,24 +199,6 @@ impl Write for Parser {
 
     fn flush(&mut self) -> Result<()> {
         Ok(())
-    }
-}
-
-impl AsyncWrite for Parser {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        _: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize>> {
-        Poll::Ready(self.write(buf))
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<()>> {
-        Poll::Ready(self.flush())
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<()>> {
-        Poll::Ready(Ok(()))
     }
 }
 

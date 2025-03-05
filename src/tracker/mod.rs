@@ -1,12 +1,16 @@
-use std::io::Write;
+use std::io::{Error, ErrorKind};
 
 use anyhow::{Result, anyhow};
 use log::{info, warn};
+use tokio_stream::StreamExt;
+use tokio_util::io::StreamReader;
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
+use crate::bencoding::value::Value;
+use crate::codec::AsyncDecoder;
 use crate::tracker::response::TrackerResponse;
-use crate::{Config, bencoding::parser::Parser, torrent::Torrent};
+use crate::{Config, torrent::Torrent};
 
 pub mod response;
 
@@ -57,18 +61,16 @@ pub async fn request(
 ) -> Result<TrackerResponse> {
     let url = request_url(torrent, config, event);
     info!("sending request to tracker: {}", &url);
-    let mut response = reqwest::get(url).await?;
+    let response = reqwest::get(url).await?;
     if !response.status().is_success() {
         warn!("request to tracker failed {}", response.status());
         return Err(anyhow!("server returned status {}", response.status()));
     }
-    let value = {
-        let mut parser = Parser::new();
-        while let Some(chunk) = response.chunk().await? {
-            parser.write_all(&chunk)?;
-        }
-        parser.result()?
-    };
+    let stream = response
+        .bytes_stream()
+        .map(|bytes| bytes.map_err(|err| Error::new(ErrorKind::Other, err)));
+    let mut reader = StreamReader::new(stream);
+    let value = Value::decode(&mut reader).await?;
     let result = TrackerResponse::try_from(value)?;
     info!(
         "request to tracker succeeded. got {} peers",
