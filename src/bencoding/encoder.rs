@@ -35,42 +35,44 @@ fn encode_string(string: &[u8], dest: &mut impl Write) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn integer() {
-        let value = Value::Integer(42);
+    fn encode(value: Value) -> Vec<u8> {
         let mut buffer = Vec::new();
         value.encode(&mut buffer).expect("unable to encode");
+        buffer
+    }
+
+    #[test]
+    fn integer() {
+        let buffer = encode(Value::Integer(42));
 
         assert_eq!(buffer, "i42e".as_bytes());
     }
 
     #[test]
     fn string() {
-        let value = Value::string("foo");
-        let mut buffer = Vec::new();
-        value.encode(&mut buffer).expect("unable to encode");
+        let buffer = encode(Value::string("foo"));
 
         assert_eq!(buffer, "3:foo".as_bytes());
     }
 
     #[test]
     fn list() {
-        let value = Value::list()
-            .with_value(Value::string("foo"))
-            .with_value(Value::string("bar"));
-        let mut buffer = Vec::new();
-        value.encode(&mut buffer).expect("unable to encode");
+        let buffer = encode(
+            Value::list()
+                .with_value(Value::string("foo"))
+                .with_value(Value::string("bar")),
+        );
 
         assert_eq!(buffer, "l3:foo3:bare".as_bytes());
     }
 
     #[test]
     fn dictionary() {
-        let value = Value::dictionary()
-            .with_entry("foo", Value::Integer(1))
-            .with_entry("bar", Value::Integer(2));
-        let mut buffer = Vec::new();
-        value.encode(&mut buffer).expect("unable to encode");
+        let buffer = encode(
+            Value::dictionary()
+                .with_entry("foo", Value::Integer(1))
+                .with_entry("bar", Value::Integer(2)),
+        );
 
         // Dictionary keys are sorted
         assert_eq!(buffer, "d3:bari2e3:fooi1ee".as_bytes());

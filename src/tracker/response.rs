@@ -14,7 +14,7 @@ pub struct TrackerResponse {
     pub incomplete: usize,
     pub interval: Duration,
     pub min_interval: Option<Duration>,
-    pub peers: Vec<Peer>,
+    pub peers: Vec<PeerInfo>,
 }
 
 impl TryFrom<Value> for TrackerResponse {
@@ -32,7 +32,7 @@ impl TryFrom<Value> for TrackerResponse {
             let peers: Vec<Value> = value.remove_entry("peers")?.try_into()?;
             let mut result = Vec::with_capacity(peers.len());
             for peer in peers {
-                let peer = Peer::try_from(peer)?;
+                let peer = PeerInfo::try_from(peer)?;
                 result.push(peer);
             }
             result
@@ -48,12 +48,12 @@ impl TryFrom<Value> for TrackerResponse {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Peer {
+pub struct PeerInfo {
     pub peer_id: Option<PeerId>,
     pub address: SocketAddr,
 }
 
-impl TryFrom<Value> for Peer {
+impl TryFrom<Value> for PeerInfo {
     type Error = Error;
 
     fn try_from(mut value: Value) -> Result<Self> {
@@ -64,7 +64,7 @@ impl TryFrom<Value> for Peer {
         let ip: String = value.remove_entry("ip")?.try_into()?;
         let port = value.remove_entry("port")?.try_into()?;
         let address = SocketAddr::new(ip.parse()?, port);
-        Ok(Peer { peer_id, address })
+        Ok(PeerInfo { peer_id, address })
     }
 }
 
@@ -118,7 +118,7 @@ mod tests {
                 incomplete: 34,
                 interval: Duration::from_secs(1800),
                 min_interval: None,
-                peers: vec![Peer {
+                peers: vec![PeerInfo {
                     peer_id: Some(PeerId(peer_id.as_bytes().try_into().unwrap())),
                     address: "12.34.56.78:51413".parse().unwrap()
                 }]

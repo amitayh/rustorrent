@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use bencoding::value::Value;
 use log::{info, warn};
+use peer::Peer;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::{fs::File, net::TcpListener};
@@ -39,64 +40,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         clinet_id: PeerId::random(),
         port: 6881,
     };
+    let path = std::env::args().nth(1).expect("file must be provided");
+    let torrent = load_torrent(&path).await?;
+    let handshake = Arc::new(Handshake::new(
+        torrent.info.info_hash.clone(),
+        config.clinet_id.clone(),
+    ));
 
     let address = SocketAddr::new("::".parse().unwrap(), config.port);
     info!("starting server...");
     let listener = TcpListener::bind(&address).await?;
     info!("listening on {}", &address);
 
+    let h1 = Arc::clone(&handshake);
     tokio::spawn(async move {
-        while let Ok((mut socket, addr)) = listener.accept().await {
+        while let Ok((socket, addr)) = listener.accept().await {
             info!("new peer connected {}", addr);
-            let handshake = Handshake::decode(&mut socket).await?;
-            info!("< got handshake {:?}", handshake);
-
-            handshake.encode(&mut socket).await?;
-            info!("> sent handshake");
-
-            loop {
-                let message = Message::decode(&mut socket).await?;
-                info!("< got message {:?}", message);
-            }
+            let mut peer = Peer::new(socket);
+            peer.wait_for_handshake().await?;
+            peer.send_handshake(&h1).await?;
+            tokio::spawn(async move {
+                peer.handle().await.unwrap();
+            });
         }
         Ok::<(), std::io::Error>(())
     });
 
-    let path = std::env::args().nth(1).expect("file must be provided");
-    let torrent = load_torrent(&path).await?;
     let response = tracker::request(&torrent, &config, None).await?;
-    for peer in response.peers {
-        //tokio::spawn(async move {
-        info!("connecting to peer {}...", peer.address);
-        match TcpStream::connect(peer.address).await {
-            Ok(mut socket) => {
-                info!("connected");
-                let handshake =
-                    Handshake::new(torrent.info.info_hash.clone(), config.clinet_id.clone());
-                handshake.encode(&mut socket).await?;
-                info!("> sent handshake");
+    for peer_info in response.peers {
+        let h2 = Arc::clone(&handshake);
+        tokio::spawn(async move {
+            info!("connecting to peer {}...", peer_info.address);
+            match TcpStream::connect(peer_info.address).await {
+                Ok(socket) => {
+                    info!("connected");
+                    let mut peer = Peer::new(socket);
+                    peer.send_handshake(&h2).await.unwrap();
+                    peer.wait_for_handshake().await.unwrap();
 
-                let handshake = Handshake::decode(&mut socket).await?;
-                info!("< got handshake {:?}", handshake);
+                    let peer_ids_match = peer_info
+                        .peer_id
+                        .as_ref()
+                        .map_or(true, |peer_id| peer_id == &h2.peer_id);
+                    if !peer_ids_match {
+                        warn!("peer id mismatch");
+                        // disconnect peer
+                    }
 
-                let peer_ids_match = peer
-                    .peer_id
-                    .as_ref()
-                    .map_or(true, |peer_id| peer_id == &handshake.peer_id);
-                if !peer_ids_match {
-                    warn!("peer id mismatch");
-                    // disconnect peer
+                    tokio::spawn(async move {
+                        peer.handle().await.unwrap();
+                    });
                 }
-
-                loop {
-                    let message = Message::decode(&mut socket).await?;
-                    info!("< got message {:?}", message);
-                }
+                Err(err) => log::warn!("unable to connect to {}: {:?}", peer_info.address, err),
             }
-            Err(err) => log::warn!("unable to connect to {}: {:?}", peer.address, err),
-        }
-        //});
+        });
     }
+
+    tokio::signal::ctrl_c().await?;
 
     Ok(())
 }

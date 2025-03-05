@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    io::{Error, ErrorKind, Result, Write},
+    io::{Error, ErrorKind, Result},
 };
 
 use tokio::io::AsyncRead;
@@ -9,16 +9,20 @@ use tokio::io::AsyncReadExt;
 use crate::bencoding::value::Value;
 use crate::codec::AsyncDecoder;
 
+const BUFFER_SIZE: usize = 1024 * 8;
+
 impl AsyncDecoder for Value {
     async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
         let mut parser = Parser::new();
-        let mut buf = [0; 1024 * 8];
+        let mut buf = [0; BUFFER_SIZE];
         loop {
             let read = stream.read(&mut buf).await?;
             if read == 0 {
                 break;
             }
-            parser.write_all(&buf[0..read])?;
+            for byte in &buf[0..read] {
+                parser.consume(*byte)?;
+            }
         }
         parser.result()
     }
@@ -189,99 +193,82 @@ impl Parser {
     }
 }
 
-impl Write for Parser {
-    fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        for byte in buf {
-            self.consume(*byte)?;
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::Cursor;
+
+    use tokio::io::BufReader;
 
     use super::*;
 
-    #[test]
-    fn parse_error() {
-        let mut parser = Parser::new();
-
-        assert!(parser.write(b"foo").is_err());
+    async fn decode<const N: usize>(input: &[u8; N]) -> Result<Value> {
+        let cursor = Cursor::new(input);
+        let mut buf = BufReader::new(cursor);
+        Value::decode(&mut buf).await
     }
 
-    #[test]
-    fn string() {
-        let mut parser = Parser::new();
-        let bytes_written = parser.write(b"3:foo").expect("unable to write");
+    #[tokio::test]
+    async fn parse_error() {
+        let result = decode(b"foo").await;
 
-        assert_eq!(bytes_written, 5);
-        assert_eq!(parser.result().unwrap(), Value::string("foo"));
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn positive_integer() {
-        let mut parser = Parser::new();
-        let bytes_written = parser.write(b"i3e").expect("unable to write");
+    #[tokio::test]
+    async fn string() {
+        let result = decode(b"3:foo").await;
 
-        assert_eq!(bytes_written, 3);
-        assert_eq!(parser.result().unwrap(), Value::Integer(3));
+        assert_eq!(result.unwrap(), Value::string("foo"));
     }
 
-    #[test]
-    fn multi_digit_integer() {
-        let mut parser = Parser::new();
-        let bytes_written = parser.write(b"i42e").expect("unable to write");
+    #[tokio::test]
+    async fn positive_integer() {
+        let result = decode(b"i3e").await;
 
-        assert_eq!(bytes_written, 4);
-        assert_eq!(parser.result().unwrap(), Value::Integer(42));
+        assert_eq!(result.unwrap(), Value::Integer(3));
     }
 
-    #[test]
-    fn negative_integer() {
-        let mut parser = Parser::new();
-        let bytes_written = parser.write(b"i-1e").expect("unable to write");
+    #[tokio::test]
+    async fn multi_digit_integer() {
+        let result = decode(b"i42e").await;
 
-        assert_eq!(bytes_written, 4);
-        assert_eq!(parser.result().unwrap(), Value::Integer(-1));
+        assert_eq!(result.unwrap(), Value::Integer(42));
     }
 
-    #[test]
-    fn fail_for_minus_zero() {
-        let mut parser = Parser::new();
+    #[tokio::test]
+    async fn negative_integer() {
+        let result = decode(b"i-1e").await;
 
-        assert!(parser.write(b"i-0e").is_err());
+        assert_eq!(result.unwrap(), Value::Integer(-1));
     }
 
-    #[test]
-    fn fail_for_leading_zero() {
-        let mut parser = Parser::new();
+    #[tokio::test]
+    async fn fail_for_minus_zero() {
+        let result = decode(b"i-0e").await;
 
-        assert!(parser.write(b"i03e").is_err());
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn empty_list() {
-        let mut parser = Parser::new();
-        let bytes_written = parser.write(b"le").expect("unable to write");
+    #[tokio::test]
+    async fn fail_for_leading_zero() {
+        let result = decode(b"i03e").await;
 
-        assert_eq!(bytes_written, 2);
-        assert_eq!(parser.result().unwrap(), Value::list());
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn non_empty_list() {
-        let mut parser = Parser::new();
-        let bytes_written = parser.write(b"li1ei2ei3ee").expect("unable to write");
+    #[tokio::test]
+    async fn empty_list() {
+        let result = decode(b"le").await;
 
-        assert_eq!(bytes_written, 11);
+        assert_eq!(result.unwrap(), Value::list());
+    }
+
+    #[tokio::test]
+    async fn non_empty_list() {
+        let result = decode(b"li1ei2ei3ee").await;
+
         assert_eq!(
-            parser.result().unwrap(),
+            result.unwrap(),
             Value::list()
                 .with_value(Value::Integer(1))
                 .with_value(Value::Integer(2))
@@ -289,14 +276,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nested_list() {
-        let mut parser = Parser::new();
-        let bytes_written = parser.write(b"li1eli2ei3eee").expect("unable to write");
+    #[tokio::test]
+    async fn nested_list() {
+        let result = decode(b"li1eli2ei3eee").await;
 
-        assert_eq!(bytes_written, 13);
         assert_eq!(
-            parser.result().unwrap(),
+            result.unwrap(),
             Value::list().with_value(Value::Integer(1)).with_value(
                 Value::list()
                     .with_value(Value::Integer(2))
@@ -305,62 +290,50 @@ mod tests {
         );
     }
 
-    #[test]
-    fn heterogeneous_list() {
-        let mut parser = Parser::new();
-        let bytes_written = parser.write(b"l3:fooi42ee").expect("unable to write");
+    #[tokio::test]
+    async fn heterogeneous_list() {
+        let result = decode(b"l3:fooi42ee").await;
 
-        assert_eq!(bytes_written, 11);
         assert_eq!(
-            parser.result().unwrap(),
+            result.unwrap(),
             Value::list()
                 .with_value(Value::string("foo"))
                 .with_value(Value::Integer(42))
         );
     }
 
-    #[test]
-    fn empty_dictionary() {
-        let mut parser = Parser::new();
-        let bytes_written = parser.write(b"de").expect("unable to write");
+    #[tokio::test]
+    async fn empty_dictionary() {
+        let result = decode(b"de").await;
 
-        assert_eq!(bytes_written, 2);
-        assert_eq!(parser.result().unwrap(), Value::dictionary());
+        assert_eq!(result.unwrap(), Value::dictionary());
     }
 
-    #[test]
-    fn non_empty_dictionary() {
-        let mut parser = Parser::new();
-        let bytes_written = parser
-            .write(b"d3:cow3:moo4:spam4:eggse")
-            .expect("unable to write");
+    #[tokio::test]
+    async fn non_empty_dictionary() {
+        let result = decode(b"d3:cow3:moo4:spam4:eggse").await;
 
-        assert_eq!(bytes_written, 24);
         assert_eq!(
-            parser.result().unwrap(),
+            result.unwrap(),
             Value::dictionary()
                 .with_entry("cow", Value::string("moo"))
                 .with_entry("spam", Value::string("eggs"))
         );
     }
 
-    #[test]
-    fn fail_for_non_string_keys() {
-        let mut parser = Parser::new();
+    #[tokio::test]
+    async fn fail_for_non_string_keys() {
+        let result = decode(b"di1ei2ee").await;
 
-        assert!(parser.write(b"di1ei2ee").is_err());
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn deeply_nested_structure() {
-        let mut parser = Parser::new();
-        let bytes_written = parser
-            .write(b"d3:food3:barl3:bazee3:quxi42ee")
-            .expect("unable to write");
+    #[tokio::test]
+    async fn deeply_nested_structure() {
+        let result = decode(b"d3:food3:barl3:bazee3:quxi42ee").await;
 
-        assert_eq!(bytes_written, 30);
         assert_eq!(
-            parser.result().unwrap(),
+            result.unwrap(),
             Value::dictionary()
                 .with_entry(
                     "foo",
@@ -371,27 +344,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn incremental_parsing() {
-        let mut parser = Parser::new();
-        parser.write(b"l3:fo").expect("unable to write");
-        parser.write(b"o3:ba").expect("unable to write");
-        parser.write(b"re").expect("unable to write");
+    #[tokio::test]
+    async fn ignore_trailing_whitespace() {
+        let result = decode(b"i42e ").await;
 
-        assert_eq!(
-            parser.result().unwrap(),
-            Value::list()
-                .with_value(Value::string("foo"))
-                .with_value(Value::string("bar"))
-        );
-    }
-
-    #[test]
-    fn ignore_trailing_whitespace() {
-        let mut parser = Parser::new();
-        let bytes_written = parser.write(b"i42e ").expect("unable to write");
-
-        assert_eq!(bytes_written, 5);
-        assert_eq!(parser.result().unwrap(), Value::Integer(42));
+        assert_eq!(result.unwrap(), Value::Integer(42));
     }
 }

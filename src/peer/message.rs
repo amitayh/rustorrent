@@ -39,8 +39,8 @@ impl Handshake {
 impl AsyncDecoder for Handshake {
     async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
         let protocol = {
-            let length = stream.read_u8().await? as usize;
-            let mut buf = vec![0; length];
+            let length = stream.read_u8().await?;
+            let mut buf = vec![0; length as usize];
             stream.read_exact(&mut buf).await?;
             String::from_utf8(buf).map_err(|err| Error::new(ErrorKind::InvalidData, err))?
         };
@@ -100,7 +100,7 @@ pub enum Message {
 
 impl AsyncDecoder for Message {
     async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
-        let length = stream.read_u32().await? as usize;
+        let length = stream.read_u32().await?;
         if length == 0 {
             return Ok(Self::KeepAlive);
         }
@@ -115,26 +115,26 @@ impl AsyncDecoder for Message {
                 Ok(Self::Have { piece })
             }
             (ID_BITFIELD, 1..) => {
-                let mut buf = vec![0; length - 1];
+                let mut buf = vec![0; (length as usize) - 1];
                 stream.read_exact(&mut buf).await?;
                 let bitset = BitSet::from_bytes(&buf);
                 Ok(Self::Bitfield(bitset))
             }
             (ID_REQUEST, 13) => {
-                let block = Block::read(stream).await?;
+                let block = Block::decode(stream).await?;
                 Ok(Self::Request(block))
             }
             (ID_PIECE, 9..) => {
-                let piece_index = stream.read_u32().await? as usize;
-                let offset = stream.read_u32().await? as usize;
+                let piece = stream.read_u32().await?;
+                let offset = stream.read_u32().await?;
                 Ok(Self::Piece(Block {
-                    piece: piece_index,
+                    piece,
                     offset,
                     length: length - 9,
                 }))
             }
             (ID_CANCEL, 13) => {
-                let block = Block::read(stream).await?;
+                let block = Block::decode(stream).await?;
                 Ok(Self::Cancel(block))
             }
             (ID_PORT, 3) => {
@@ -149,18 +149,75 @@ impl AsyncDecoder for Message {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct Block {
-    pub piece: usize,
-    pub offset: usize,
-    pub length: usize,
+impl AsyncEncoder for Message {
+    async fn encode<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
+        match self {
+            Self::KeepAlive => stream.write_u32(0).await?,
+            Self::Choke => {
+                stream.write_u32(1).await?;
+                stream.write_u8(ID_CHOKE).await?;
+            }
+            Self::Unchoke => {
+                stream.write_u32(1).await?;
+                stream.write_u8(ID_UNCHOKE).await?;
+            }
+            Self::Interested => {
+                stream.write_u32(1).await?;
+                stream.write_u8(ID_INTERESTED).await?;
+            }
+            Self::NotInterested => {
+                stream.write_u32(1).await?;
+                stream.write_u8(ID_NOT_INTERESTED).await?;
+            }
+            Self::Have { piece } => {
+                stream.write_u32(5).await?;
+                stream.write_u8(ID_HAVE).await?;
+                stream.write_u32(*piece as u32).await?;
+            }
+            Self::Bitfield(bitset) => {
+                let bytes = bitset.clone().into_bit_vec().to_bytes();
+                stream.write_u32(1 + (bytes.len() as u32)).await?;
+                stream.write_u8(ID_BITFIELD).await?;
+                stream.write_all(&bytes).await?;
+            }
+            Self::Request(block) => {
+                stream.write_u32(13).await?;
+                stream.write_u8(ID_REQUEST).await?;
+                block.encode(stream).await?;
+            }
+            Self::Piece(block) => {
+                stream.write_u32(9 + block.length).await?;
+                stream.write_u8(ID_PIECE).await?;
+                stream.write_u32(block.piece).await?;
+                stream.write_u32(block.offset).await?;
+            }
+            Self::Cancel(block) => {
+                stream.write_u32(13).await?;
+                stream.write_u8(ID_CANCEL).await?;
+                block.encode(stream).await?;
+            }
+            Self::Port(port) => {
+                stream.write_u32(3).await?;
+                stream.write_u8(ID_PORT).await?;
+                stream.write_u16(*port).await?;
+            }
+        }
+        Ok(())
+    }
 }
 
-impl Block {
-    async fn read<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Block> {
-        let piece = stream.read_u32().await? as usize;
-        let offset = stream.read_u32().await? as usize;
-        let length = stream.read_u32().await? as usize;
+#[derive(Debug, PartialEq)]
+pub struct Block {
+    pub piece: u32,
+    pub offset: u32,
+    pub length: u32,
+}
+
+impl AsyncDecoder for Block {
+    async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
+        let piece = stream.read_u32().await?;
+        let offset = stream.read_u32().await?;
+        let length = stream.read_u32().await?;
         Ok(Block {
             piece,
             offset,
@@ -169,168 +226,101 @@ impl Block {
     }
 }
 
+impl AsyncEncoder for Block {
+    async fn encode<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
+        stream.write_u32(self.piece).await?;
+        stream.write_u32(self.offset).await?;
+        stream.write_u32(self.length).await?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use tokio::io::AsyncWriteExt;
+    use std::fmt::Debug;
 
     use super::*;
 
+    async fn verify_encode_decode<T: AsyncEncoder + AsyncDecoder + PartialEq + Debug>(message: T) {
+        let (mut client, mut server) = tokio::io::duplex(128);
+        message.encode(&mut server).await.unwrap();
+
+        let message_read = T::decode(&mut client).await.unwrap();
+        assert_eq!(message, message_read);
+    }
+
     #[tokio::test]
     async fn handshake() {
-        let (mut client, mut server) = tokio::io::duplex(128);
-        let message_written = Handshake::new(Sha1([1; 20]), PeerId([2; 20]));
-        message_written.encode(&mut server).await.unwrap();
-
-        let message_read = Handshake::decode(&mut client).await.unwrap();
-        assert_eq!(message_read, message_written);
+        verify_encode_decode(Handshake::new(Sha1([1; 20]), PeerId([2; 20]))).await;
     }
 
     #[tokio::test]
     async fn keep_alive() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(0).await.unwrap(); // length
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(message, Message::KeepAlive);
+        verify_encode_decode(Message::KeepAlive).await;
     }
 
     #[tokio::test]
     async fn choke() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(1).await.unwrap(); // length
-        server.write_u8(ID_CHOKE).await.unwrap(); // id
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(message, Message::Choke);
+        verify_encode_decode(Message::Choke).await;
     }
 
     #[tokio::test]
     async fn unchoke() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(1).await.unwrap(); // length
-        server.write_u8(ID_UNCHOKE).await.unwrap(); // id
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(message, Message::Unchoke);
+        verify_encode_decode(Message::Unchoke).await;
     }
 
     #[tokio::test]
     async fn interested() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(1).await.unwrap(); // length
-        server.write_u8(ID_INTERESTED).await.unwrap(); // id
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(message, Message::Interested);
+        verify_encode_decode(Message::Interested).await;
     }
 
     #[tokio::test]
     async fn not_interested() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(1).await.unwrap(); // length
-        server.write_u8(ID_NOT_INTERESTED).await.unwrap(); // id
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(message, Message::NotInterested);
+        verify_encode_decode(Message::NotInterested).await;
     }
 
     #[tokio::test]
     async fn have() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(5).await.unwrap(); // length
-        server.write_u8(ID_HAVE).await.unwrap(); // id
-        server.write_u32(1234).await.unwrap(); // piece index
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(message, Message::Have { piece: 1234 });
+        verify_encode_decode(Message::Have { piece: 1234 }).await;
     }
 
     #[tokio::test]
     async fn bitfield() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(2).await.unwrap(); // length
-        server.write_u8(ID_BITFIELD).await.unwrap(); // id
-        server.write_u8(0b11010000).await.unwrap(); // bit mask
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(
-            message,
-            Message::Bitfield(BitSet::from_bytes(&[0b11010000]))
-        );
+        verify_encode_decode(Message::Bitfield(BitSet::from_bytes(&[0b11010000]))).await;
     }
 
     #[tokio::test]
     async fn request() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(13).await.unwrap(); // length
-        server.write_u8(ID_REQUEST).await.unwrap(); // id
-        server.write_u32(1).await.unwrap(); // index
-        server.write_u32(2).await.unwrap(); // begin
-        server.write_u32(3).await.unwrap(); // length
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(
-            message,
-            Message::Request(Block {
-                piece: 1,
-                offset: 2,
-                length: 3
-            })
-        );
+        verify_encode_decode(Message::Request(Block {
+            piece: 1,
+            offset: 2,
+            length: 3,
+        }))
+        .await;
     }
 
     #[tokio::test]
     async fn piece() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(14).await.unwrap(); // length
-        server.write_u8(ID_PIECE).await.unwrap(); // id
-        server.write_u32(1).await.unwrap(); // index
-        server.write_u32(2).await.unwrap(); // begin
-        server.write_all("hello".as_bytes()).await.unwrap(); // data
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(
-            message,
-            Message::Piece(Block {
-                piece: 1,
-                offset: 2,
-                length: 5
-            })
-        );
-
-        let mut buf = [0; 5];
-        client.read_exact(&mut buf).await.unwrap();
-        assert_eq!(&buf, "hello".as_bytes());
+        verify_encode_decode(Message::Piece(Block {
+            piece: 1,
+            offset: 2,
+            length: 5,
+        }))
+        .await;
     }
 
     #[tokio::test]
     async fn cancel() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(13).await.unwrap(); // length
-        server.write_u8(ID_CANCEL).await.unwrap(); // id
-        server.write_u32(1).await.unwrap(); // index
-        server.write_u32(2).await.unwrap(); // begin
-        server.write_u32(3).await.unwrap(); // length
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(
-            message,
-            Message::Cancel(Block {
-                piece: 1,
-                offset: 2,
-                length: 3
-            })
-        );
+        verify_encode_decode(Message::Cancel(Block {
+            piece: 1,
+            offset: 2,
+            length: 3,
+        }))
+        .await;
     }
 
     #[tokio::test]
     async fn port() {
-        let (mut client, mut server) = tokio::io::duplex(64);
-        server.write_u32(3).await.unwrap(); // length
-        server.write_u8(ID_PORT).await.unwrap(); // id
-        server.write_u16(1234).await.unwrap(); // port
-
-        let message = Message::decode(&mut client).await.unwrap();
-        assert_eq!(message, Message::Port(1234));
+        verify_encode_decode(Message::Port(1234)).await;
     }
 }
