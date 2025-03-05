@@ -8,11 +8,13 @@ use tokio::sync::Mutex;
 use tokio::{fs::File, net::TcpListener};
 
 use crate::bencoding::parser::Parser;
+use crate::codec::{Decoder, Encoder};
 use crate::peer::PeerId;
 use crate::peer::message::{Handshake, Message};
 use crate::torrent::Torrent;
 
 mod bencoding;
+mod codec;
 mod crypto;
 mod peer;
 mod torrent;
@@ -48,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(Mutex::new(HashSet::new()));
 
     tokio::spawn(async move {
-        while let Ok((_socker, addr)) = listener.accept().await {
+        while let Ok((_socket, addr)) = listener.accept().await {
             info!("new peer connected {}", addr);
             {
                 let mut peers = state.lock().await;
@@ -75,16 +77,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let handshake =
                     Handshake::new(torrent.info.info_hash.clone(), config.clinet_id.clone());
                 stream.writable().await?;
-                handshake.write(&mut stream).await?;
+                handshake.encode(&mut stream).await?;
                 info!("sent handshake");
 
                 stream.readable().await?;
-                let handshake = Handshake::read(&mut stream).await?;
+                let handshake = Handshake::decode(&mut stream).await?;
                 info!("got handshake {:?}", handshake);
 
                 loop {
                     stream.readable().await?;
-                    let message = Message::read(&mut stream).await?;
+                    let message = Message::decode(&mut stream).await?;
                     info!("got message {:?}", message);
                 }
             }

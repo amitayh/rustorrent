@@ -3,6 +3,7 @@ use std::io::{Error, ErrorKind, Result};
 use bit_set::BitSet;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::codec::{Decoder, Encoder};
 use crate::crypto::Sha1;
 use crate::peer::PeerId;
 
@@ -33,8 +34,10 @@ impl Handshake {
             peer_id,
         }
     }
+}
 
-    pub async fn read<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
+impl Decoder for Handshake {
+    async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
         let protocol = {
             let length = stream.read_u8().await? as usize;
             let mut buf = vec![0; length];
@@ -62,8 +65,10 @@ impl Handshake {
             peer_id,
         })
     }
+}
 
-    pub async fn write<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
+impl Encoder for Handshake {
+    async fn encode<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
         let len = self
             .protocol
             .len()
@@ -93,8 +98,8 @@ pub enum Message {
     Port(u16),
 }
 
-impl Message {
-    pub async fn read<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
+impl Decoder for Message {
+    async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
         let length = stream.read_u32().await? as usize;
         if length == 0 {
             return Ok(Self::KeepAlive);
@@ -174,9 +179,9 @@ mod tests {
     async fn handshake() {
         let (mut client, mut server) = tokio::io::duplex(128);
         let message_written = Handshake::new(Sha1([1; 20]), PeerId([2; 20]));
-        message_written.write(&mut server).await.unwrap();
+        message_written.encode(&mut server).await.unwrap();
 
-        let message_read = Handshake::read(&mut client).await.unwrap();
+        let message_read = Handshake::decode(&mut client).await.unwrap();
         assert_eq!(message_read, message_written);
     }
 
@@ -185,7 +190,7 @@ mod tests {
         let (mut client, mut server) = tokio::io::duplex(64);
         server.write_u32(0).await.unwrap(); // length
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(message, Message::KeepAlive);
     }
 
@@ -195,7 +200,7 @@ mod tests {
         server.write_u32(1).await.unwrap(); // length
         server.write_u8(ID_CHOKE).await.unwrap(); // id
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(message, Message::Choke);
     }
 
@@ -205,7 +210,7 @@ mod tests {
         server.write_u32(1).await.unwrap(); // length
         server.write_u8(ID_UNCHOKE).await.unwrap(); // id
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(message, Message::Unchoke);
     }
 
@@ -215,7 +220,7 @@ mod tests {
         server.write_u32(1).await.unwrap(); // length
         server.write_u8(ID_INTERESTED).await.unwrap(); // id
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(message, Message::Interested);
     }
 
@@ -225,7 +230,7 @@ mod tests {
         server.write_u32(1).await.unwrap(); // length
         server.write_u8(ID_NOT_INTERESTED).await.unwrap(); // id
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(message, Message::NotInterested);
     }
 
@@ -236,7 +241,7 @@ mod tests {
         server.write_u8(ID_HAVE).await.unwrap(); // id
         server.write_u32(1234).await.unwrap(); // piece index
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(message, Message::Have { piece: 1234 });
     }
 
@@ -247,7 +252,7 @@ mod tests {
         server.write_u8(ID_BITFIELD).await.unwrap(); // id
         server.write_u8(0b11010000).await.unwrap(); // bit mask
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(
             message,
             Message::Bitfield(BitSet::from_bytes(&[0b11010000]))
@@ -263,7 +268,7 @@ mod tests {
         server.write_u32(2).await.unwrap(); // begin
         server.write_u32(3).await.unwrap(); // length
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(
             message,
             Message::Request(Block {
@@ -283,7 +288,7 @@ mod tests {
         server.write_u32(2).await.unwrap(); // begin
         server.write_all("hello".as_bytes()).await.unwrap(); // data
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(
             message,
             Message::Piece(Block {
@@ -307,7 +312,7 @@ mod tests {
         server.write_u32(2).await.unwrap(); // begin
         server.write_u32(3).await.unwrap(); // length
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(
             message,
             Message::Cancel(Block {
@@ -325,7 +330,7 @@ mod tests {
         server.write_u8(ID_PORT).await.unwrap(); // id
         server.write_u16(1234).await.unwrap(); // port
 
-        let message = Message::read(&mut client).await.unwrap();
+        let message = Message::decode(&mut client).await.unwrap();
         assert_eq!(message, Message::Port(1234));
     }
 }
