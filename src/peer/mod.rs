@@ -1,5 +1,6 @@
 pub mod message;
 
+use std::collections::HashSet;
 use std::io::Result;
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -72,5 +73,40 @@ impl Peer {
             let message = Message::decode(&mut self.socket).await?;
             info!("< got message {:?}", message);
         }
+    }
+}
+
+struct PeerSet {
+    peer_to_piece: HashMap<SocketAddr, PieceInfo>,
+    piece_to_peer: HashMap<usize, HashSet<SocketAddr>>,
+}
+
+impl PeerSet {
+    fn new() -> Self {
+        PeerSet {
+            peer_to_piece: HashMap::new(),
+            piece_to_peer: HashMap::new(),
+        }
+    }
+
+    fn have(&mut self, peer: SocketAddr, piece: usize) {
+        //
+    }
+}
+
+struct PieceInfo {
+    downloading: Option<SocketAddr>,
+    have: HashSet<SocketAddr>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn have() {
+        let mut peer_set = PeerSet::new();
+        let peer = "0.0.0.1:6881".parse().unwrap();
+        peer_set.have(peer, 1234);
     }
 }

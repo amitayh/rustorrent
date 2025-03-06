@@ -11,6 +11,8 @@ use crate::{
 
 // https://wiki.theory.org/BitTorrentSpecification#Byte_Strings
 
+const SHA1_LEN: usize = 20;
+
 #[derive(Debug, PartialEq)]
 pub struct Torrent {
     pub announce: Url,
@@ -38,16 +40,16 @@ pub struct Info {
 
 impl Info {
     fn build_pieces(pieces: &[u8]) -> Result<Vec<Sha1>> {
-        if pieces.len() % 20 != 0 {
+        if pieces.len() % SHA1_LEN != 0 {
             return Err(anyhow!(
-                "invalid length {}. must be a multiple of 20",
+                "invalid length {}. must be a multiple of SHA1_LEN",
                 pieces.len()
             ));
         }
-        let mut all = Vec::with_capacity(pieces.len() / 20);
-        for i in (0..pieces.len()).step_by(20) {
-            let mut sha = [0; 20];
-            sha.copy_from_slice(&pieces[i..(i + 20)]);
+        let mut all = Vec::with_capacity(pieces.len() / SHA1_LEN);
+        for i in (0..pieces.len()).step_by(SHA1_LEN) {
+            let mut sha = [0; SHA1_LEN];
+            sha.copy_from_slice(&pieces[i..(i + SHA1_LEN)]);
             all.push(Sha1(sha));
         }
         Ok(all)

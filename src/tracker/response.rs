@@ -1,12 +1,14 @@
 use std::{
     fmt::{Debug, Formatter},
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
 
 use anyhow::{Error, Result, anyhow};
 
 use crate::{bencoding::value::Value, peer::PeerId};
+
+const ADDR_LEN: usize = 6;
 
 #[derive(Debug, PartialEq)]
 pub struct TrackerResponse {
@@ -28,15 +30,26 @@ impl TryFrom<Value> for TrackerResponse {
             Some(value) => Some(value.try_into()?),
             None => None,
         };
-        let peers = {
-            let peers: Vec<Value> = value.remove_entry("peers")?.try_into()?;
-            let mut result = Vec::with_capacity(peers.len());
-            for peer in peers {
-                let peer = PeerInfo::try_from(peer)?;
-                result.push(peer);
+        let peers = match value.remove_entry("peers")? {
+            Value::String(peers) if peers.len() % ADDR_LEN == 0 => {
+                let mut result = Vec::with_capacity(peers.len() / ADDR_LEN);
+                for i in (0..peers.len()).step_by(ADDR_LEN) {
+                    let mut bytes = [0; ADDR_LEN];
+                    bytes.copy_from_slice(&peers[i..(i + ADDR_LEN)]);
+                    result.push(PeerInfo::from(bytes));
+                }
+                Ok(result)
             }
-            result
-        };
+            Value::List(peers) => {
+                let mut result = Vec::with_capacity(peers.len());
+                for peer in peers {
+                    let peer = PeerInfo::try_from(peer)?;
+                    result.push(peer);
+                }
+                Ok(result)
+            }
+            value => Err(anyhow!("unexpected value for peers: {:?}", value)),
+        }?;
         Ok(TrackerResponse {
             complete,
             incomplete,
@@ -65,6 +78,22 @@ impl TryFrom<Value> for PeerInfo {
         let port = value.remove_entry("port")?.try_into()?;
         let address = SocketAddr::new(ip.parse()?, port);
         Ok(PeerInfo { peer_id, address })
+    }
+}
+
+impl From<[u8; 6]> for PeerInfo {
+    fn from(value: [u8; 6]) -> Self {
+        let ip = Ipv4Addr::new(value[0], value[1], value[2], value[3]);
+        let port = {
+            let mut bytes = [0; 2];
+            bytes.copy_from_slice(&value[4..]);
+            u16::from_be_bytes(bytes)
+        };
+        let address = SocketAddr::new(IpAddr::V4(ip), port);
+        PeerInfo {
+            peer_id: None,
+            address,
+        }
     }
 }
 
@@ -146,6 +175,34 @@ mod tests {
         assert_eq!(
             response.peers[0].address,
             "[2600:1702:6aa3:b210::72]:51413".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn support_compact_response() {
+        let body = Value::dictionary()
+            .with_entry("complete", Value::Integer(12))
+            .with_entry("incomplete", Value::Integer(34))
+            .with_entry("interval", Value::Integer(1800))
+            .with_entry(
+                "peers",
+                Value::String(b"\x01\x02\x03\x04\x04\xD2\x05\x06\x07\x08\x16\x2E".to_vec()),
+            );
+
+        let response = TrackerResponse::try_from(body).expect("invalid response body");
+
+        assert_eq!(
+            response.peers,
+            vec![
+                PeerInfo {
+                    peer_id: None,
+                    address: "1.2.3.4:1234".parse().unwrap(),
+                },
+                PeerInfo {
+                    peer_id: None,
+                    address: "5.6.7.8:5678".parse().unwrap(),
+                }
+            ]
         );
     }
 
