@@ -2,21 +2,28 @@ pub mod message;
 
 use std::collections::HashSet;
 use std::io::Result;
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::{collections::HashMap, net::SocketAddr};
 
 use log::{info, warn};
 use rand::RngCore;
+use rangemap::RangeSet;
+use size::{KiB, Size};
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::codec::{AsyncDecoder, AsyncEncoder};
+use crate::crypto::Sha1;
 use crate::peer::message::Message;
 use crate::peer::message::{Block, Handshake};
+use crate::torrent::Torrent;
+
+const BLOCK_SIZE: Size = Size::from_const(16 * KiB);
 
 #[derive(PartialEq, Clone)]
 pub struct PeerId(pub [u8; 20]);
@@ -31,15 +38,21 @@ impl PeerId {
 
 type PeerCommand = u32;
 
-#[derive(Default)]
 struct PieceInfo {
-    downloading: Option<SocketAddr>,
+    sha1: Sha1,
     have: HashSet<SocketAddr>,
+    completed: RangeSet<usize>,
 }
 
 impl PieceInfo {
     fn add_peer(&mut self, peer: SocketAddr) {
         self.have.insert(peer);
+    }
+
+    fn have_bytes(&self, wanted: &RangeInclusive<usize>) -> bool {
+        self.completed
+            .iter()
+            .any(|have| have.contains(wanted.start()) && have.contains(wanted.end()))
     }
 }
 
@@ -47,16 +60,29 @@ pub struct SharedState {
     peers: HashMap<SocketAddr, Sender<PeerCommand>>,
     interested: HashSet<SocketAddr>,
     unchoked: HashSet<SocketAddr>,
-    pieces: HashMap<usize, PieceInfo>,
+    pieces: Vec<PieceInfo>,
+    temp_dir: PathBuf,
 }
 
 impl SharedState {
-    pub fn new() -> Self {
+    pub fn new(torrent: &Torrent, temp_dir: PathBuf) -> Self {
+        let pieces = torrent
+            .info
+            .pieces
+            .iter()
+            .map(|sha1| PieceInfo {
+                sha1: sha1.clone(),
+                have: HashSet::new(),
+                completed: RangeSet::new(),
+            })
+            .collect();
+
         Self {
             peers: HashMap::new(),
             interested: HashSet::new(),
             unchoked: HashSet::new(),
-            pieces: HashMap::new(),
+            pieces,
+            temp_dir,
         }
     }
 
@@ -81,12 +107,20 @@ impl SharedState {
     }
 
     fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) {
-        let piece_info = self.pieces.entry(piece).or_default();
+        let piece_info = self.pieces.get_mut(piece).unwrap();
         piece_info.add_peer(addr);
     }
 
+    fn get_file_path(&self, block: &Block) -> PathBuf {
+        let mut path = self.temp_dir.clone();
+        path.push(format!("piece-{}", block.piece));
+        path
+    }
+
     fn request_allowed(&self, addr: &SocketAddr, block: &Block) -> bool {
-        false
+        let piece_index = block.piece as usize;
+        let piece_info = self.pieces.get(piece_index).unwrap();
+        self.unchoked.contains(addr) && piece_info.have_bytes(&block.bytes_range())
     }
 }
 
@@ -160,15 +194,17 @@ impl Peer {
                         }
                     }
                     Ok(Message::Request(block)) => {
-                        let allowed = {
+                        let (file_path, allowed) = {
                             let state = self.state.read().await;
-                            state.request_allowed(&self.addr, &block)
+                            let file = state.get_file_path(&block);
+                            let allowed = state.request_allowed(&self.addr, &block);
+                            (file, allowed)
                         };
                         if !allowed {
                             warn!("peer {} requested {:?} while not allowed", &self.addr, &block);
                             return Ok(());
                         }
-                        let mut file = File::open("/tmp/torrent").await?;
+                        let mut file = File::open(file_path).await?;
                         file.seek(std::io::SeekFrom::Start(block.offset as u64)).await?;
                         let mut reader = file.take(block.length as u64);
                         tokio::io::copy(&mut reader, &mut self.socket).await?;

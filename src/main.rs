@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,15 +46,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse .torrent file
     let torrent = load_torrent(&path).await?;
 
-    // Create temp dir
-    //let tempdir = format!("/tmp/torrent-{}", hex::encode(torrent.info.info_hash.0));
-    //tokio::fs::create_dir(tempdir).await?;
+    let temp_dir = {
+        // Create temp dir
+        let mut path = PathBuf::from("/tmp");
+        path.push(format!("torrent-{}", hex::encode(torrent.info.info_hash.0)));
+        tokio::fs::create_dir(&path).await?;
+        path
+    };
 
-    {
-        // Prepare file for download
-    }
-
-    let state = Arc::new(RwLock::new(SharedState::new()));
+    let state = Arc::new(RwLock::new(SharedState::new(&torrent, temp_dir)));
 
     // Run server
     let address = SocketAddr::new("::".parse()?, config.port);

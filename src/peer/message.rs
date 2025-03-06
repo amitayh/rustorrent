@@ -1,4 +1,5 @@
 use std::io::{Error, ErrorKind, Result};
+use std::ops::RangeInclusive;
 
 use bit_set::BitSet;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -211,6 +212,14 @@ pub struct Block {
     pub piece: u32,
     pub offset: u32,
     pub length: u32,
+}
+
+impl Block {
+    pub fn bytes_range(&self) -> RangeInclusive<usize> {
+        let start = self.offset as usize;
+        let end = start + (self.length as usize);
+        start..=end
+    }
 }
 
 impl AsyncDecoder for Block {
