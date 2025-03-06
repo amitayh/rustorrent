@@ -12,9 +12,13 @@ const ADDR_LEN: usize = 6;
 
 #[derive(Debug, PartialEq)]
 pub struct TrackerResponse {
+    /// Number of peers with the entire file, i.e. seeders.
     pub complete: usize,
+    /// Number of non-seeder peers, aka "leechers".
     pub incomplete: usize,
+    /// Interval that the client should wait between sending regular requests to the tracker.
     pub interval: Duration,
+    /// If present clients must not reannounce more frequently than this.
     pub min_interval: Option<Duration>,
     pub peers: Vec<PeerInfo>,
 }
@@ -62,6 +66,7 @@ impl TryFrom<Value> for TrackerResponse {
 
 #[derive(Debug, PartialEq)]
 pub struct PeerInfo {
+    /// Peer's self-selected ID.
     pub peer_id: Option<PeerId>,
     pub address: SocketAddr,
 }

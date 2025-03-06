@@ -12,6 +12,7 @@ use crate::codec::AsyncDecoder;
 use crate::tracker::response::TrackerResponse;
 use crate::{Config, torrent::Torrent};
 
+pub mod request;
 pub mod response;
 
 fn url_encode(bytes: &[u8]) -> String {
