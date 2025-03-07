@@ -1,4 +1,3 @@
-use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 peer.send_handshake(&handshake).await?;
                 tokio::spawn(async move { peer.process().await });
             }
+            #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())
             //while let Ok((socket, addr)) = listener.accept().await {
             //    let mut peer = Peer::new(socket);

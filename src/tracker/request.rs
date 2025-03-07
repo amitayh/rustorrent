@@ -2,6 +2,7 @@ use size::Size;
 
 use crate::{crypto::Sha1, peer::PeerId};
 
+#[allow(dead_code)]
 struct TrackerRequest {
     info_hash: Sha1,
     peer_id: PeerId,
@@ -20,6 +21,7 @@ struct TrackerRequest {
     event: Option<Event>,
 }
 
+#[allow(dead_code)]
 enum ResponseMode {
     Normal,
     /// Indicates that the tracker can omit peer id field in peers dictionary.

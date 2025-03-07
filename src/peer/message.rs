@@ -1,5 +1,4 @@
 use std::io::{Error, ErrorKind, Result};
-use std::ops::RangeInclusive;
 
 use bit_set::BitSet;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -84,7 +83,7 @@ impl AsyncEncoder for Handshake {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Message {
     KeepAlive,
     Choke,
@@ -208,19 +207,11 @@ impl AsyncEncoder for Message {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Block {
     pub piece: usize,
     pub offset: usize,
     pub length: usize,
-}
-
-impl Block {
-    pub fn bytes_range(&self) -> RangeInclusive<usize> {
-        let start = self.offset as usize;
-        let end = start + (self.length as usize);
-        start..=end
-    }
 }
 
 impl AsyncDecoder for Block {

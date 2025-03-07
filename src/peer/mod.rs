@@ -2,7 +2,6 @@ pub mod message;
 
 use std::collections::HashSet;
 use std::io::{Result, SeekFrom};
-use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,10 +11,9 @@ use anyhow::anyhow;
 use bit_set::BitSet;
 use log::{info, warn};
 use rand::RngCore;
-use rangemap::RangeSet;
 use size::{KiB, Size};
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -38,6 +36,11 @@ impl TransferRate {
     fn empty() -> Self {
         TransferRate(Size::from_bytes(0), Duration::ZERO)
     }
+
+    fn update(&mut self, size: Size, duration: Duration) {
+        self.0 += size;
+        self.1 += duration;
+    }
 }
 
 impl PeerId {
@@ -48,7 +51,10 @@ impl PeerId {
     }
 }
 
-type PeerCommand = u32;
+#[derive(Debug)]
+enum PeerCommand {
+    Send(Message),
+}
 
 struct PieceInfo {
     sha1: Sha1,
@@ -63,32 +69,34 @@ impl PieceInfo {
 
 struct PeerToPeer {
     transfer_rate: TransferRate,
-    choked: bool,
+    choking: bool,
     interested: bool,
+}
+
+impl PeerToPeer {
+    fn new() -> Self {
+        Self {
+            transfer_rate: TransferRate::empty(),
+            choking: true,
+            interested: false,
+        }
+    }
 }
 
 struct PeerState {
     tx: Sender<PeerCommand>,
     has_pieces: BitSet,
-    upload_rate: TransferRate,
-    download_rate: TransferRate,
-    peer_choking: bool,
-    peer_interested: bool,
-    am_choking: bool,
-    am_interested: bool,
+    client_to_peer: PeerToPeer,
+    peer_to_client: PeerToPeer,
 }
 
 impl PeerState {
     fn new(tx: Sender<PeerCommand>) -> Self {
         Self {
             tx,
-            upload_rate: TransferRate::empty(),
-            download_rate: TransferRate::empty(),
             has_pieces: BitSet::new(),
-            peer_choking: true,
-            peer_interested: false,
-            am_choking: true,
-            am_interested: false,
+            client_to_peer: PeerToPeer::new(),
+            peer_to_client: PeerToPeer::new(),
         }
     }
 }
@@ -120,31 +128,40 @@ impl SharedState {
         }
     }
 
+    async fn broadcast(&mut self, message: Message) {
+        for (addr, peer) in &self.peers {
+            let command = PeerCommand::Send(message.clone());
+            if let Err(err) = peer.tx.send(command).await {
+                warn!("unable to send command to {}: {}", addr, err);
+            }
+        }
+    }
+
     fn peer_connected(&mut self, addr: SocketAddr, tx: Sender<PeerCommand>) {
         self.peers.insert(addr, PeerState::new(tx));
     }
 
     fn peer_choked(&mut self, addr: &SocketAddr) {
         if let Some(peer) = self.peers.get_mut(addr) {
-            peer.peer_choking = true;
+            peer.peer_to_client.choking = true;
         }
     }
 
     fn peer_unchoked(&mut self, addr: &SocketAddr) {
         if let Some(peer) = self.peers.get_mut(addr) {
-            peer.peer_choking = false;
+            peer.peer_to_client.choking = false;
         }
     }
 
     fn peer_interested(&mut self, addr: &SocketAddr) {
         if let Some(peer) = self.peers.get_mut(addr) {
-            peer.peer_interested = true;
+            peer.peer_to_client.interested = true;
         }
     }
 
     fn peer_not_interested(&mut self, addr: &SocketAddr) {
         if let Some(peer) = self.peers.get_mut(addr) {
-            peer.peer_interested = false;
+            peer.peer_to_client.interested = false;
         }
     }
 
@@ -164,8 +181,13 @@ impl SharedState {
 
     fn update_upload_rate(&mut self, addr: &SocketAddr, size: Size, duration: Duration) {
         if let Some(peer) = self.peers.get_mut(&addr) {
-            peer.upload_rate.0 += size;
-            peer.upload_rate.1 += duration;
+            peer.client_to_peer.transfer_rate.update(size, duration);
+        }
+    }
+
+    fn update_download_rate(&mut self, addr: &SocketAddr, size: Size, duration: Duration) {
+        if let Some(peer) = self.peers.get_mut(&addr) {
+            peer.peer_to_client.transfer_rate.update(size, duration);
         }
     }
 
@@ -182,7 +204,7 @@ impl SharedState {
                 return Err(anyhow!("peer {} not found", addr));
             }
         };
-        if peer.am_choking {
+        if peer.client_to_peer.choking {
             return Err(anyhow!(
                 "peer {} requested piece {} while being choked",
                 addr,
@@ -236,6 +258,11 @@ impl Peer {
         tokio::select! {
             Some(command) = self.rx.recv() => {
                 info!("< got command {:?}", command);
+                match command {
+                    PeerCommand::Send(message) => {
+                        message.encode(&mut self.socket).await?;
+                    }
+                }
             }
             message = Message::decode(&mut self.socket) => {
                 info!("< got messsage {:?}", message);
@@ -268,6 +295,7 @@ impl Peer {
                         state.peer_has_pieces(&self.addr, bitset);
                     }
                     Ok(Message::Request(block)) => {
+                        // Upload to peer
                         let file_path = {
                             let state = self.state.read().await;
                             match state.file_path_for_upload(&self.addr, block.piece) {
@@ -281,26 +309,42 @@ impl Peer {
                         let mut file = File::open(file_path).await?;
                         file.seek(SeekFrom::Start(block.offset as u64)).await?;
                         let mut reader = file.take(block.length as u64);
+                        let message = Message::Piece(block.clone());
                         let transfer_begin = Instant::now();
-                        let bytes = tokio::io::copy(&mut reader, &mut self.socket).await?;
-                        let size = Size::from_bytes(bytes);
+                        message.encode(&mut self.socket).await?;
+                        let bytes = tokio::io::copy(&mut reader, &mut self.socket).await? as usize;
                         let duration = Instant::now() - transfer_begin;
-                        {
-                            let mut state = self.state.write().await;
-                            state.update_upload_rate(&self.addr, size, duration);
+                        let size = Size::from_bytes(bytes);
+                        if bytes != block.length {
+                            warn!("peer {} requested block {:?}, actually transferred {} bytes",
+                                self.addr, block, bytes);
                         }
+
+                        let mut state = self.state.write().await;
+                        state.update_upload_rate(&self.addr, size, duration);
                     }
                     Ok(Message::Piece(block)) => {
+                        // Download from peer
                         let file_path = {
                             let state = self.state.read().await;
                             state.file_path(block.piece)
                         };
+                        // TODO: check block is in flight
+                        let mut buf = vec![0; block.length];
+                        let transfer_begin = Instant::now();
+                        self.socket.read_exact(&mut buf).await?;
+                        let duration = Instant::now() - transfer_begin;
+                        let size = Size::from_bytes(block.length);
                         let mut file = OpenOptions::new().write(true).open(file_path).await?;
                         file.seek(SeekFrom::Start(block.offset as u64)).await?;
-                        // let mut reader = self.socket.take(block.length as u64);
-                        tokio::io::copy(&mut self.socket, &mut file).await?;
+                        file.write_all(&buf).await?;
+
+                        // TODO: update block was downloaded
+                        let mut state = self.state.write().await;
+                        state.update_download_rate(&self.addr, size, duration);
                     }
-                    _ => warn!("unhandled")
+                    Ok(message) => warn!("unhandled message {:?}", message),
+                    Err(err) => warn!("error decoding message: {}", err)
                 }
             }
         };
