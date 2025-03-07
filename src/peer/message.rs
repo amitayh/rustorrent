@@ -101,7 +101,7 @@ pub enum Message {
 
 impl AsyncDecoder for Message {
     async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
-        let length = stream.read_u32().await?;
+        let length = stream.read_u32().await? as usize;
         if length == 0 {
             return Ok(Self::KeepAlive);
         }
@@ -116,7 +116,7 @@ impl AsyncDecoder for Message {
                 Ok(Self::Have { piece })
             }
             (ID_BITFIELD, 1..) => {
-                let mut buf = vec![0; (length as usize) - 1];
+                let mut buf = vec![0; length - 1];
                 stream.read_exact(&mut buf).await?;
                 let bitset = BitSet::from_bytes(&buf);
                 Ok(Self::Bitfield(bitset))
@@ -126,8 +126,8 @@ impl AsyncDecoder for Message {
                 Ok(Self::Request(block))
             }
             (ID_PIECE, 9..) => {
-                let piece = stream.read_u32().await?;
-                let offset = stream.read_u32().await?;
+                let piece = stream.read_u32().await? as usize;
+                let offset = stream.read_u32().await? as usize;
                 Ok(Self::Piece(Block {
                     piece,
                     offset,
@@ -187,10 +187,11 @@ impl AsyncEncoder for Message {
                 block.encode(stream).await?;
             }
             Self::Piece(block) => {
-                stream.write_u32(9 + block.length).await?;
+                let length = 9 + block.length;
+                stream.write_u32(length as u32).await?;
                 stream.write_u8(ID_PIECE).await?;
-                stream.write_u32(block.piece).await?;
-                stream.write_u32(block.offset).await?;
+                stream.write_u32(block.piece as u32).await?;
+                stream.write_u32(block.offset as u32).await?;
             }
             Self::Cancel(block) => {
                 stream.write_u32(13).await?;
@@ -209,9 +210,9 @@ impl AsyncEncoder for Message {
 
 #[derive(Debug, PartialEq)]
 pub struct Block {
-    pub piece: u32,
-    pub offset: u32,
-    pub length: u32,
+    pub piece: usize,
+    pub offset: usize,
+    pub length: usize,
 }
 
 impl Block {
@@ -224,9 +225,9 @@ impl Block {
 
 impl AsyncDecoder for Block {
     async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
-        let piece = stream.read_u32().await?;
-        let offset = stream.read_u32().await?;
-        let length = stream.read_u32().await?;
+        let piece = stream.read_u32().await? as usize;
+        let offset = stream.read_u32().await? as usize;
+        let length = stream.read_u32().await? as usize;
         Ok(Block {
             piece,
             offset,
@@ -237,9 +238,9 @@ impl AsyncDecoder for Block {
 
 impl AsyncEncoder for Block {
     async fn encode<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
-        stream.write_u32(self.piece).await?;
-        stream.write_u32(self.offset).await?;
-        stream.write_u32(self.length).await?;
+        stream.write_u32(self.piece as u32).await?;
+        stream.write_u32(self.offset as u32).await?;
+        stream.write_u32(self.length as u32).await?;
         Ok(())
     }
 }

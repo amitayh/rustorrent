@@ -1,17 +1,18 @@
 pub mod message;
 
 use std::collections::HashSet;
-use std::io::Result;
+use std::io::{Result, SeekFrom};
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{collections::HashMap, net::SocketAddr};
 
 use log::{info, warn};
 use rand::RngCore;
 use rangemap::RangeSet;
 use size::{KiB, Size};
-use tokio::fs::File;
+use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
@@ -27,6 +28,8 @@ const BLOCK_SIZE: Size = Size::from_const(16 * KiB);
 
 #[derive(PartialEq, Clone)]
 pub struct PeerId(pub [u8; 20]);
+
+pub struct TransferRate(Size, Duration);
 
 impl PeerId {
     pub fn random() -> Self {
@@ -118,8 +121,7 @@ impl SharedState {
     }
 
     fn request_allowed(&self, addr: &SocketAddr, block: &Block) -> bool {
-        let piece_index = block.piece as usize;
-        let piece_info = self.pieces.get(piece_index).unwrap();
+        let piece_info = self.pieces.get(block.piece).unwrap();
         self.unchoked.contains(addr) && piece_info.have_bytes(&block.bytes_range())
     }
 }
@@ -205,9 +207,19 @@ impl Peer {
                             return Ok(());
                         }
                         let mut file = File::open(file_path).await?;
-                        file.seek(std::io::SeekFrom::Start(block.offset as u64)).await?;
+                        file.seek(SeekFrom::Start(block.offset as u64)).await?;
                         let mut reader = file.take(block.length as u64);
                         tokio::io::copy(&mut reader, &mut self.socket).await?;
+                    }
+                    Ok(Message::Piece(block)) => {
+                        let file_path = {
+                            let state = self.state.read().await;
+                            state.get_file_path(&block)
+                        };
+                        let mut file = OpenOptions::new().write(true).open(file_path).await?;
+                        file.seek(SeekFrom::Start(block.offset as u64)).await?;
+                        // let mut reader = self.socket.take(block.length as u64);
+                        tokio::io::copy(&mut self.socket, &mut file).await?;
                     }
                     _ => warn!("unhandled")
                 }
