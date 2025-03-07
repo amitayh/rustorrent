@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{collections::HashMap, net::SocketAddr};
 
+use anyhow::anyhow;
+use bit_set::BitSet;
 use log::{info, warn};
 use rand::RngCore;
 use rangemap::RangeSet;
@@ -17,11 +19,12 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::time::Instant;
 
 use crate::codec::{AsyncDecoder, AsyncEncoder};
 use crate::crypto::Sha1;
+use crate::peer::message::Handshake;
 use crate::peer::message::Message;
-use crate::peer::message::{Block, Handshake};
 use crate::torrent::Torrent;
 
 const BLOCK_SIZE: Size = Size::from_const(16 * KiB);
@@ -29,7 +32,13 @@ const BLOCK_SIZE: Size = Size::from_const(16 * KiB);
 #[derive(PartialEq, Clone)]
 pub struct PeerId(pub [u8; 20]);
 
-pub struct TransferRate(Size, Duration);
+struct TransferRate(Size, Duration);
+
+impl TransferRate {
+    fn empty() -> Self {
+        TransferRate(Size::from_bytes(0), Duration::ZERO)
+    }
+}
 
 impl PeerId {
     pub fn random() -> Self {
@@ -44,26 +53,50 @@ type PeerCommand = u32;
 struct PieceInfo {
     sha1: Sha1,
     have: HashSet<SocketAddr>,
-    completed: RangeSet<usize>,
 }
 
 impl PieceInfo {
     fn add_peer(&mut self, peer: SocketAddr) {
         self.have.insert(peer);
     }
+}
 
-    fn have_bytes(&self, wanted: &RangeInclusive<usize>) -> bool {
-        self.completed
-            .iter()
-            .any(|have| have.contains(wanted.start()) && have.contains(wanted.end()))
+struct PeerToPeer {
+    transfer_rate: TransferRate,
+    choked: bool,
+    interested: bool,
+}
+
+struct PeerState {
+    tx: Sender<PeerCommand>,
+    has_pieces: BitSet,
+    upload_rate: TransferRate,
+    download_rate: TransferRate,
+    peer_choking: bool,
+    peer_interested: bool,
+    am_choking: bool,
+    am_interested: bool,
+}
+
+impl PeerState {
+    fn new(tx: Sender<PeerCommand>) -> Self {
+        Self {
+            tx,
+            upload_rate: TransferRate::empty(),
+            download_rate: TransferRate::empty(),
+            has_pieces: BitSet::new(),
+            peer_choking: true,
+            peer_interested: false,
+            am_choking: true,
+            am_interested: false,
+        }
     }
 }
 
 pub struct SharedState {
-    peers: HashMap<SocketAddr, Sender<PeerCommand>>,
-    interested: HashSet<SocketAddr>,
-    unchoked: HashSet<SocketAddr>,
+    peers: HashMap<SocketAddr, PeerState>,
     pieces: Vec<PieceInfo>,
+    completed_pieces: BitSet,
     temp_dir: PathBuf,
 }
 
@@ -76,53 +109,94 @@ impl SharedState {
             .map(|sha1| PieceInfo {
                 sha1: sha1.clone(),
                 have: HashSet::new(),
-                completed: RangeSet::new(),
             })
             .collect();
 
         Self {
             peers: HashMap::new(),
-            interested: HashSet::new(),
-            unchoked: HashSet::new(),
             pieces,
+            completed_pieces: BitSet::new(),
             temp_dir,
         }
     }
 
     fn peer_connected(&mut self, addr: SocketAddr, tx: Sender<PeerCommand>) {
-        self.peers.insert(addr, tx);
+        self.peers.insert(addr, PeerState::new(tx));
     }
 
     fn peer_choked(&mut self, addr: &SocketAddr) {
-        self.unchoked.remove(addr);
+        if let Some(peer) = self.peers.get_mut(addr) {
+            peer.peer_choking = true;
+        }
     }
 
-    fn peer_unchoked(&mut self, addr: SocketAddr) {
-        self.unchoked.insert(addr);
+    fn peer_unchoked(&mut self, addr: &SocketAddr) {
+        if let Some(peer) = self.peers.get_mut(addr) {
+            peer.peer_choking = false;
+        }
     }
 
-    fn peer_interested(&mut self, addr: SocketAddr) {
-        self.interested.insert(addr);
+    fn peer_interested(&mut self, addr: &SocketAddr) {
+        if let Some(peer) = self.peers.get_mut(addr) {
+            peer.peer_interested = true;
+        }
     }
 
     fn peer_not_interested(&mut self, addr: &SocketAddr) {
-        self.interested.remove(addr);
+        if let Some(peer) = self.peers.get_mut(addr) {
+            peer.peer_interested = false;
+        }
     }
 
     fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) {
+        if let Some(peer) = self.peers.get_mut(&addr) {
+            peer.has_pieces.insert(piece);
+        }
         let piece_info = self.pieces.get_mut(piece).unwrap();
         piece_info.add_peer(addr);
     }
 
-    fn get_file_path(&self, block: &Block) -> PathBuf {
+    fn peer_has_pieces(&mut self, addr: &SocketAddr, pieces: BitSet) {
+        if let Some(peer) = self.peers.get_mut(&addr) {
+            peer.has_pieces.union_with(&pieces);
+        }
+    }
+
+    fn update_upload_rate(&mut self, addr: &SocketAddr, size: Size, duration: Duration) {
+        if let Some(peer) = self.peers.get_mut(&addr) {
+            peer.upload_rate.0 += size;
+            peer.upload_rate.1 += duration;
+        }
+    }
+
+    fn file_path(&self, piece: usize) -> PathBuf {
         let mut path = self.temp_dir.clone();
-        path.push(format!("piece-{}", block.piece));
+        path.push(format!("piece-{}", piece));
         path
     }
 
-    fn request_allowed(&self, addr: &SocketAddr, block: &Block) -> bool {
-        let piece_info = self.pieces.get(block.piece).unwrap();
-        self.unchoked.contains(addr) && piece_info.have_bytes(&block.bytes_range())
+    fn file_path_for_upload(&self, addr: &SocketAddr, piece: usize) -> anyhow::Result<PathBuf> {
+        let peer = match self.peers.get(addr) {
+            Some(peer) => peer,
+            None => {
+                return Err(anyhow!("peer {} not found", addr));
+            }
+        };
+        if peer.am_choking {
+            return Err(anyhow!(
+                "peer {} requested piece {} while being choked",
+                addr,
+                piece
+            ));
+        }
+        if !self.completed_pieces.contains(piece) {
+            return Err(anyhow!(
+                "peer {} requested uncompleted piece {}",
+                addr,
+                piece
+            ));
+        }
+        Ok(self.file_path(piece))
     }
 }
 
@@ -175,11 +249,11 @@ impl Peer {
                     }
                     Ok(Message::Unchoke) => {
                         let mut state = self.state.write().await;
-                        state.peer_unchoked(self.addr);
+                        state.peer_unchoked(&self.addr);
                     }
                     Ok(Message::Interested) => {
                         let mut state = self.state.write().await;
-                        state.peer_interested(self.addr);
+                        state.peer_interested(&self.addr);
                     }
                     Ok(Message::NotInterested) => {
                         let mut state = self.state.write().await;
@@ -191,30 +265,35 @@ impl Peer {
                     }
                     Ok(Message::Bitfield(bitset)) => {
                         let mut state = self.state.write().await;
-                        for piece in bitset.iter() {
-                            state.peer_has_piece(self.addr, piece);
-                        }
+                        state.peer_has_pieces(&self.addr, bitset);
                     }
                     Ok(Message::Request(block)) => {
-                        let (file_path, allowed) = {
+                        let file_path = {
                             let state = self.state.read().await;
-                            let file = state.get_file_path(&block);
-                            let allowed = state.request_allowed(&self.addr, &block);
-                            (file, allowed)
+                            match state.file_path_for_upload(&self.addr, block.piece) {
+                                Ok(path) => path,
+                                Err(err) => {
+                                    warn!("{}", err);
+                                    return Ok(());
+                                }
+                            }
                         };
-                        if !allowed {
-                            warn!("peer {} requested {:?} while not allowed", &self.addr, &block);
-                            return Ok(());
-                        }
                         let mut file = File::open(file_path).await?;
                         file.seek(SeekFrom::Start(block.offset as u64)).await?;
                         let mut reader = file.take(block.length as u64);
-                        tokio::io::copy(&mut reader, &mut self.socket).await?;
+                        let transfer_begin = Instant::now();
+                        let bytes = tokio::io::copy(&mut reader, &mut self.socket).await?;
+                        let size = Size::from_bytes(bytes);
+                        let duration = Instant::now() - transfer_begin;
+                        {
+                            let mut state = self.state.write().await;
+                            state.update_upload_rate(&self.addr, size, duration);
+                        }
                     }
                     Ok(Message::Piece(block)) => {
                         let file_path = {
                             let state = self.state.read().await;
-                            state.get_file_path(&block)
+                            state.file_path(block.piece)
                         };
                         let mut file = OpenOptions::new().write(true).open(file_path).await?;
                         file.seek(SeekFrom::Start(block.offset as u64)).await?;
