@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bencoding::value::Value;
-use log::info;
+use log::{info, warn};
 use peer::{Peer, SharedState};
+use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::{fs::File, net::TcpListener};
 
@@ -130,17 +131,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
-
-    /*
-    for peer_info in response.peers {
-        let handshake = Arc::clone(&handshake);
-        let tx = tx.clone();
+    {
+        // Request peers
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let state = Arc::clone(&state);
         tokio::spawn(async move {
-            info!("connecting to peer {}...", peer_info.address);
-            match TcpStream::connect(peer_info.address).await {
+            loop {
+                interval.tick().await;
+                info!("selecting pieces to request...");
+                let s = state.read().await;
+                s.select_pieces_to_request().await;
+            }
+        });
+    }
+
+    let len = response.peers.len();
+    for (i, peer_info) in response.peers.into_iter().enumerate() {
+        let handshake = Arc::clone(&handshake);
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let address = peer_info.address;
+            info!("connecting to peer {}/{}: {}...", i + 1, len, address);
+            match TcpStream::connect(address).await {
                 Ok(socket) => {
                     info!("connected");
-                    let mut peer = Peer::new(socket);
+                    let mut peer = Peer::new(address, socket, Arc::clone(&state)).await;
                     peer.send_handshake(&handshake).await?;
                     peer.wait_for_handshake().await?;
 
@@ -152,21 +167,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         warn!("peer id mismatch");
                         // disconnect peer
                     }
-
-                    tokio::spawn(async move {
-                        loop {
-                            let message = peer.wait_for_message().await?;
-                            tx.send(message).await?;
-                        }
-                        Ok::<(), anyhow::Error>(())
-                    });
+                    peer.process().await?;
                 }
-                Err(err) => log::warn!("unable to connect to {}: {:?}", peer_info.address, err),
+                Err(err) => log::warn!("unable to connect to {}: {:?}", address, err),
             }
             Ok::<(), anyhow::Error>(())
         });
     }
-    */
 
     tokio::signal::ctrl_c().await?;
 

@@ -10,6 +10,7 @@ use std::{collections::HashMap, net::SocketAddr};
 use anyhow::anyhow;
 use bit_set::BitSet;
 use log::{info, warn};
+use message::Block;
 use rand::RngCore;
 use size::{KiB, Size};
 use tokio::fs::{File, OpenOptions};
@@ -25,7 +26,8 @@ use crate::peer::message::Handshake;
 use crate::peer::message::Message;
 use crate::torrent::Torrent;
 
-const BLOCK_SIZE: Size = Size::from_const(16 * KiB);
+//const BLOCK_SIZE: Size = Size::from_const(16 * KiB);
+const BLOCK_SIZE: usize = 16 * 1024;
 
 #[derive(PartialEq, Clone)]
 pub struct PeerId(pub [u8; 20]);
@@ -58,13 +60,6 @@ enum PeerCommand {
 
 struct PieceInfo {
     sha1: Sha1,
-    have: HashSet<SocketAddr>,
-}
-
-impl PieceInfo {
-    fn add_peer(&mut self, peer: SocketAddr) {
-        self.have.insert(peer);
-    }
 }
 
 struct PeerToPeer {
@@ -114,10 +109,7 @@ impl SharedState {
             .info
             .pieces
             .iter()
-            .map(|sha1| PieceInfo {
-                sha1: sha1.clone(),
-                have: HashSet::new(),
-            })
+            .map(|sha1| PieceInfo { sha1: sha1.clone() })
             .collect();
 
         Self {
@@ -128,14 +120,46 @@ impl SharedState {
         }
     }
 
-    async fn broadcast(&mut self, message: Message) {
+    pub async fn select_pieces_to_request(&self) {
+        let mut result: HashMap<usize, Vec<SocketAddr>> = HashMap::new();
         for (addr, peer) in &self.peers {
-            let command = PeerCommand::Send(message.clone());
-            if let Err(err) = peer.tx.send(command).await {
-                warn!("unable to send command to {}: {}", addr, err);
+            if peer.peer_to_client.choking {
+                continue;
+            }
+            for piece in peer.has_pieces.iter() {
+                if !self.completed_pieces.contains(piece) {
+                    let entry = result.entry(piece).or_default();
+                    entry.push(addr.clone());
+                }
             }
         }
+        let mut entries: Vec<_> = result.into_iter().collect();
+        // Select rarest piece
+        entries.sort_by(|(_, peers_a), (_, peers_b)| peers_b.len().cmp(&peers_a.len()));
+        for (piece, peers) in entries {
+            let message = Message::Request(Block {
+                piece,
+                offset: 0,
+                length: BLOCK_SIZE,
+            });
+            self.peers
+                .get(peers.first().unwrap())
+                .unwrap()
+                .tx
+                .send(PeerCommand::Send(message))
+                .await
+                .unwrap();
+        }
     }
+
+    //async fn broadcast(&self, message: Message) {
+    //    for (addr, peer) in &self.peers {
+    //        let command = PeerCommand::Send(message.clone());
+    //        if let Err(err) = peer.tx.send(command).await {
+    //            warn!("unable to send command to {}: {}", addr, err);
+    //        }
+    //    }
+    //}
 
     fn peer_connected(&mut self, addr: SocketAddr, tx: Sender<PeerCommand>) {
         self.peers.insert(addr, PeerState::new(tx));
@@ -150,6 +174,7 @@ impl SharedState {
     fn peer_unchoked(&mut self, addr: &SocketAddr) {
         if let Some(peer) = self.peers.get_mut(addr) {
             peer.peer_to_client.choking = false;
+            // TODO: send request
         }
     }
 
@@ -165,18 +190,25 @@ impl SharedState {
         }
     }
 
-    fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) {
+    fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) -> bool {
         if let Some(peer) = self.peers.get_mut(&addr) {
             peer.has_pieces.insert(piece);
+            // Peer has a piece we want. We're unable to request the piece while being choked, let
+            // the peer know we're interested.
+            return peer.peer_to_client.choking && !self.completed_pieces.contains(piece);
         }
-        let piece_info = self.pieces.get_mut(piece).unwrap();
-        piece_info.add_peer(addr);
+        return false;
     }
 
-    fn peer_has_pieces(&mut self, addr: &SocketAddr, pieces: BitSet) {
+    fn peer_has_pieces(&mut self, addr: &SocketAddr, pieces: BitSet) -> bool {
         if let Some(peer) = self.peers.get_mut(&addr) {
             peer.has_pieces.union_with(&pieces);
+            if peer.peer_to_client.choking {
+                pieces.difference(&self.completed_pieces);
+                return !pieces.is_empty();
+            }
         }
+        return false;
     }
 
     fn update_upload_rate(&mut self, addr: &SocketAddr, size: Size, duration: Duration) {
@@ -254,7 +286,7 @@ impl Peer {
         Ok(())
     }
 
-    pub async fn process(&mut self) -> Result<()> {
+    pub async fn process(&mut self) -> anyhow::Result<()> {
         tokio::select! {
             Some(command) = self.rx.recv() => {
                 info!("< got command {:?}", command);
@@ -286,13 +318,24 @@ impl Peer {
                         let mut state = self.state.write().await;
                         state.peer_not_interested(&self.addr);
                     }
+                    // TODO: celan up duplication
                     Ok(Message::Have { piece }) => {
-                        let mut state = self.state.write().await;
-                        state.peer_has_piece(self.addr, piece);
+                        let interested = {
+                            let mut state = self.state.write().await;
+                            state.peer_has_piece(self.addr, piece)
+                        };
+                        if interested {
+                            Message::Interested.encode(&mut self.socket).await?;
+                        }
                     }
                     Ok(Message::Bitfield(bitset)) => {
-                        let mut state = self.state.write().await;
-                        state.peer_has_pieces(&self.addr, bitset);
+                        let interested = {
+                            let mut state = self.state.write().await;
+                            state.peer_has_pieces(&self.addr, bitset)
+                        };
+                        if interested {
+                            Message::Interested.encode(&mut self.socket).await?;
+                        }
                     }
                     Ok(Message::Request(block)) => {
                         // Upload to peer
@@ -351,40 +394,3 @@ impl Peer {
         Ok(())
     }
 }
-
-/*
-struct PeerSet {
-    peer_to_piece: HashMap<SocketAddr, PieceInfo>,
-    piece_to_peer: HashMap<usize, HashSet<SocketAddr>>,
-}
-
-impl PeerSet {
-    fn new() -> Self {
-        PeerSet {
-            peer_to_piece: HashMap::new(),
-            piece_to_peer: HashMap::new(),
-        }
-    }
-
-    fn have(&mut self, peer: SocketAddr, piece: usize) {
-        //
-    }
-}
-
-struct PieceInfo {
-    downloading: Option<SocketAddr>,
-    have: HashSet<SocketAddr>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn have() {
-        let mut peer_set = PeerSet::new();
-        let peer = "0.0.0.1:6881".parse().unwrap();
-        peer_set.have(peer, 1234);
-    }
-}
-*/
