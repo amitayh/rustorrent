@@ -9,6 +9,7 @@ bit-set = "0.8.0"
 env_logger = "0.11.6"
 hex = "0.4.3"
 log = "0.4.26"
+priority-queue = "2.2.1"
 rand = "0.9.0"
 rangemap = "1.5.1"
 reqwest = { version = "0.12.12", features = ["stream"] }

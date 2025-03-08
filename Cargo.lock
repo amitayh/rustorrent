@@ -1039,6 +1039,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "priority-queue"
+version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35d34aad26c181c38e0399695bb8cd445c65222e40f68bebfea809650eb3eda6"
+dependencies = [
+ "autocfg",
+ "equivalent",
+ "indexmap",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.93"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1257,6 +1268,7 @@ dependencies = [
  "env_logger",
  "hex",
  "log",
+ "priority-queue",
  "rand",
  "rangemap",
  "reqwest",

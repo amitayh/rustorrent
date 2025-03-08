@@ -11,13 +11,14 @@ use anyhow::anyhow;
 use bit_set::BitSet;
 use log::{info, warn};
 use message::Block;
+use priority_queue::PriorityQueue;
 use rand::RngCore;
-use size::{KiB, Size};
+use size::Size;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{Notify, RwLock};
 use tokio::time::Instant;
 
 use crate::codec::{AsyncDecoder, AsyncEncoder};
@@ -32,6 +33,7 @@ const BLOCK_SIZE: usize = 16 * 1024;
 #[derive(PartialEq, Clone)]
 pub struct PeerId(pub [u8; 20]);
 
+#[derive(Debug)]
 struct TransferRate(Size, Duration);
 
 impl TransferRate {
@@ -58,10 +60,7 @@ enum PeerCommand {
     Send(Message),
 }
 
-struct PieceInfo {
-    sha1: Sha1,
-}
-
+#[derive(Debug)]
 struct PeerToPeer {
     transfer_rate: TransferRate,
     choking: bool,
@@ -98,23 +97,14 @@ impl PeerState {
 
 pub struct SharedState {
     peers: HashMap<SocketAddr, PeerState>,
-    pieces: Vec<PieceInfo>,
     completed_pieces: BitSet,
     temp_dir: PathBuf,
 }
 
 impl SharedState {
-    pub fn new(torrent: &Torrent, temp_dir: PathBuf) -> Self {
-        let pieces = torrent
-            .info
-            .pieces
-            .iter()
-            .map(|sha1| PieceInfo { sha1: sha1.clone() })
-            .collect();
-
+    pub fn new(temp_dir: PathBuf) -> Self {
         Self {
             peers: HashMap::new(),
-            pieces,
             completed_pieces: BitSet::new(),
             temp_dir,
         }
@@ -253,6 +243,121 @@ impl SharedState {
         Ok(self.file_path(piece))
     }
 }
+
+// ------------------------------------------------------------------------------------------------
+
+pub struct PieceSelector {
+    piece_to_peers: HashMap<usize, HashSet<SocketAddr>>,
+    rarest_piece: PriorityQueue<usize, usize>,
+    current_piece: Option<usize>,
+    total_pieces: usize,
+    completed_pieces: BitSet,
+    notify: Notify,
+}
+
+impl PieceSelector {
+    fn new(total_pieces: usize) -> Self {
+        Self {
+            piece_to_peers: HashMap::new(),
+            rarest_piece: PriorityQueue::new(),
+            current_piece: None,
+            total_pieces,
+            completed_pieces: BitSet::new(),
+            notify: Notify::new(),
+        }
+    }
+
+    async fn next(&mut self) -> Option<(&SocketAddr, Block)> {
+        // get rarest pieces that i don't have
+        // sort peers by transfer rate
+        // assign blocks to available peers
+        // mark blocks as "in-flight"
+        // give up on blocks after configured duration
+        while self.rarest_piece.is_empty() && self.completed_pieces.len() < self.total_pieces {
+            self.notify.notified().await;
+        }
+        if let Some((piece, _)) = self.rarest_piece.pop() {
+            dbg!(piece);
+        }
+        None
+    }
+
+    fn piece_complete(&mut self, piece: usize) {
+        self.completed_pieces.insert(piece);
+        self.notify.notify_one();
+    }
+
+    fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: BitSet) {
+        for piece in &pieces {
+            let peers = self.piece_to_peers.entry(piece).or_default();
+            peers.insert(addr);
+            self.rarest_piece.push(piece, peers.len());
+        }
+        self.notify.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn one_available_peer() {
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        let mut state = PieceSelector::new(1);
+        state.peer_has_pieces(addr, BitSet::from_bytes(&[0b10000000]));
+
+        assert_eq!(
+            state.next().await,
+            Some((&addr, Block::new(0, 0, BLOCK_SIZE)))
+        );
+    }
+
+    #[tokio::test]
+    async fn one_available_peer_with_different_piece() {
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        let mut state = PieceSelector::new(1);
+        state.peer_has_pieces(addr, BitSet::from_bytes(&[0b01000000]));
+
+        assert_eq!(
+            state.next().await,
+            Some((&addr, Block::new(1, 0, BLOCK_SIZE)))
+        );
+    }
+
+    #[tokio::test]
+    async fn ignore_pieces_clinet_already_has() {
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        let mut state = PieceSelector::new(2);
+        state.piece_complete(0);
+        state.peer_has_pieces(addr, BitSet::from_bytes(&[0b11000000]));
+
+        assert_eq!(
+            state.next().await,
+            Some((&addr, Block::new(1, 0, BLOCK_SIZE)))
+        );
+    }
+
+    // TODO: blocks
+
+    #[tokio::test]
+    async fn get_rarest_pieces_first() {
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+
+        let mut state = PieceSelector::new(2);
+        // Piece #0 is rarest - only peer 1 has it
+        state.peer_has_pieces(addr1, BitSet::from_bytes(&[0b10000000]));
+        state.peer_has_pieces(addr2, BitSet::from_bytes(&[0b11000000]));
+
+        assert_eq!(
+            state.next().await,
+            Some((&addr1, Block::new(1, 0, BLOCK_SIZE)))
+        );
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
 
 pub struct Peer {
     addr: SocketAddr,

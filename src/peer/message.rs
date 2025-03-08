@@ -214,6 +214,16 @@ pub struct Block {
     pub length: usize,
 }
 
+impl Block {
+    pub fn new(piece: usize, offset: usize, length: usize) -> Self {
+        Self {
+            piece,
+            offset,
+            length,
+        }
+    }
+}
+
 impl AsyncDecoder for Block {
     async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
         let piece = stream.read_u32().await? as usize;

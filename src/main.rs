@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         path
     };
 
-    let state = Arc::new(RwLock::new(SharedState::new(&torrent, temp_dir)));
+    let state = Arc::new(RwLock::new(SharedState::new(temp_dir)));
 
     // Run server
     let address = SocketAddr::new("::".parse()?, config.port);
