@@ -1,4 +1,4 @@
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::HashSet;
 use std::iter::{Cycle, Zip};
 use std::time::Duration;
@@ -16,9 +16,8 @@ use crate::peer::transfer_rate::TransferRate;
 
 #[allow(dead_code)]
 pub struct PieceSelector {
-    piece_to_peers: HashMap<usize, HashSet<SocketAddr>>,
     peer_transfer_rate: HashMap<SocketAddr, TransferRate>,
-    rarest_piece: PriorityQueue<usize, Reverse<usize>>,
+    rarest_piece: PriorityQueue<usize, PeerSet>,
     current_piece: Option<Zip<Cycle<IntoIter<SocketAddr>>, Blocks>>,
     piece_size: Size,
     total_size: Size,
@@ -31,7 +30,6 @@ pub struct PieceSelector {
 impl PieceSelector {
     fn new(piece_size: Size, total_size: Size, block_size: Size) -> Self {
         Self {
-            piece_to_peers: HashMap::new(),
             peer_transfer_rate: HashMap::new(),
             rarest_piece: PriorityQueue::new(),
             current_piece: None,
@@ -51,9 +49,6 @@ impl PieceSelector {
                 self.current_piece = None;
             }
         }
-        // get rarest pieces that i don't have
-        // sort peers by transfer rate
-        // assign blocks to available peers
         // mark blocks as "in-flight"
         // give up on blocks after configured duration
         let total_pieces =
@@ -62,21 +57,9 @@ impl PieceSelector {
             self.notify.notified().await;
         }
 
-        if let Some((piece, _)) = self.rarest_piece.pop() {
-            let peers = self
-                .piece_to_peers
-                .get(&piece)
-                .expect("at least 1 peer should have the piece");
-            // TODO: select peer with best upload rate
-            //.and_then(|peers| peers.iter().next())
-            let mut peers: Vec<_> = peers.iter().cloned().collect();
-            peers.sort_by_key(|peer| {
-                Reverse(
-                    self.peer_transfer_rate
-                        .get(peer)
-                        .unwrap_or(&TransferRate::EMPTY),
-                )
-            });
+        if let Some((piece, PeerSet(peers))) = self.rarest_piece.pop() {
+            let mut peers: Vec<_> = peers.into_iter().collect();
+            peers.sort_by_key(|peer| Reverse(self.transfer_rate_of(peer)));
             let peers_cycle = peers.into_iter().cycle();
             let blocks = Blocks::new(self.piece_size, self.total_size, self.block_size, piece);
             let mut zipped = peers_cycle.zip(blocks);
@@ -88,6 +71,12 @@ impl PieceSelector {
         None
     }
 
+    fn transfer_rate_of(&self, peer: &SocketAddr) -> &TransferRate {
+        self.peer_transfer_rate
+            .get(peer)
+            .unwrap_or(&TransferRate::EMPTY)
+    }
+
     fn piece_complete(&mut self, piece: usize) {
         self.completed_pieces.insert(piece);
         self.notify.notify_one();
@@ -95,7 +84,7 @@ impl PieceSelector {
 
     // TODO: test
     fn peer_disconnected(&mut self, addr: &SocketAddr) {
-        for peers in self.piece_to_peers.values_mut() {
+        for (_, PeerSet(peers)) in self.rarest_piece.iter_mut() {
             peers.remove(addr);
         }
     }
@@ -106,9 +95,16 @@ impl PieceSelector {
                 // Ignore pieces we already have
                 continue;
             }
-            let peers = self.piece_to_peers.entry(piece).or_default();
-            peers.insert(addr);
-            self.rarest_piece.push(piece, Reverse(peers.len()));
+
+            let piece_exists = self
+                .rarest_piece
+                .change_priority_by(&piece, |PeerSet(peers)| {
+                    peers.insert(addr);
+                });
+
+            if !piece_exists {
+                self.rarest_piece.push(piece, PeerSet::singleton(addr));
+            }
         }
         self.notify.notify_one();
     }
@@ -120,6 +116,30 @@ impl PieceSelector {
             .or_insert(TransferRate::EMPTY);
 
         *entry += TransferRate(size, duration);
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct PeerSet(HashSet<SocketAddr>);
+
+impl PeerSet {
+    fn singleton(addr: SocketAddr) -> Self {
+        let mut peers = HashSet::new();
+        peers.insert(addr);
+        Self(peers)
+    }
+}
+
+impl PartialOrd for PeerSet {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PeerSet {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Compare based on peer set size in reverse ordering
+        other.0.len().cmp(&self.0.len())
     }
 }
 
