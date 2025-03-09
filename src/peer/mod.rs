@@ -1,6 +1,7 @@
 pub mod blocks;
 pub mod message;
 pub mod piece_selector;
+pub mod transfer_rate;
 
 use std::io::{Result, SeekFrom};
 use std::path::PathBuf;
@@ -24,26 +25,13 @@ use crate::codec::{AsyncDecoder, AsyncEncoder};
 use crate::peer::message::Block;
 use crate::peer::message::Handshake;
 use crate::peer::message::Message;
+use crate::peer::transfer_rate::TransferRate;
 
 //const BLOCK_SIZE: Size = Size::from_const(16 * KiB);
 const BLOCK_SIZE: usize = 16 * 1024;
 
 #[derive(PartialEq, Clone)]
 pub struct PeerId(pub [u8; 20]);
-
-#[derive(Debug)]
-struct TransferRate(Size, Duration);
-
-impl TransferRate {
-    fn empty() -> Self {
-        TransferRate(Size::from_bytes(0), Duration::ZERO)
-    }
-
-    fn update(&mut self, size: Size, duration: Duration) {
-        self.0 += size;
-        self.1 += duration;
-    }
-}
 
 impl PeerId {
     pub fn random() -> Self {
@@ -68,7 +56,7 @@ struct PeerToPeer {
 impl PeerToPeer {
     fn new() -> Self {
         Self {
-            transfer_rate: TransferRate::empty(),
+            transfer_rate: TransferRate::EMPTY,
             choking: true,
             interested: false,
         }
@@ -197,13 +185,13 @@ impl SharedState {
 
     fn update_upload_rate(&mut self, addr: &SocketAddr, size: Size, duration: Duration) {
         if let Some(peer) = self.peers.get_mut(&addr) {
-            peer.client_to_peer.transfer_rate.update(size, duration);
+            peer.client_to_peer.transfer_rate += TransferRate(size, duration);
         }
     }
 
     fn update_download_rate(&mut self, addr: &SocketAddr, size: Size, duration: Duration) {
         if let Some(peer) = self.peers.get_mut(&addr) {
-            peer.peer_to_client.transfer_rate.update(size, duration);
+            peer.peer_to_client.transfer_rate += TransferRate(size, duration);
         }
     }
 

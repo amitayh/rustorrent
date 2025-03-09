@@ -1,6 +1,8 @@
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::iter::{Cycle, Zip};
+use std::time::Duration;
+use std::vec::IntoIter;
 use std::{collections::HashMap, net::SocketAddr};
 
 use bit_set::BitSet;
@@ -10,12 +12,14 @@ use tokio::sync::Notify;
 
 use crate::peer::blocks::Blocks;
 use crate::peer::message::Block;
+use crate::peer::transfer_rate::TransferRate;
 
 #[allow(dead_code)]
 pub struct PieceSelector {
     piece_to_peers: HashMap<usize, HashSet<SocketAddr>>,
+    peer_transfer_rate: HashMap<SocketAddr, TransferRate>,
     rarest_piece: PriorityQueue<usize, Reverse<usize>>,
-    current_piece: Option<Zip<Cycle<std::vec::IntoIter<SocketAddr>>, Blocks>>,
+    current_piece: Option<Zip<Cycle<IntoIter<SocketAddr>>, Blocks>>,
     piece_size: Size,
     total_size: Size,
     block_size: Size,
@@ -28,6 +32,7 @@ impl PieceSelector {
     fn new(piece_size: Size, total_size: Size, block_size: Size) -> Self {
         Self {
             piece_to_peers: HashMap::new(),
+            peer_transfer_rate: HashMap::new(),
             rarest_piece: PriorityQueue::new(),
             current_piece: None,
             piece_size,
@@ -64,7 +69,14 @@ impl PieceSelector {
                 .expect("at least 1 peer should have the piece");
             // TODO: select peer with best upload rate
             //.and_then(|peers| peers.iter().next())
-            let peers: Vec<_> = peers.iter().cloned().collect();
+            let mut peers: Vec<_> = peers.iter().cloned().collect();
+            peers.sort_by_key(|peer| {
+                Reverse(
+                    self.peer_transfer_rate
+                        .get(peer)
+                        .unwrap_or(&TransferRate::EMPTY),
+                )
+            });
             let peers_cycle = peers.into_iter().cycle();
             let blocks = Blocks::new(self.piece_size, self.total_size, self.block_size, piece);
             let mut zipped = peers_cycle.zip(blocks);
@@ -100,10 +112,21 @@ impl PieceSelector {
         }
         self.notify.notify_one();
     }
+
+    fn update_transfer_rate(&mut self, addr: SocketAddr, size: Size, duration: Duration) {
+        let entry = self
+            .peer_transfer_rate
+            .entry(addr)
+            .or_insert(TransferRate::EMPTY);
+
+        *entry += TransferRate(size, duration);
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     use size::KiB;
@@ -173,14 +196,35 @@ mod tests {
         let mut state = PieceSelector::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
         state.peer_has_pieces(addr, BitSet::from_bytes(&[0b10000000]));
 
-        assert_eq!(
-            state.next().await,
-            Some((addr, Block::new(0, 0, BLOCK_SIZE_BYTES)))
-        );
-        assert_eq!(
-            state.next().await,
-            Some((addr, Block::new(0, BLOCK_SIZE_BYTES, BLOCK_SIZE_BYTES)))
-        );
+        assert_eq!(state.next().await, Some((addr, Block::new(0, 0, 1024))));
+        assert_eq!(state.next().await, Some((addr, Block::new(0, 1024, 1024))));
+    }
+
+    #[tokio::test]
+    async fn assign_each_block_to_a_different_peer_ordered_by_transfer_rate() {
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        let addr3 = "127.0.0.3:6881".parse().unwrap();
+        let addr4 = "127.0.0.4:6881".parse().unwrap();
+
+        let mut state = PieceSelector::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+
+        state.peer_has_pieces(addr1, BitSet::from_bytes(&[0b10000000]));
+        state.update_transfer_rate(addr1, Size::from_kibibytes(10), Duration::from_secs(1));
+
+        state.peer_has_pieces(addr2, BitSet::from_bytes(&[0b10000000]));
+        state.update_transfer_rate(addr2, Size::from_kibibytes(20), Duration::from_secs(1));
+
+        state.peer_has_pieces(addr3, BitSet::from_bytes(&[0b10000000]));
+        state.update_transfer_rate(addr3, Size::from_kibibytes(30), Duration::from_secs(1));
+
+        state.peer_has_pieces(addr4, BitSet::from_bytes(&[0b10000000]));
+        state.update_transfer_rate(addr4, Size::from_kibibytes(40), Duration::from_secs(1));
+
+        assert_eq!(state.next().await, Some((addr4, Block::new(0, 0, 1024))));
+        assert_eq!(state.next().await, Some((addr3, Block::new(0, 1024, 1024))));
+        assert_eq!(state.next().await, Some((addr2, Block::new(0, 2048, 1024))));
+        assert_eq!(state.next().await, Some((addr1, Block::new(0, 3072, 1024))));
     }
 
     // TODO: distribute blocks between peers, by upload rate
