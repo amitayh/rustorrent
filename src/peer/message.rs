@@ -127,11 +127,7 @@ impl AsyncDecoder for Message {
             (ID_PIECE, 9..) => {
                 let piece = stream.read_u32().await? as usize;
                 let offset = stream.read_u32().await? as usize;
-                Ok(Self::Piece(Block {
-                    piece,
-                    offset,
-                    length: length - 9,
-                }))
+                Ok(Self::Piece(Block::new(piece, offset, length - 9)))
             }
             (ID_CANCEL, 13) => {
                 let block = Block::decode(stream).await?;
@@ -253,10 +249,9 @@ mod tests {
     use super::*;
 
     async fn verify_encode_decode<T: AsyncEncoder + AsyncDecoder + PartialEq + Debug>(message: T) {
-        let (mut client, mut server) = tokio::io::duplex(128);
-        message.encode(&mut server).await.unwrap();
-
-        let message_read = T::decode(&mut client).await.unwrap();
+        let (mut read, mut write) = tokio::io::duplex(128);
+        message.encode(&mut write).await.expect("unable to encode");
+        let message_read = T::decode(&mut read).await.expect("unable to decode");
         assert_eq!(message, message_read);
     }
 
@@ -302,32 +297,17 @@ mod tests {
 
     #[tokio::test]
     async fn request() {
-        verify_encode_decode(Message::Request(Block {
-            piece: 1,
-            offset: 2,
-            length: 3,
-        }))
-        .await;
+        verify_encode_decode(Message::Request(Block::new(1, 2, 3))).await;
     }
 
     #[tokio::test]
     async fn piece() {
-        verify_encode_decode(Message::Piece(Block {
-            piece: 1,
-            offset: 2,
-            length: 5,
-        }))
-        .await;
+        verify_encode_decode(Message::Piece(Block::new(1, 2, 5))).await;
     }
 
     #[tokio::test]
     async fn cancel() {
-        verify_encode_decode(Message::Cancel(Block {
-            piece: 1,
-            offset: 2,
-            length: 3,
-        }))
-        .await;
+        verify_encode_decode(Message::Cancel(Block::new(1, 2, 3))).await;
     }
 
     #[tokio::test]
