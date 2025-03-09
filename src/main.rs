@@ -162,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let peer_ids_match = peer_info
                         .peer_id
                         .as_ref()
-                        .map_or(true, |peer_id| peer_id == &handshake.peer_id);
+                        .is_none_or(|peer_id| peer_id == &handshake.peer_id);
                     if !peer_ids_match {
                         warn!("peer id mismatch");
                         // disconnect peer

@@ -105,7 +105,7 @@ impl SharedState {
             for piece in peer.has_pieces.iter() {
                 if !self.completed_pieces.contains(piece) {
                     let entry = result.entry(piece).or_default();
-                    entry.push(addr.clone());
+                    entry.push(*addr);
                 }
             }
         }
@@ -169,28 +169,28 @@ impl SharedState {
             // the peer know we're interested.
             return peer.peer_to_client.choking && !self.completed_pieces.contains(piece);
         }
-        return false;
+        false
     }
 
     fn peer_has_pieces(&mut self, addr: &SocketAddr, pieces: BitSet) -> bool {
-        if let Some(peer) = self.peers.get_mut(&addr) {
+        if let Some(peer) = self.peers.get_mut(addr) {
             peer.has_pieces.union_with(&pieces);
             if peer.peer_to_client.choking {
                 pieces.difference(&self.completed_pieces);
                 return !pieces.is_empty();
             }
         }
-        return false;
+        false
     }
 
     fn update_upload_rate(&mut self, addr: &SocketAddr, size: Size, duration: Duration) {
-        if let Some(peer) = self.peers.get_mut(&addr) {
+        if let Some(peer) = self.peers.get_mut(addr) {
             peer.client_to_peer.transfer_rate += TransferRate(size, duration);
         }
     }
 
     fn update_download_rate(&mut self, addr: &SocketAddr, size: Size, duration: Duration) {
-        if let Some(peer) = self.peers.get_mut(&addr) {
+        if let Some(peer) = self.peers.get_mut(addr) {
             peer.peer_to_client.transfer_rate += TransferRate(size, duration);
         }
     }
