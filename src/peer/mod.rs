@@ -1,3 +1,4 @@
+pub mod blocks;
 pub mod message;
 pub mod piece_selector;
 
