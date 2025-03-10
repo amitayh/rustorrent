@@ -1,5 +1,6 @@
 pub mod blocks;
 pub mod message;
+pub mod peer;
 pub mod piece_selector;
 pub mod transfer_rate;
 
@@ -281,6 +282,7 @@ impl Peer {
                     Ok(Message::Unchoke) => {
                         let mut state = self.state.write().await;
                         state.peer_unchoked(&self.addr);
+                        Message::Unchoke.encode(&mut self.socket).await?;
                     }
                     Ok(Message::Interested) => {
                         let mut state = self.state.write().await;

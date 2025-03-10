@@ -28,7 +28,7 @@ pub struct PieceSelector {
 
 #[allow(dead_code)]
 impl PieceSelector {
-    fn new(piece_size: Size, total_size: Size, block_size: Size) -> Self {
+    pub fn new(piece_size: Size, total_size: Size, block_size: Size) -> Self {
         Self {
             peer_transfer_rate: HashMap::new(),
             rarest_piece: PriorityQueue::new(),
@@ -41,7 +41,7 @@ impl PieceSelector {
         }
     }
 
-    async fn next(&mut self) -> Option<(SocketAddr, Block)> {
+    pub async fn next(&mut self) -> Option<(SocketAddr, Block)> {
         if let Some(blocks) = &mut self.current_piece {
             if let Some((addr, block)) = blocks.next() {
                 return Some((addr, block));

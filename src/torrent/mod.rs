@@ -30,7 +30,7 @@ impl TryFrom<Value> for Torrent {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Info {
     pub info_hash: Sha1,
     pub piece_length: Size,
@@ -74,7 +74,7 @@ impl TryFrom<Value> for Info {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum DownloadType {
     SingleFile {
         name: String,
@@ -132,7 +132,7 @@ impl TryFrom<Value> for DownloadType {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct File {
     path: PathBuf,
     length: Size,

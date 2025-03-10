@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use bencoding::value::Value;
 use log::{info, warn};
-use peer::{Peer, SharedState};
+use peer::piece_selector::PieceSelector;
+use peer::{Peer, SharedState, piece_selector};
+use size::Size;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::{fs::File, net::TcpListener};
@@ -132,15 +134,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     {
-        // Request peers
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        let state = Arc::clone(&state);
+        // Request pieces
+        let mut piece_selector = PieceSelector::new(
+            torrent.info.piece_length,
+            torrent.info.download_type.length(),
+            Size::from_kibibytes(16),
+        );
         tokio::spawn(async move {
             loop {
-                interval.tick().await;
                 info!("selecting pieces to request...");
-                let s = state.read().await;
-                s.select_pieces_to_request().await;
+                if let Some((addr, block)) = piece_selector.next().await {
+                    info!("request {:?} from {}", block, addr);
+                }
             }
         });
     }
