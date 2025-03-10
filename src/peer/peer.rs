@@ -10,7 +10,10 @@ use crate::{
     torrent::Info,
 };
 
+use super::PeerId;
+
 struct Peer {
+    peer_id: PeerId,
     listener: TcpListener,
     torrent_info: Info,
 }
@@ -18,21 +21,33 @@ struct Peer {
 impl Peer {
     fn new(listener: TcpListener, torrent_info: Info) -> Self {
         Self {
+            peer_id: PeerId::random(),
             listener,
             torrent_info,
         }
+    }
+
+    fn address(&self) -> Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+
+    fn handshake(&self) -> Handshake {
+        Handshake::new(self.torrent_info.info_hash.clone(), self.peer_id.clone())
     }
 
     async fn start(&self) -> Result<()> {
         loop {
             let (mut socket, addr) = self.listener.accept().await?;
             wait_for_handshake(&mut socket).await?;
-            //send_handshake(&mut socket, handshake).await?;
+            send_handshake(&mut socket, &self.handshake()).await?;
         }
     }
 
-    fn address(&self) -> Result<SocketAddr> {
-        self.listener.local_addr()
+    async fn connect(&self, addr: SocketAddr) -> Result<()> {
+        let mut socket = TcpStream::connect(addr).await?;
+        send_handshake(&mut socket, &self.handshake()).await?;
+        wait_for_handshake(&mut socket).await?;
+        Ok(())
     }
 }
 
@@ -50,10 +65,10 @@ pub async fn send_handshake(socket: &mut TcpStream, handshake: &Handshake) -> Re
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
     use size::Size;
-    use tokio::{io::AsyncWriteExt, net::TcpStream, task::JoinSet, time::timeout};
+    use tokio::{task::JoinSet, time::timeout};
 
     use crate::crypto::Sha1;
 
@@ -75,17 +90,28 @@ mod tests {
         };
 
         let seeder = {
+            // TODO: make seeder have the entire file
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            Peer::new(listener, torrent_info.clone())
+            Arc::new(Peer::new(listener, torrent_info.clone()))
         };
         let leecher = {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            Peer::new(listener, torrent_info)
+            Arc::new(Peer::new(listener, torrent_info))
         };
 
         let mut set = JoinSet::new();
-        set.spawn(async move { seeder.start().await });
-        set.spawn(async move { leecher.start().await });
+        {
+            let seeder = Arc::clone(&seeder);
+            set.spawn(async move { seeder.start().await });
+        }
+        {
+            let leecher = Arc::clone(&leecher);
+            set.spawn(async move { leecher.start().await });
+        }
+        set.spawn(async move {
+            let seeder_address = seeder.address().unwrap();
+            leecher.connect(seeder_address).await
+        });
 
         let result = timeout(Duration::from_secs(1), set.join_all()).await;
 
