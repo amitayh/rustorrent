@@ -18,6 +18,14 @@ impl std::fmt::Debug for Md5 {
 #[derive(PartialEq, Clone)]
 pub struct Sha1(pub [u8; 20]);
 
+impl Sha1 {
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        let bytes = hex::decode(hex).ok()?;
+        let bytes = bytes.try_into().ok()?;
+        Some(Self(bytes))
+    }
+}
+
 impl std::fmt::Debug for Sha1 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Sha1(")?;

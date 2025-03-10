@@ -2,7 +2,9 @@
 use std::{io::Result, net::SocketAddr};
 
 use log::info;
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinSet;
 
 use crate::peer::message::Handshake;
 use crate::{
@@ -40,6 +42,9 @@ impl Peer {
             let (mut socket, addr) = self.listener.accept().await?;
             wait_for_handshake(&mut socket).await?;
             send_handshake(&mut socket, &self.handshake()).await?;
+            tokio::spawn(async move {
+                process(socket).await.unwrap();
+            });
         }
     }
 
@@ -47,8 +52,14 @@ impl Peer {
         let mut socket = TcpStream::connect(addr).await?;
         send_handshake(&mut socket, &self.handshake()).await?;
         wait_for_handshake(&mut socket).await?;
+        process(socket).await?;
         Ok(())
     }
+}
+
+async fn process(mut socket: TcpStream) -> Result<()> {
+    socket.read_u8().await?;
+    Ok(())
 }
 
 async fn wait_for_handshake(socket: &mut TcpStream) -> Result<()> {

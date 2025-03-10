@@ -1,7 +1,13 @@
-use std::path::PathBuf;
+use std::{
+    io::Write,
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Error, Result, anyhow};
-use size::Size;
+use sha1::Digest;
+use size::{KiB, Size};
+use tokio::io::AsyncReadExt;
 use url::Url;
 
 use crate::{
@@ -53,6 +59,46 @@ impl Info {
             all.push(Sha1(sha));
         }
         Ok(all)
+    }
+
+    async fn load(path: impl AsRef<Path>) -> Result<Info> {
+        let mut file = tokio::fs::File::open(&path).await?;
+        let piece_length = (32 * KiB) as usize;
+        let file_size = file.metadata().await?.len();
+        let num_pieces = ((file_size as f64) / (piece_length as f64)).ceil() as usize;
+        let mut pieces: Vec<u8> = Vec::with_capacity(num_pieces * 20);
+
+        for piece in 0..num_pieces {
+            let mut offset = piece * piece_length;
+            let end = (offset + piece_length).min(file_size as usize);
+
+            let mut hasher = sha1::Sha1::new();
+            let mut buf = [0; 4096];
+            while offset < end {
+                let len = file.read(&mut buf).await?;
+                hasher.write_all(&buf[..len])?;
+                offset += len;
+            }
+
+            let sha1 = hasher.finalize();
+            pieces.extend_from_slice(&sha1);
+        }
+
+        let value = Value::dictionary()
+            .with_entry("piece length", Value::Integer(piece_length as i64))
+            .with_entry("pieces", Value::String(pieces))
+            .with_entry(
+                "name",
+                Value::String(
+                    path.as_ref()
+                        .file_name()
+                        .map(|name| name.as_bytes().to_vec())
+                        .unwrap_or_default(),
+                ),
+            )
+            .with_entry("length", Value::Integer(file_size as i64));
+
+        Info::try_from(value)
     }
 }
 
@@ -278,5 +324,31 @@ mod tests {
         } else {
             panic!("unexpected download type");
         };
+    }
+
+    #[tokio::test]
+    async fn load_torrent_info_from_file() {
+        let info = Info::load("assets/alice_in_wonderland.txt").await.unwrap();
+
+        assert_eq!(
+            info,
+            Info {
+                info_hash: Sha1::from_hex("0762bc37d23fef894da5712576d337c3ecbae9bd").unwrap(),
+                piece_length: Size::from_bytes(32768),
+                pieces: vec![
+                    Sha1::from_hex("8fdfb566405fc084761b1fe0b6b7f8c6a37234ed").unwrap(),
+                    Sha1::from_hex("2494039151d7db3e56b3ec021d233742e3de55a6").unwrap(),
+                    Sha1::from_hex("af99be061f2c5eee12374055cf1a81909d276db5").unwrap(),
+                    Sha1::from_hex("3c12e1fcba504fedc13ee17ea76b62901dc8c9f7").unwrap(),
+                    Sha1::from_hex("d5facb89cbdc2e3ed1a1cd1050e217ec534f1fad").unwrap(),
+                    Sha1::from_hex("d5d2b296f52ab11791aad35a7d493833d39c6786").unwrap()
+                ],
+                download_type: DownloadType::SingleFile {
+                    name: "alice_in_wonderland.txt".to_string(),
+                    length: Size::from_bytes(174357),
+                    md5sum: None
+                },
+            }
+        );
     }
 }
