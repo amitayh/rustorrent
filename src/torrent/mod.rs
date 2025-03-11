@@ -61,7 +61,7 @@ impl Info {
         Ok(all)
     }
 
-    async fn load(path: impl AsRef<Path>) -> Result<Info> {
+    pub async fn load(path: impl AsRef<Path>) -> Result<Info> {
         let mut file = tokio::fs::File::open(&path).await?;
         let file_size = file.metadata().await?.len();
         // TODO: make piece length dynamic by file size
@@ -69,19 +69,24 @@ impl Info {
         let num_pieces = ((file_size as f64) / (piece_length as f64)).ceil() as usize;
         let mut pieces: Vec<u8> = Vec::with_capacity(num_pieces * 20);
 
+        let mut file_hasher = md5::Context::new();
         for piece in 0..num_pieces {
             let mut offset = piece * piece_length;
             let piece_end = (offset + piece_length).min(file_size as usize);
-            let mut hasher = sha1::Sha1::new();
+            let mut piece_hasher = sha1::Sha1::new();
             let mut buf = [0; 4096];
             while offset < piece_end {
                 let len = file.read(&mut buf).await?;
-                hasher.write_all(&buf[0..len])?;
+                piece_hasher.write_all(&buf[0..len])?;
+                file_hasher.write_all(&buf[0..len])?;
                 offset += len;
             }
-            let sha1 = hasher.finalize();
+            let sha1 = piece_hasher.finalize();
             pieces.extend_from_slice(&sha1);
         }
+
+        let md5::Digest(digest) = file_hasher.compute();
+        let md5sum = hex::encode(digest);
 
         let file_name = path
             .as_ref()
@@ -93,7 +98,8 @@ impl Info {
             .with_entry("piece length", Value::Integer(piece_length as i64))
             .with_entry("pieces", Value::String(pieces))
             .with_entry("name", Value::String(file_name))
-            .with_entry("length", Value::Integer(file_size as i64));
+            .with_entry("length", Value::Integer(file_size as i64))
+            .with_entry("md5sum", Value::String(md5sum.into_bytes()));
 
         Info::try_from(value)
     }
@@ -330,7 +336,7 @@ mod tests {
         assert_eq!(
             info,
             Info {
-                info_hash: Sha1::from_hex("0762bc37d23fef894da5712576d337c3ecbae9bd").unwrap(),
+                info_hash: Sha1::from_hex("e90cf5ec83e174d7dcb94821560dac201ae1f663").unwrap(),
                 piece_length: Size::from_kibibytes(32),
                 pieces: vec![
                     Sha1::from_hex("8fdfb566405fc084761b1fe0b6b7f8c6a37234ed").unwrap(),
@@ -343,7 +349,7 @@ mod tests {
                 download_type: DownloadType::SingleFile {
                     name: "alice_in_wonderland.txt".to_string(),
                     length: Size::from_bytes(174357),
-                    md5sum: None
+                    md5sum: Some(Md5::from_hex("9a930de3cfc64468c05715237a6b4061").unwrap())
                 },
             }
         );

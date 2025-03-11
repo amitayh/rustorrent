@@ -5,6 +5,14 @@ use crate::{bencoding::value::Value, codec::Encoder};
 #[derive(PartialEq, Clone)]
 pub struct Md5(pub [u8; 16]);
 
+impl Md5 {
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        let bytes = hex::decode(hex).ok()?;
+        let bytes = bytes.try_into().ok()?;
+        Some(Self(bytes))
+    }
+}
+
 impl std::fmt::Debug for Md5 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Md5(")?;

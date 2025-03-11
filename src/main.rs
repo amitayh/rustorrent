@@ -6,7 +6,7 @@ use std::time::Duration;
 use bencoding::value::Value;
 use log::{info, warn};
 use peer::piece_selector::PieceSelector;
-use peer::{Peer, SharedState, piece_selector};
+use peer::{Peer, SharedState};
 use size::Size;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;

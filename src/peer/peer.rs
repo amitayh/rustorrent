@@ -4,7 +4,6 @@ use std::{io::Result, net::SocketAddr};
 use log::info;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::task::JoinSet;
 
 use crate::peer::message::Handshake;
 use crate::{
@@ -39,7 +38,7 @@ impl Peer {
 
     async fn start(&self) -> Result<()> {
         loop {
-            let (mut socket, addr) = self.listener.accept().await?;
+            let (mut socket, _addr) = self.listener.accept().await?;
             wait_for_handshake(&mut socket).await?;
             send_handshake(&mut socket, &self.handshake()).await?;
             tokio::spawn(async move {
@@ -78,10 +77,7 @@ pub async fn send_handshake(socket: &mut TcpStream, handshake: &Handshake) -> Re
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use size::Size;
     use tokio::{task::JoinSet, time::timeout};
-
-    use crate::crypto::Sha1;
 
     use super::*;
 
@@ -89,16 +85,7 @@ mod tests {
     async fn one_seeder_one_leecher() {
         env_logger::init();
 
-        let torrent_info = Info {
-            info_hash: Sha1([0; 20]),
-            piece_length: Size::from_bytes(0),
-            pieces: vec![],
-            download_type: crate::torrent::DownloadType::SingleFile {
-                name: "".to_string(),
-                length: Size::from_bytes(0),
-                md5sum: None,
-            },
-        };
+        let torrent_info = Info::load("assets/alice_in_wonderland.txt").await.unwrap();
 
         let seeder = {
             // TODO: make seeder have the entire file
