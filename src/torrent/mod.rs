@@ -63,39 +63,36 @@ impl Info {
 
     async fn load(path: impl AsRef<Path>) -> Result<Info> {
         let mut file = tokio::fs::File::open(&path).await?;
-        let piece_length = (32 * KiB) as usize;
         let file_size = file.metadata().await?.len();
+        // TODO: make piece length dynamic by file size
+        let piece_length = (32 * KiB) as usize;
         let num_pieces = ((file_size as f64) / (piece_length as f64)).ceil() as usize;
         let mut pieces: Vec<u8> = Vec::with_capacity(num_pieces * 20);
 
         for piece in 0..num_pieces {
             let mut offset = piece * piece_length;
-            let end = (offset + piece_length).min(file_size as usize);
-
+            let piece_end = (offset + piece_length).min(file_size as usize);
             let mut hasher = sha1::Sha1::new();
             let mut buf = [0; 4096];
-            while offset < end {
+            while offset < piece_end {
                 let len = file.read(&mut buf).await?;
-                hasher.write_all(&buf[..len])?;
+                hasher.write_all(&buf[0..len])?;
                 offset += len;
             }
-
             let sha1 = hasher.finalize();
             pieces.extend_from_slice(&sha1);
         }
 
+        let file_name = path
+            .as_ref()
+            .file_name()
+            .map(|name| name.as_bytes().to_vec())
+            .unwrap_or_default();
+
         let value = Value::dictionary()
             .with_entry("piece length", Value::Integer(piece_length as i64))
             .with_entry("pieces", Value::String(pieces))
-            .with_entry(
-                "name",
-                Value::String(
-                    path.as_ref()
-                        .file_name()
-                        .map(|name| name.as_bytes().to_vec())
-                        .unwrap_or_default(),
-                ),
-            )
+            .with_entry("name", Value::String(file_name))
             .with_entry("length", Value::Integer(file_size as i64));
 
         Info::try_from(value)
@@ -334,7 +331,7 @@ mod tests {
             info,
             Info {
                 info_hash: Sha1::from_hex("0762bc37d23fef894da5712576d337c3ecbae9bd").unwrap(),
-                piece_length: Size::from_bytes(32768),
+                piece_length: Size::from_kibibytes(32),
                 pieces: vec![
                     Sha1::from_hex("8fdfb566405fc084761b1fe0b6b7f8c6a37234ed").unwrap(),
                     Sha1::from_hex("2494039151d7db3e56b3ec021d233742e3de55a6").unwrap(),
