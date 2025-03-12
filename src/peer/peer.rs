@@ -1,8 +1,10 @@
 #![allow(dead_code)]
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::{Error, ErrorKind};
 use std::{io::Result, net::SocketAddr};
 
+use bit_set::BitSet;
 use log::{info, warn};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -10,6 +12,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use crate::peer::message::Handshake;
 use crate::peer::message::Message;
 use crate::peer::peer_id::PeerId;
+use crate::peer::transfer_rate::TransferRate;
 use crate::{
     codec::{AsyncDecoder, AsyncEncoder},
     torrent::Info,
@@ -17,73 +20,164 @@ use crate::{
 
 struct PeerMessage(SocketAddr, Message);
 
+struct PeerToPeer {
+    transfer_rate: TransferRate,
+    choking: bool,
+    interested: bool,
+}
+
+impl PeerToPeer {
+    fn new() -> Self {
+        Self {
+            transfer_rate: TransferRate::EMPTY,
+            choking: true,
+            interested: false,
+        }
+    }
+}
+
+struct PeerState {
+    tx: Sender<Message>,
+    has_pieces: BitSet,
+    client_to_peer: PeerToPeer,
+    peer_to_client: PeerToPeer,
+}
+
+impl PeerState {
+    fn new(tx: Sender<Message>) -> Self {
+        Self {
+            tx,
+            has_pieces: BitSet::new(),
+            client_to_peer: PeerToPeer::new(),
+            peer_to_client: PeerToPeer::new(),
+        }
+    }
+}
+
 struct Peer {
     peer_id: PeerId,
     listener: TcpListener,
     torrent_info: Info,
+    peers: HashMap<SocketAddr, PeerState>,
     tx: Sender<PeerMessage>,
     rx: Receiver<PeerMessage>,
-    temp_has_file: bool,
+    handshake: Handshake,
+    has_pieces: BitSet,
 }
 
 impl Peer {
     fn new(listener: TcpListener, torrent_info: Info) -> Self {
+        let peer_id = PeerId::random();
+        let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
+        let total_pieces = torrent_info.pieces.len();
         let (tx, rx) = mpsc::channel(128);
         Self {
-            peer_id: PeerId::random(),
+            peer_id,
             listener,
             torrent_info,
+            peers: HashMap::new(),
             tx,
             rx,
-            temp_has_file: false,
+            handshake,
+            has_pieces: BitSet::with_capacity(total_pieces),
         }
     }
 
     fn temp_has_file(&mut self) {
-        self.temp_has_file = true;
+        for piece in 0..self.torrent_info.pieces.len() {
+            self.has_pieces.insert(piece);
+        }
     }
 
     fn address(&self) -> Result<SocketAddr> {
         self.listener.local_addr()
     }
 
-    fn handshake(&self) -> Handshake {
-        Handshake::new(self.torrent_info.info_hash.clone(), self.peer_id.clone())
-    }
-
     async fn start(&mut self) -> Result<()> {
         loop {
             tokio::select! {
                 Some(PeerMessage(addr, message)) = self.rx.recv() => {
-                   self.handle_message(addr, message);
+                   self.handle_message(addr, message).await?;
                 }
                 Ok((socket, addr)) = self.listener.accept() => {
                     info!("got new connection from {}", &addr);
-                    let mut handler = ConnectionHandler::new(addr, socket, self.tx.clone());
-                    handler.wait_for_handshake().await?;
-                    handler.send(self.handshake()).await?;
-                    if self.temp_has_file {
-                        handler.send(Message::Have { piece: 0 }).await?;
-                    }
-                    tokio::spawn(async move { handler.start().await });
+                    self.accept_connection(addr, socket).await?;
                 }
             }
         }
     }
 
-    async fn connect(&self, addr: SocketAddr) -> Result<()> {
+    async fn connect(&mut self, addr: SocketAddr) -> Result<()> {
         let socket = TcpStream::connect(addr).await?;
-        let mut handler = ConnectionHandler::new(addr, socket, self.tx.clone());
-        handler.send(self.handshake()).await?;
-        handler.wait_for_handshake().await?;
+        self.new_peer(addr, socket, true).await
+    }
+
+    async fn accept_connection(&mut self, addr: SocketAddr, socket: TcpStream) -> Result<()> {
+        self.new_peer(addr, socket, false).await
+    }
+
+    async fn new_peer(
+        &mut self,
+        addr: SocketAddr,
+        socket: TcpStream,
+        send_handshake_first: bool,
+    ) -> Result<()> {
+        let (rx, tx) = mpsc::channel(16);
+        let mut handler = ConnectionHandler::new(addr, socket, self.tx.clone(), tx);
+        if send_handshake_first {
+            handler.send(&self.handshake).await?;
+            handler.wait_for_handshake().await?;
+        } else {
+            handler.wait_for_handshake().await?;
+            handler.send(&self.handshake).await?;
+        }
+        if !self.has_pieces.is_empty() {
+            let bitfield = Message::Bitfield(self.has_pieces.clone());
+            handler.send(&bitfield).await?;
+        }
+        self.peers.insert(addr, PeerState::new(rx));
         tokio::spawn(async move { handler.start().await });
         Ok(())
     }
 
-    async fn handle_message(&mut self, addr: SocketAddr, message: Message) {
-        match message {
-            _ => todo!(),
+    async fn handle_message(&mut self, addr: SocketAddr, message: Message) -> Result<()> {
+        match self.peers.get_mut(&addr) {
+            Some(peer_state) => match message {
+                Message::KeepAlive => (), // No-op
+                Message::Choke => {
+                    peer_state.peer_to_client.choking = true;
+                }
+                Message::Unchoke => {
+                    peer_state.peer_to_client.choking = false;
+                }
+                Message::Interested => {
+                    peer_state.peer_to_client.interested = true;
+                }
+                Message::NotInterested => {
+                    peer_state.peer_to_client.interested = false;
+                }
+                Message::Have { piece } => {
+                    peer_state.has_pieces.insert(piece);
+                }
+                Message::Bitfield(pieces) => {
+                    peer_state.has_pieces.union_with(&pieces);
+                    let difference = peer_state.has_pieces.difference(&self.has_pieces);
+                    if !peer_state.client_to_peer.interested
+                        && peer_state.peer_to_client.choking
+                        && difference.count() > 0
+                    {
+                        peer_state
+                            .tx
+                            .send(Message::Interested)
+                            .await
+                            .map_err(|err| Error::new(ErrorKind::Other, err))?;
+                    }
+                }
+                _ => todo!(),
+            },
+            None => panic!("invalid peer"),
         }
+        Ok(())
     }
 }
 
@@ -91,11 +185,22 @@ struct ConnectionHandler {
     addr: SocketAddr,
     socket: TcpStream,
     tx: Sender<PeerMessage>,
+    rx: Receiver<Message>,
 }
 
 impl ConnectionHandler {
-    fn new(addr: SocketAddr, socket: TcpStream, tx: Sender<PeerMessage>) -> Self {
-        Self { addr, socket, tx }
+    fn new(
+        addr: SocketAddr,
+        socket: TcpStream,
+        tx: Sender<PeerMessage>,
+        rx: Receiver<Message>,
+    ) -> Self {
+        Self {
+            addr,
+            socket,
+            tx,
+            rx,
+        }
     }
 
     pub async fn wait_for_handshake(&mut self) -> Result<()> {
@@ -104,7 +209,7 @@ impl ConnectionHandler {
         Ok(())
     }
 
-    pub async fn send(&mut self, message: impl AsyncEncoder + Debug) -> Result<()> {
+    pub async fn send<T: AsyncEncoder + Debug>(&mut self, message: &T) -> Result<()> {
         message.encode(&mut self.socket).await?;
         info!("[{}] > sent message: {:?}", &self.addr, message);
         Ok(())
@@ -112,17 +217,31 @@ impl ConnectionHandler {
 
     pub async fn start(&mut self) -> Result<()> {
         loop {
-            match Message::decode(&mut self.socket).await {
-                Ok(message) => {
-                    info!("[{}] < got message: {:?}", &self.addr, &message);
-                    self.tx
-                        .send(PeerMessage(self.addr, message))
-                        .await
-                        .map_err(|err| Error::new(ErrorKind::Other, err))?;
+            tokio::select! {
+                Some(message) = self.rx.recv() => {
+                    self.send(&message).await?;
                 }
-                Err(err) => warn!("[{}] failed to decode message: {}", &self.addr, err),
+                message = Message::decode(&mut self.socket) => {
+                    match message {
+                        Ok(message) => {
+                            info!("[{}] < got message: {:?}", &self.addr, &message);
+                            self.tx
+                                .send(PeerMessage(self.addr, message))
+                                .await
+                                .map_err(|err| Error::new(ErrorKind::Other, err))?;
+                        }
+                        Err(err) => {
+                            warn!("[{}] failed to decode message: {}", &self.addr, err);
+                            if err.kind() == ErrorKind::UnexpectedEof {
+                                // Disconnected
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
+        Ok(())
     }
 }
 
