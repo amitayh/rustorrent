@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io::{Error, ErrorKind};
@@ -61,6 +62,12 @@ impl PeerState {
     fn eligible_for_unchoking(&self) -> bool {
         self.client_to_peer.choking && self.peer_to_client.interested
     }
+
+    async fn unchoke(&mut self) -> anyhow::Result<()> {
+        self.client_to_peer.choking = false;
+        self.tx.send(Message::Unchoke).await?;
+        Ok(())
+    }
 }
 
 struct Peer {
@@ -111,7 +118,7 @@ impl Peer {
             tokio::select! {
                 _ = unchoke_best.tick() => {
                     info!("running choking algorithm");
-                    self.select_best_peers_to_unchoke();
+                    self.select_best_peers_to_unchoke().await?;
                 }
                 _ = unchoke_random.tick() => {
                     info!("running optimistic choking algorithm");
@@ -161,8 +168,18 @@ impl Peer {
         Ok(())
     }
 
-    fn select_best_peers_to_unchoke(&self) {
-        //
+    async fn select_best_peers_to_unchoke(&mut self) -> anyhow::Result<()> {
+        let mut best_peers: Vec<_> = self
+            .peers
+            .iter_mut()
+            .filter(|(_, peer)| peer.eligible_for_unchoking())
+            .collect();
+        best_peers.sort_by_key(|(_, peer)| Reverse(peer.peer_to_client.transfer_rate.clone()));
+        for (addr, peer) in best_peers.into_iter().take(3) {
+            info!("unchoking peer {}", addr);
+            peer.unchoke().await?;
+        }
+        Ok(())
     }
 
     async fn select_random_peer_to_unchoke(&mut self) -> anyhow::Result<()> {
@@ -176,8 +193,7 @@ impl Peer {
 
         if let Some((addr, peer)) = random_peer {
             info!("unchoking peer {}", addr);
-            peer.client_to_peer.choking = false;
-            peer.tx.send(Message::Unchoke).await?;
+            peer.unchoke().await?;
         }
 
         Ok(())
