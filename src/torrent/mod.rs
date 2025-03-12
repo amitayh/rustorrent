@@ -61,6 +61,7 @@ impl Info {
         Ok(all)
     }
 
+    #[allow(dead_code)]
     pub async fn load(path: impl AsRef<Path>) -> Result<Info> {
         let mut file = tokio::fs::File::open(&path).await?;
         let file_size = file.metadata().await?.len();

@@ -6,9 +6,12 @@ use std::{io::Result, net::SocketAddr};
 
 use bit_set::BitSet;
 use log::{info, warn};
+use rand::seq::IteratorRandom;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::time;
 
+use crate::peer::config::Config;
 use crate::peer::message::Handshake;
 use crate::peer::message::Message;
 use crate::peer::peer_id::PeerId;
@@ -20,6 +23,7 @@ use crate::{
 
 struct PeerMessage(SocketAddr, Message);
 
+#[derive(Debug)]
 struct PeerToPeer {
     transfer_rate: TransferRate,
     choking: bool,
@@ -36,6 +40,7 @@ impl PeerToPeer {
     }
 }
 
+#[derive(Debug)]
 struct PeerState {
     tx: Sender<Message>,
     has_pieces: BitSet,
@@ -52,6 +57,10 @@ impl PeerState {
             peer_to_client: PeerToPeer::new(),
         }
     }
+
+    fn eligible_for_unchoking(&self) -> bool {
+        self.client_to_peer.choking && self.peer_to_client.interested
+    }
 }
 
 struct Peer {
@@ -63,10 +72,11 @@ struct Peer {
     rx: Receiver<PeerMessage>,
     handshake: Handshake,
     has_pieces: BitSet,
+    config: Config,
 }
 
 impl Peer {
-    fn new(listener: TcpListener, torrent_info: Info) -> Self {
+    fn new(listener: TcpListener, torrent_info: Info, config: Config) -> Self {
         let peer_id = PeerId::random();
         let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
         let total_pieces = torrent_info.pieces.len();
@@ -80,6 +90,7 @@ impl Peer {
             rx,
             handshake,
             has_pieces: BitSet::with_capacity(total_pieces),
+            config,
         }
     }
 
@@ -93,9 +104,19 @@ impl Peer {
         self.listener.local_addr()
     }
 
-    async fn start(&mut self) -> Result<()> {
+    async fn start(&mut self) -> anyhow::Result<()> {
+        let mut unchoke_best = time::interval(self.config.unchoking_interval);
+        let mut unchoke_random = time::interval(self.config.optimistic_unchoking_interval);
         loop {
             tokio::select! {
+                _ = unchoke_best.tick() => {
+                    info!("running choking algorithm");
+                    self.select_best_peers_to_unchoke();
+                }
+                _ = unchoke_random.tick() => {
+                    info!("running optimistic choking algorithm");
+                    self.select_random_peer_to_unchoke().await?;
+                }
                 Some(PeerMessage(addr, message)) = self.rx.recv() => {
                    self.handle_message(addr, message).await?;
                 }
@@ -140,7 +161,29 @@ impl Peer {
         Ok(())
     }
 
-    async fn handle_message(&mut self, addr: SocketAddr, message: Message) -> Result<()> {
+    fn select_best_peers_to_unchoke(&self) {
+        //
+    }
+
+    async fn select_random_peer_to_unchoke(&mut self) -> anyhow::Result<()> {
+        let random_peer = {
+            let mut rng = rand::rng();
+            self.peers
+                .iter_mut()
+                .filter(|(_, peer)| peer.eligible_for_unchoking())
+                .choose(&mut rng)
+        };
+
+        if let Some((addr, peer)) = random_peer {
+            info!("unchoking peer {}", addr);
+            peer.client_to_peer.choking = false;
+            peer.tx.send(Message::Unchoke).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_message(&mut self, addr: SocketAddr, message: Message) -> anyhow::Result<()> {
         match self.peers.get_mut(&addr) {
             Some(peer_state) => match message {
                 Message::KeepAlive => (), // No-op
@@ -166,11 +209,23 @@ impl Peer {
                         && peer_state.peer_to_client.choking
                         && difference.count() > 0
                     {
-                        peer_state
-                            .tx
-                            .send(Message::Interested)
-                            .await
-                            .map_err(|err| Error::new(ErrorKind::Other, err))?;
+                        peer_state.tx.send(Message::Interested).await?;
+                    }
+                }
+                Message::Request(block) => {
+                    if peer_state.client_to_peer.choking {
+                        warn!(
+                            "peer {} requested block {:?} while being choked",
+                            addr, block
+                        );
+                        return Ok(());
+                    }
+                    if self.has_pieces.contains(block.piece) {
+                        warn!(
+                            "peer {} requested piece {} which is not available",
+                            addr, block.piece
+                        );
+                        return Ok(());
                     }
                 }
                 _ => todo!(),
@@ -205,13 +260,13 @@ impl ConnectionHandler {
 
     pub async fn wait_for_handshake(&mut self) -> Result<()> {
         let handshake = Handshake::decode(&mut self.socket).await?;
-        info!("[{}] < got handshake {:?}", &self.addr, handshake);
+        info!("< got handshake {:?}", handshake);
         Ok(())
     }
 
     pub async fn send<T: AsyncEncoder + Debug>(&mut self, message: &T) -> Result<()> {
         message.encode(&mut self.socket).await?;
-        info!("[{}] > sent message: {:?}", &self.addr, message);
+        info!("> sent message: {:?}", message);
         Ok(())
     }
 
@@ -224,14 +279,14 @@ impl ConnectionHandler {
                 message = Message::decode(&mut self.socket) => {
                     match message {
                         Ok(message) => {
-                            info!("[{}] < got message: {:?}", &self.addr, &message);
+                            info!("< got message: {:?}", &message);
                             self.tx
                                 .send(PeerMessage(self.addr, message))
                                 .await
                                 .map_err(|err| Error::new(ErrorKind::Other, err))?;
                         }
                         Err(err) => {
-                            warn!("[{}] failed to decode message: {}", &self.addr, err);
+                            warn!("failed to decode message: {}", err);
                             if err.kind() == ErrorKind::UnexpectedEof {
                                 // Disconnected
                                 break;
@@ -261,14 +316,17 @@ mod tests {
 
         let mut seeder = {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let mut peer = Peer::new(listener, torrent_info.clone());
+            let config = Config::default()
+                .with_unchoking_interval(Duration::from_secs(1))
+                .with_optimistic_unchoking_interval(Duration::from_secs(2));
+            let mut peer = Peer::new(listener, torrent_info.clone(), config);
             peer.temp_has_file();
             peer
         };
         let seeder_addr = seeder.address().unwrap();
         let mut leecher = {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            Peer::new(listener, torrent_info)
+            Peer::new(listener, torrent_info, Config::default())
         };
 
         let mut set = JoinSet::new();
@@ -278,7 +336,7 @@ mod tests {
             leecher.start().await
         });
 
-        let result = timeout(Duration::from_secs(1), set.join_all()).await;
+        let result = timeout(Duration::from_secs(20), set.join_all()).await;
 
         // assert leecher has file
         assert!(result.is_ok());

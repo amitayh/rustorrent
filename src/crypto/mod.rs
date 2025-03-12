@@ -6,6 +6,7 @@ use crate::{bencoding::value::Value, codec::Encoder};
 pub struct Md5(pub [u8; 16]);
 
 impl Md5 {
+    #[allow(dead_code)]
     pub fn from_hex(hex: &str) -> Option<Self> {
         let bytes = hex::decode(hex).ok()?;
         let bytes = bytes.try_into().ok()?;
@@ -27,6 +28,7 @@ impl std::fmt::Debug for Md5 {
 pub struct Sha1(pub [u8; 20]);
 
 impl Sha1 {
+    #[allow(dead_code)]
     pub fn from_hex(hex: &str) -> Option<Self> {
         let bytes = hex::decode(hex).ok()?;
         let bytes = bytes.try_into().ok()?;
