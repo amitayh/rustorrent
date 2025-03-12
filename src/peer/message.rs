@@ -1,7 +1,6 @@
 use std::io::{Error, ErrorKind, Result};
 
 use bit_set::BitSet;
-use log::info;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::codec::{AsyncDecoder, AsyncEncoder};
@@ -148,7 +147,6 @@ impl AsyncDecoder for Message {
 
 impl AsyncEncoder for Message {
     async fn encode<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
-        info!("> sending message: {:?}", self);
         match self {
             Self::KeepAlive => stream.write_u32(0).await?,
             Self::Choke => {
