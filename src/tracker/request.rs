@@ -1,6 +1,6 @@
 use size::Size;
 
-use crate::{crypto::Sha1, peer::PeerId};
+use crate::{crypto::Sha1, peer::peer_id::PeerId};
 
 #[allow(dead_code)]
 struct TrackerRequest {

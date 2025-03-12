@@ -43,8 +43,8 @@ impl PieceSelector {
 
     pub async fn next(&mut self) -> Option<(SocketAddr, Block)> {
         if let Some(blocks) = &mut self.current_piece {
-            if let Some((addr, block)) = blocks.next() {
-                return Some((addr, block));
+            if let result @ Some(_) = blocks.next() {
+                return result;
             } else {
                 self.current_piece = None;
             }

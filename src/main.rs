@@ -5,16 +5,18 @@ use std::time::Duration;
 
 use bencoding::value::Value;
 use log::{info, warn};
+use peer::SharedState;
+use peer::connection::PeerConnection;
 use peer::piece_selector::PieceSelector;
-use peer::{Peer, SharedState};
 use size::Size;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::{fs::File, net::TcpListener};
+use tracker::Event;
 
 use crate::codec::AsyncDecoder;
-use crate::peer::PeerId;
 use crate::peer::message::Handshake;
+use crate::peer::peer_id::PeerId;
 use crate::torrent::Torrent;
 
 mod bencoding;
@@ -95,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             loop {
                 let (socket, addr) = listener.accept().await?;
-                let mut peer = Peer::new(addr, socket, Arc::clone(&state)).await;
+                let mut peer = PeerConnection::new(addr, socket, Arc::clone(&state)).await;
                 peer.wait_for_handshake().await?;
                 peer.send_handshake(&handshake).await?;
                 tokio::spawn(async move { peer.process().await });
@@ -121,7 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let response = tracker::request(&torrent, &config, None).await?;
+    let response = tracker::request(&torrent, &config, Some(Event::Started)).await?;
 
     {
         // Reannounce
@@ -160,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match TcpStream::connect(address).await {
                 Ok(socket) => {
                     info!("connected");
-                    let mut peer = Peer::new(address, socket, Arc::clone(&state)).await;
+                    let mut peer = PeerConnection::new(address, socket, Arc::clone(&state)).await;
                     peer.send_handshake(&handshake).await?;
                     peer.wait_for_handshake().await?;
 

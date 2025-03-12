@@ -6,7 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::codec::{AsyncDecoder, AsyncEncoder};
 use crate::crypto::Sha1;
-use crate::peer::PeerId;
+use crate::peer::peer_id::PeerId;
 
 const PROTOCOL: &str = "BitTorrent protocol";
 const ID_CHOKE: u8 = 0;

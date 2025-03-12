@@ -6,12 +6,11 @@ use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::peer::message::Handshake;
+use crate::peer::peer_id::PeerId;
 use crate::{
     codec::{AsyncDecoder, AsyncEncoder},
     torrent::Info,
 };
-
-use super::PeerId;
 
 struct Peer {
     peer_id: PeerId,

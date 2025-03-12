@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Error, Result, anyhow};
 
-use crate::{bencoding::value::Value, peer::PeerId};
+use crate::{bencoding::value::Value, peer::peer_id::PeerId};
 
 const ADDR_LEN: usize = 6;
 
