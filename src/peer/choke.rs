@@ -8,6 +8,7 @@ use crate::peer::transfer_rate::TransferRate;
 
 const TOP_PEERS: usize = 3;
 
+#[derive(Debug)]
 pub struct ChokeDecision {
     pub peers_to_choke: HashSet<SocketAddr>,
     pub peers_to_unchoke: HashSet<SocketAddr>,
@@ -19,29 +20,27 @@ pub fn choke(
     transfer_rates: &HashMap<SocketAddr, TransferRate>,
     optimisitic: bool,
 ) -> ChokeDecision {
-    let mut heap = BinaryHeap::with_capacity(TOP_PEERS + 1);
+    let mut top_peers = BinaryHeap::with_capacity(TOP_PEERS + 1);
     for peer in interested {
         let transfer_rate = transfer_rates.get(peer).unwrap_or(&TransferRate::EMPTY);
-        heap.push(Reverse(PeerByTransferRate(*peer, *transfer_rate)));
-        if heap.len() > TOP_PEERS {
-            heap.pop();
+        top_peers.push(Reverse(PeerByTransferRate(*peer, *transfer_rate)));
+        if top_peers.len() > TOP_PEERS {
+            top_peers.pop();
         }
     }
 
     let mut peers_to_choke = unchoked.clone();
     let mut peers_to_unchoke = HashSet::with_capacity(TOP_PEERS + 1);
-    for Reverse(PeerByTransferRate(peer, _)) in heap {
+    for Reverse(PeerByTransferRate(peer, _)) in top_peers {
         peers_to_choke.remove(&peer);
         peers_to_unchoke.insert(peer);
     }
 
     if optimisitic {
-        let mut rng = rand::rng();
-        let random_peer = interested
-            .iter()
-            .filter(|&peer| !peers_to_unchoke.contains(peer))
-            .choose(&mut rng);
-        if let Some(peer) = random_peer {
+        // Add one randomly selected peer from remaining interested peers
+        let remaining = interested.difference(&peers_to_unchoke);
+        if let Some(peer) = remaining.choose(&mut rand::rng()) {
+            peers_to_choke.remove(peer);
             peers_to_unchoke.insert(*peer);
         }
     }
@@ -171,5 +170,25 @@ mod tests {
             decision.peers_to_unchoke,
             HashSet::from([peer1, peer2, peer3, peer4])
         );
+    }
+
+    #[test]
+    fn keep_unchoked_peers_if_selected_again() {
+        let peer1 = "127.0.0.1:6881".parse().unwrap();
+        let peer2 = "127.0.0.2:6881".parse().unwrap();
+        let peer3 = "127.0.0.3:6881".parse().unwrap();
+        let peer4 = "127.0.0.4:6881".parse().unwrap();
+
+        let interested = HashSet::from([peer1, peer2, peer3, peer4]);
+        let unchoked = HashSet::from([peer1, peer2, peer3, peer4]);
+        let transfer_rate = HashMap::from([
+            (peer1, TransferRate(Size::from_kibibytes(10), SEC)),
+            (peer2, TransferRate(Size::from_kibibytes(20), SEC)),
+            (peer3, TransferRate(Size::from_kibibytes(30), SEC)),
+            (peer4, TransferRate(Size::from_kibibytes(40), SEC)),
+        ]);
+        let decision = choke(&interested, &unchoked, &transfer_rate, true);
+
+        assert!(decision.peers_to_choke.is_empty());
     }
 }
