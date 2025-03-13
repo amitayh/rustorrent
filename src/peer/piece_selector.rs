@@ -124,9 +124,7 @@ struct PeerSet(HashSet<SocketAddr>);
 
 impl PeerSet {
     fn singleton(addr: SocketAddr) -> Self {
-        let mut peers = HashSet::new();
-        peers.insert(addr);
-        Self(peers)
+        Self(HashSet::from([addr]))
     }
 }
 

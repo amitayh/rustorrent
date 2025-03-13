@@ -23,7 +23,12 @@ use crate::{
 use super::choke::choke;
 use super::transfer_rate::TransferRate;
 
-struct PeerMessage(SocketAddr, Message);
+struct PeerEvent(SocketAddr, Event);
+
+enum Event {
+    Disconnected,
+    Message(Message),
+}
 
 struct Peer {
     peer_id: PeerId,
@@ -34,8 +39,8 @@ struct Peer {
     unchoked: HashSet<SocketAddr>,
     transfer_rates: HashMap<SocketAddr, TransferRate>,
     choke_tick: usize,
-    tx: Sender<PeerMessage>,
-    rx: Receiver<PeerMessage>,
+    tx: Sender<PeerEvent>,
+    rx: Receiver<PeerEvent>,
     handshake: Handshake,
     has_pieces: BitSet,
     config: Config,
@@ -80,16 +85,21 @@ impl Peer {
         loop {
             tokio::select! {
                 _ = choke.tick() => {
-                    info!("running choking algorithm");
                     self.choke().await?;
-                    self.choke_tick += 1;
                 }
-                Some(PeerMessage(addr, message)) = self.rx.recv() => {
-                   self.handle_message(addr, message).await?;
+                Some(PeerEvent(addr, event)) = self.rx.recv() => {
+                    match event {
+                        Event::Message(message) => {
+                            self.handle_message(addr, message).await?;
+                        }
+                        Event::Disconnected => {
+                            self.peer_disconnected(addr);
+                        }
+                    }
                 }
                 Ok((socket, addr)) = self.listener.accept() => {
                     info!("got new connection from {}", &addr);
-                    self.accept_connection(addr, socket).await?;
+                    self.new_peer(addr, socket, false).await?;
                 }
             }
         }
@@ -98,10 +108,6 @@ impl Peer {
     async fn connect(&mut self, addr: SocketAddr) -> Result<()> {
         let socket = TcpStream::connect(addr).await?;
         self.new_peer(addr, socket, true).await
-    }
-
-    async fn accept_connection(&mut self, addr: SocketAddr, socket: TcpStream) -> Result<()> {
-        self.new_peer(addr, socket, false).await
     }
 
     async fn new_peer(
@@ -124,11 +130,24 @@ impl Peer {
             handler.send(&bitfield).await?;
         }
         self.peers.insert(addr, PeerState::new(rx));
-        tokio::spawn(async move { handler.start().await });
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            handler.start().await?;
+            tx.send(PeerEvent(addr, Event::Disconnected)).await?;
+            Ok::<(), anyhow::Error>(())
+        });
         Ok(())
     }
 
+    fn peer_disconnected(&mut self, addr: SocketAddr) {
+        self.peers.remove(&addr);
+        self.interested.remove(&addr);
+        self.unchoked.remove(&addr);
+        self.transfer_rates.remove(&addr);
+    }
+
     async fn choke(&mut self) -> anyhow::Result<()> {
+        self.choke_tick += 1;
         let optimistic = self.choke_tick % self.config.optimistic_choking_cycle == 0;
         let decision = choke(
             &self.interested,
@@ -137,13 +156,15 @@ impl Peer {
             optimistic,
         );
         for addr in &decision.peers_to_choke {
+            info!("choking {}", addr);
             let peer = self.peers.get_mut(addr).expect("invalid peer");
             peer.tx.send(Message::Choke).await?;
             self.unchoked.remove(addr);
         }
-        for addr in decision.peers_to_unchoke {
-            if self.unchoked.insert(addr) {
-                let peer = self.peers.get_mut(&addr).expect("invalid peer");
+        for addr in &decision.peers_to_unchoke {
+            if self.unchoked.insert(*addr) {
+                info!("unchoking {}", addr);
+                let peer = self.peers.get_mut(addr).expect("invalid peer");
                 peer.tx.send(Message::Unchoke).await?;
             }
         }
@@ -161,10 +182,8 @@ impl Peer {
                     peer_state.peer_to_client.choking = false;
                 }
                 Message::Interested => {
-                    if peer_state.client_to_peer.choking {
-                        peer_state.peer_to_client.interested = true;
-                        self.interested.insert(addr);
-                    }
+                    peer_state.peer_to_client.interested = true;
+                    self.interested.insert(addr);
                 }
                 Message::NotInterested => {
                     peer_state.peer_to_client.interested = false;
@@ -210,7 +229,7 @@ impl Peer {
 struct Connection {
     addr: SocketAddr,
     socket: TcpStream,
-    tx: Sender<PeerMessage>,
+    tx: Sender<PeerEvent>,
     rx: Receiver<Message>,
 }
 
@@ -218,7 +237,7 @@ impl Connection {
     fn new(
         addr: SocketAddr,
         socket: TcpStream,
-        tx: Sender<PeerMessage>,
+        tx: Sender<PeerEvent>,
         rx: Receiver<Message>,
     ) -> Self {
         Self {
@@ -251,7 +270,7 @@ impl Connection {
                     match message {
                         Ok(message) => {
                             info!("< got message: {:?}", &message);
-                            self.tx.send(PeerMessage(self.addr, message)).await?;
+                            self.tx.send(PeerEvent(self.addr, Event::Message(message))).await?;
                         }
                         Err(err) => {
                             warn!("failed to decode message: {}", err);
