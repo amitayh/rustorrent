@@ -1,11 +1,13 @@
 #![allow(dead_code)]
 pub mod blocks;
+pub mod choke;
 pub mod config;
 pub mod connection;
 pub mod message;
 pub mod peer;
 pub mod peer_id;
 pub mod piece_selector;
+pub mod state;
 pub mod transfer_rate;
 
 use std::path::PathBuf;

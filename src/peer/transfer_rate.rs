@@ -6,7 +6,7 @@ use std::{
 
 use size::Size;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct TransferRate(pub Size, pub Duration);
 
 impl TransferRate {
@@ -21,7 +21,7 @@ impl Add for TransferRate {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
-        let mut sum = self.clone();
+        let mut sum = self;
         sum += rhs;
         sum
     }

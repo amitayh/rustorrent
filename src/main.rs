@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bencoding::value::Value;
 use log::{info, warn};
@@ -75,17 +74,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     */
-
-    {
-        // Choke / unchoke
-        let mut interval = tokio::time::interval(Duration::from_secs(10));
-        tokio::spawn(async move {
-            loop {
-                interval.tick().await;
-                info!("running choke algorithm...");
-            }
-        });
-    }
 
     let handshake = Arc::new(Handshake::new(
         torrent.info.info_hash.clone(),
