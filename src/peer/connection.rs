@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+use std::io::ErrorKind;
 use std::io::{Result, SeekFrom};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -8,22 +10,91 @@ use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
 
 use crate::codec::{AsyncDecoder, AsyncEncoder};
 use crate::peer::message::{Handshake, Message};
-use crate::peer::{PeerCommand, SharedState};
+use crate::peer::state::PeerCommand;
+use crate::peer::state::SharedStateOld;
+use crate::peer::{Event, PeerEvent};
 
-pub struct PeerConnection {
+pub struct Connection {
     addr: SocketAddr,
     socket: TcpStream,
-    state: Arc<RwLock<SharedState>>,
+    tx: Sender<PeerEvent>,
+    rx: Receiver<Message>,
+}
+
+impl Connection {
+    pub fn new(
+        addr: SocketAddr,
+        socket: TcpStream,
+        tx: Sender<PeerEvent>,
+        rx: Receiver<Message>,
+    ) -> Self {
+        Self {
+            addr,
+            socket,
+            tx,
+            rx,
+        }
+    }
+
+    pub async fn wait_for_handshake(&mut self) -> Result<()> {
+        let handshake = Handshake::decode(&mut self.socket).await?;
+        info!("< got handshake {:?}", handshake);
+        Ok(())
+    }
+
+    pub async fn send<T: AsyncEncoder + Debug>(&mut self, message: &T) -> Result<()> {
+        message.encode(&mut self.socket).await?;
+        info!("> sent message: {:?}", message);
+        Ok(())
+    }
+
+    pub async fn start(&mut self) -> anyhow::Result<()> {
+        loop {
+            tokio::select! {
+                Some(message) = self.rx.recv() => {
+                    self.send(&message).await?;
+                }
+                message = Message::decode(&mut self.socket) => {
+                    match message {
+                        Ok(message) => {
+                            info!("< got message: {:?}", &message);
+                            self.tx.send(PeerEvent(self.addr, Event::Message(message))).await?;
+                        }
+                        Err(err) => {
+                            warn!("failed to decode message: {}", err);
+                            if err.kind() == ErrorKind::UnexpectedEof {
+                                // Disconnected
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// OLD -------------------------------------------------------------------------
+
+pub struct ConnectionOld {
+    addr: SocketAddr,
+    socket: TcpStream,
+    state: Arc<RwLock<SharedStateOld>>,
     rx: Receiver<PeerCommand>,
 }
 
-impl PeerConnection {
-    pub async fn new(addr: SocketAddr, socket: TcpStream, state: Arc<RwLock<SharedState>>) -> Self {
+impl ConnectionOld {
+    pub async fn new(
+        addr: SocketAddr,
+        socket: TcpStream,
+        state: Arc<RwLock<SharedStateOld>>,
+    ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
         let peer = Self {
             addr,

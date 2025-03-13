@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use bencoding::value::Value;
 use log::{info, warn};
-use peer::SharedState;
-use peer::connection::PeerConnection;
+use peer::connection::ConnectionOld;
 use peer::piece_selector::PieceSelector;
+use peer::state::SharedStateOld;
 use size::Size;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         path
     };
 
-    let state = Arc::new(RwLock::new(SharedState::new(temp_dir)));
+    let state = Arc::new(RwLock::new(SharedStateOld::new(temp_dir)));
 
     // Run server
     let address = SocketAddr::new("::".parse()?, config.port);
@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             loop {
                 let (socket, addr) = listener.accept().await?;
-                let mut peer = PeerConnection::new(addr, socket, Arc::clone(&state)).await;
+                let mut peer = ConnectionOld::new(addr, socket, Arc::clone(&state)).await;
                 peer.wait_for_handshake().await?;
                 peer.send_handshake(&handshake).await?;
                 tokio::spawn(async move { peer.process().await });
@@ -150,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match TcpStream::connect(address).await {
                 Ok(socket) => {
                     info!("connected");
-                    let mut peer = PeerConnection::new(address, socket, Arc::clone(&state)).await;
+                    let mut peer = ConnectionOld::new(address, socket, Arc::clone(&state)).await;
                     peer.send_handshake(&handshake).await?;
                     peer.wait_for_handshake().await?;
 

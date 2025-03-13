@@ -14,7 +14,6 @@ use crate::peer::blocks::Blocks;
 use crate::peer::message::Block;
 use crate::peer::transfer_rate::TransferRate;
 
-#[allow(dead_code)]
 pub struct PieceSelector {
     peer_transfer_rate: HashMap<SocketAddr, TransferRate>,
     rarest_piece: PriorityQueue<usize, PeerSet>,
@@ -26,7 +25,6 @@ pub struct PieceSelector {
     notify: Notify,
 }
 
-#[allow(dead_code)]
 impl PieceSelector {
     pub fn new(piece_size: Size, total_size: Size, block_size: Size) -> Self {
         Self {
@@ -83,14 +81,14 @@ impl PieceSelector {
     }
 
     // TODO: test
-    fn peer_disconnected(&mut self, addr: &SocketAddr) {
+    pub fn peer_disconnected(&mut self, addr: &SocketAddr) {
         for (_, PeerSet(peers)) in self.rarest_piece.iter_mut() {
             peers.remove(addr);
         }
     }
 
-    fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: BitSet) {
-        for piece in &pieces {
+    pub fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) {
+        for piece in pieces {
             if self.completed_pieces.contains(piece) {
                 // Ignore pieces we already have
                 continue;
@@ -158,7 +156,7 @@ mod tests {
     async fn one_available_peer() {
         let addr = "127.0.0.1:6881".parse().unwrap();
         let mut state = PieceSelector::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
-        state.peer_has_pieces(addr, BitSet::from_bytes(&[0b10000000]));
+        state.peer_has_pieces(addr, &BitSet::from_bytes(&[0b10000000]));
 
         assert_eq!(
             state.next().await,
@@ -170,7 +168,7 @@ mod tests {
     async fn one_available_peer_with_different_piece() {
         let addr = "127.0.0.1:6881".parse().unwrap();
         let mut state = PieceSelector::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
-        state.peer_has_pieces(addr, BitSet::from_bytes(&[0b01000000]));
+        state.peer_has_pieces(addr, &BitSet::from_bytes(&[0b01000000]));
 
         assert_eq!(
             state.next().await,
@@ -183,7 +181,7 @@ mod tests {
         let addr = "127.0.0.1:6881".parse().unwrap();
         let mut state = PieceSelector::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
         state.piece_complete(0);
-        state.peer_has_pieces(addr, BitSet::from_bytes(&[0b11000000]));
+        state.peer_has_pieces(addr, &BitSet::from_bytes(&[0b11000000]));
 
         assert_eq!(
             state.next().await,
@@ -198,8 +196,8 @@ mod tests {
 
         let mut state = PieceSelector::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
         // Piece #0 is rarest - only peer 2 has it
-        state.peer_has_pieces(addr1, BitSet::from_bytes(&[0b10000000]));
-        state.peer_has_pieces(addr2, BitSet::from_bytes(&[0b11000000]));
+        state.peer_has_pieces(addr1, &BitSet::from_bytes(&[0b10000000]));
+        state.peer_has_pieces(addr2, &BitSet::from_bytes(&[0b11000000]));
 
         assert_eq!(
             state.next().await,
@@ -212,7 +210,7 @@ mod tests {
         let addr = "127.0.0.1:6881".parse().unwrap();
 
         let mut state = PieceSelector::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
-        state.peer_has_pieces(addr, BitSet::from_bytes(&[0b10000000]));
+        state.peer_has_pieces(addr, &BitSet::from_bytes(&[0b10000000]));
 
         assert_eq!(state.next().await, Some((addr, Block::new(0, 0, 1024))));
         assert_eq!(state.next().await, Some((addr, Block::new(0, 1024, 1024))));
@@ -227,16 +225,16 @@ mod tests {
 
         let mut state = PieceSelector::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
 
-        state.peer_has_pieces(addr1, BitSet::from_bytes(&[0b10000000]));
+        state.peer_has_pieces(addr1, &BitSet::from_bytes(&[0b10000000]));
         state.update_transfer_rate(addr1, Size::from_kibibytes(10), Duration::from_secs(1));
 
-        state.peer_has_pieces(addr2, BitSet::from_bytes(&[0b10000000]));
+        state.peer_has_pieces(addr2, &BitSet::from_bytes(&[0b10000000]));
         state.update_transfer_rate(addr2, Size::from_kibibytes(20), Duration::from_secs(1));
 
-        state.peer_has_pieces(addr3, BitSet::from_bytes(&[0b10000000]));
+        state.peer_has_pieces(addr3, &BitSet::from_bytes(&[0b10000000]));
         state.update_transfer_rate(addr3, Size::from_kibibytes(30), Duration::from_secs(1));
 
-        state.peer_has_pieces(addr4, BitSet::from_bytes(&[0b10000000]));
+        state.peer_has_pieces(addr4, &BitSet::from_bytes(&[0b10000000]));
         state.update_transfer_rate(addr4, Size::from_kibibytes(40), Duration::from_secs(1));
 
         assert_eq!(state.next().await, Some((addr4, Block::new(0, 0, 1024))));
