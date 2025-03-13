@@ -1,11 +1,14 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashSet;
 use std::iter::{Cycle, Zip};
+use std::net::IpAddr::V4;
+use std::net::Ipv4Addr;
 use std::time::Duration;
 use std::vec::IntoIter;
 use std::{collections::HashMap, net::SocketAddr};
 
 use bit_set::BitSet;
+use log::info;
 use priority_queue::PriorityQueue;
 use size::Size;
 use tokio::sync::Notify;
@@ -16,27 +19,82 @@ use crate::peer::transfer_rate::TransferRate;
 
 pub struct PieceSelector {
     peer_transfer_rate: HashMap<SocketAddr, TransferRate>,
+    am_unchoked_by: HashSet<SocketAddr>,
+    peer_pieces: HashMap<SocketAddr, BitSet>,
     rarest_piece: PriorityQueue<usize, PeerSet>,
     current_piece: Option<Zip<Cycle<IntoIter<SocketAddr>>, Blocks>>,
     piece_size: Size,
     total_size: Size,
     block_size: Size,
+    total_pieces: usize,
     completed_pieces: BitSet,
     notify: Notify,
 }
 
 impl PieceSelector {
     pub fn new(piece_size: Size, total_size: Size, block_size: Size) -> Self {
+        let total_pieces =
+            ((total_size.bytes() as f64) / (piece_size.bytes() as f64)).ceil() as usize;
         Self {
             peer_transfer_rate: HashMap::new(),
+            am_unchoked_by: HashSet::new(),
+            peer_pieces: HashMap::new(),
             rarest_piece: PriorityQueue::new(),
             current_piece: None,
             piece_size,
             total_size,
             block_size,
+            total_pieces,
             completed_pieces: BitSet::new(),
-            notify: Notify::new(),
+            notify: Notify::const_new(),
         }
+    }
+
+    fn seeding(&self) -> bool {
+        self.completed_pieces.len() == self.total_pieces
+    }
+
+    pub async fn next2(
+        &mut self,
+        transfer_rates: &HashMap<SocketAddr, TransferRate>,
+    ) -> Option<(SocketAddr, Block)> {
+        if self.seeding() {
+            // No more undownloaded pieces remaining, hang forever
+            let forever = std::future::pending();
+            let () = forever.await;
+        }
+        let available_pieces_to_request = self
+            .am_unchoked_by
+            .iter()
+            .map(|peer| self.peer_pieces.get(peer))
+            .fold(BitSet::new(), |mut acc, peer_pieces| {
+                if let Some(pieces) = peer_pieces {
+                    acc.union_with(pieces);
+                }
+                acc
+            });
+
+        let rarest_piece = available_pieces_to_request
+            .iter()
+            .max_by_key(|piece| self.rarest_piece.get_priority(piece));
+
+        self.notify.notified().await;
+        if let Some(piece) = rarest_piece {
+            return Some((
+                SocketAddr::new(V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
+                Block::new(piece, 0, 0),
+            ));
+        }
+        None
+    }
+
+    pub fn peer_unchoked(&mut self, addr: SocketAddr) {
+        self.am_unchoked_by.insert(addr);
+        self.notify.notify_waiters();
+    }
+
+    pub fn peer_choked(&mut self, addr: &SocketAddr) {
+        self.am_unchoked_by.remove(addr);
     }
 
     pub async fn next(&mut self) -> Option<(SocketAddr, Block)> {
@@ -77,17 +135,24 @@ impl PieceSelector {
 
     fn piece_complete(&mut self, piece: usize) {
         self.completed_pieces.insert(piece);
-        self.notify.notify_one();
+        self.notify.notify_waiters();
     }
 
     // TODO: test
     pub fn peer_disconnected(&mut self, addr: &SocketAddr) {
+        self.peer_transfer_rate.remove(addr);
+        self.am_unchoked_by.remove(addr);
+        self.peer_pieces.remove(addr);
+        self.block_per_peer.remove(addr);
         for (_, PeerSet(peers)) in self.rarest_piece.iter_mut() {
             peers.remove(addr);
         }
     }
 
     pub fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) {
+        let peer_pieces = self.peer_pieces.entry(addr).or_default();
+        peer_pieces.union_with(pieces);
+
         for piece in pieces {
             if self.completed_pieces.contains(piece) {
                 // Ignore pieces we already have
@@ -101,7 +166,7 @@ impl PieceSelector {
                 });
 
             if !piece_exists {
-                self.rarest_piece.push(piece, PeerSet::singleton(addr));
+                self.rarest_piece.push(piece, PeerSet::new(addr));
             }
         }
         self.notify.notify_one();
@@ -117,11 +182,11 @@ impl PieceSelector {
     }
 }
 
-#[derive(PartialEq, Eq)]
-struct PeerSet(HashSet<SocketAddr>);
+#[derive(Debug, PartialEq, Eq)]
+pub struct PeerSet(pub HashSet<SocketAddr>);
 
 impl PeerSet {
-    fn singleton(addr: SocketAddr) -> Self {
+    pub fn new(addr: SocketAddr) -> Self {
         Self(HashSet::from([addr]))
     }
 }

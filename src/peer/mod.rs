@@ -14,8 +14,11 @@ use std::{io::Result, net::SocketAddr};
 
 use bit_set::BitSet;
 use log::{info, warn};
+use message::Block;
+use priority_queue::PriorityQueue;
 use size::{KiB, Size};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant};
 
@@ -25,6 +28,7 @@ use crate::peer::connection::Connection;
 use crate::peer::message::Handshake;
 use crate::peer::message::Message;
 use crate::peer::peer_id::PeerId;
+use crate::peer::piece_selector::PeerSet;
 use crate::peer::piece_selector::PieceSelector;
 use crate::peer::state::PeerState;
 use crate::peer::transfer_rate::TransferRate;
@@ -44,9 +48,11 @@ struct Peer {
     listener: TcpListener,
     torrent_info: Info,
     peers: HashMap<SocketAddr, PeerState>,
-    interested: HashSet<SocketAddr>,
-    unchoked: HashSet<SocketAddr>,
+    interested_peers: HashSet<SocketAddr>,
+    unchoked_peers: HashSet<SocketAddr>,
+    // unchoked: HashMap<SocketAddr, Instant>,
     transfer_rates: HashMap<SocketAddr, TransferRate>,
+    unchoked_notify: Notify,
     piece_selector: PieceSelector,
     choke_tick: usize,
     tx: Sender<PeerEvent>,
@@ -72,9 +78,10 @@ impl Peer {
             listener,
             torrent_info,
             peers: HashMap::new(),
-            interested: HashSet::new(),
-            unchoked: HashSet::new(),
+            interested_peers: HashSet::new(),
+            unchoked_peers: HashSet::new(),
             transfer_rates: HashMap::new(),
+            unchoked_notify: Notify::new(),
             piece_selector,
             choke_tick: 0,
             tx,
@@ -103,8 +110,8 @@ impl Peer {
                 _ = choke.tick() => {
                     self.choke().await?;
                 }
-                block = self.piece_selector.next() => {
-                    info!("@@@ {:?}", block);
+                Some((addr, block)) = self.piece_selector.next2(&self.transfer_rates) => {
+                    info!("@@@ {}: {:?}", addr, block);
                 }
                 Some(PeerEvent(addr, event)) = self.rx.recv() => {
                     match event {
@@ -112,7 +119,7 @@ impl Peer {
                             self.handle_message(addr, message).await?;
                         }
                         Event::Disconnected => {
-                            self.peer_disconnected(addr);
+                            self.peer_disconnected(&addr);
                         }
                     }
                 }
@@ -158,20 +165,20 @@ impl Peer {
         Ok(())
     }
 
-    fn peer_disconnected(&mut self, addr: SocketAddr) {
-        self.peers.remove(&addr);
-        self.interested.remove(&addr);
-        self.unchoked.remove(&addr);
-        self.transfer_rates.remove(&addr);
-        self.piece_selector.peer_disconnected(&addr);
+    fn peer_disconnected(&mut self, addr: &SocketAddr) {
+        self.peers.remove(addr);
+        self.interested_peers.remove(addr);
+        self.unchoked_peers.remove(addr);
+        self.transfer_rates.remove(addr);
+        self.piece_selector.peer_disconnected(addr);
     }
 
     async fn choke(&mut self) -> anyhow::Result<()> {
         self.choke_tick += 1;
         let optimistic = self.choke_tick % self.config.optimistic_choking_cycle == 0;
         let decision = choke(
-            &self.interested,
-            &self.unchoked,
+            &self.interested_peers,
+            &self.unchoked_peers,
             &self.transfer_rates,
             optimistic,
         );
@@ -179,10 +186,10 @@ impl Peer {
             info!("choking {}", addr);
             let peer = self.peers.get_mut(addr).expect("invalid peer");
             peer.tx.send(Message::Choke).await?;
-            self.unchoked.remove(addr);
+            self.unchoked_peers.remove(addr);
         }
         for addr in &decision.peers_to_unchoke {
-            if self.unchoked.insert(*addr) {
+            if self.unchoked_peers.insert(*addr) {
                 info!("unchoking {}", addr);
                 let peer = self.peers.get_mut(addr).expect("invalid peer");
                 peer.tx.send(Message::Unchoke).await?;
@@ -197,31 +204,27 @@ impl Peer {
                 Message::KeepAlive => (), // No-op
                 Message::Choke => {
                     peer_state.peer_to_client.choking = true;
+                    self.piece_selector.peer_choked(&addr);
                 }
                 Message::Unchoke => {
                     peer_state.peer_to_client.choking = false;
+                    self.piece_selector.peer_unchoked(addr);
                 }
                 Message::Interested => {
                     peer_state.peer_to_client.interested = true;
-                    self.interested.insert(addr);
+                    self.interested_peers.insert(addr);
                 }
                 Message::NotInterested => {
                     peer_state.peer_to_client.interested = false;
-                    self.interested.remove(&addr);
+                    self.interested_peers.remove(&addr);
                 }
                 Message::Have { piece } => {
-                    peer_state.has_pieces.insert(piece);
+                    let mut pieces = BitSet::new();
+                    pieces.insert(piece);
+                    self.peer_has_pieces(addr, pieces).await?;
                 }
                 Message::Bitfield(pieces) => {
-                    peer_state.has_pieces.union_with(&pieces);
-                    self.piece_selector.peer_has_pieces(addr, &pieces);
-                    let difference = peer_state.has_pieces.difference(&self.has_pieces);
-                    if !peer_state.client_to_peer.interested
-                        && peer_state.peer_to_client.choking
-                        && difference.count() > 0
-                    {
-                        peer_state.tx.send(Message::Interested).await?;
-                    }
+                    self.peer_has_pieces(addr, pieces).await?;
                 }
                 Message::Request(block) => {
                     if peer_state.client_to_peer.choking {
@@ -238,10 +241,22 @@ impl Peer {
                         );
                         return Ok(());
                     }
+                    todo!()
                 }
                 _ => todo!(),
             },
             None => panic!("invalid peer"),
+        }
+        Ok(())
+    }
+
+    async fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: BitSet) -> anyhow::Result<()> {
+        self.piece_selector.peer_has_pieces(addr, &pieces);
+        let peer = self.peers.get_mut(&addr).expect("invalid peer");
+        peer.has_pieces.union_with(&pieces);
+        let want = peer.has_pieces.difference(&self.has_pieces);
+        if !peer.client_to_peer.interested && peer.peer_to_client.choking && want.count() > 0 {
+            peer.tx.send(Message::Interested).await?;
         }
         Ok(())
     }
