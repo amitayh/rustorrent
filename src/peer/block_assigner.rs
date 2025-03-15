@@ -49,7 +49,7 @@ impl BlockAssigner {
             let notify = Arc::clone(&notify);
             tokio::spawn(async move {
                 loop {
-                    if let Some(block) = assignment.lock().await.assign_block_for(&addr) {
+                    if let Some(block) = assignment.lock().await.assign(&addr) {
                         let notify = Arc::clone(&notify);
                         tx.send((addr, block)).await.unwrap();
                         let assignment = Arc::clone(&assignment);
@@ -125,7 +125,7 @@ impl AssignmentState {
         }
     }
 
-    fn assign_block_for(&mut self, addr: &SocketAddr) -> Option<Block> {
+    fn assign(&mut self, addr: &SocketAddr) -> Option<Block> {
         let state = self
             .pieces
             .values_mut()

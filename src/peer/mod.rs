@@ -9,7 +9,7 @@ pub mod peer_id;
 pub mod state;
 pub mod transfer_rate;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::{io::Result, net::SocketAddr};
 
 use bit_set::BitSet;
@@ -20,14 +20,13 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant};
 
 use crate::peer::block_assigner::BlockAssigner;
-use crate::peer::choke::choke;
+use crate::peer::choke::Choker;
 use crate::peer::config::Config;
 use crate::peer::connection::Connection;
 use crate::peer::message::Handshake;
 use crate::peer::message::Message;
 use crate::peer::peer_id::PeerId;
 use crate::peer::state::PeerState;
-use crate::peer::transfer_rate::TransferRate;
 use crate::torrent::Info;
 
 const BLOCK_SIZE: Size = Size::from_const(16 * KiB);
@@ -44,11 +43,8 @@ struct Peer {
     listener: TcpListener,
     torrent_info: Info,
     peers: HashMap<SocketAddr, PeerState>,
-    interested_peers: HashSet<SocketAddr>,
-    unchoked_peers: HashSet<SocketAddr>,
-    transfer_rates: HashMap<SocketAddr, TransferRate>,
+    choker: Choker,
     block_assigner: BlockAssigner,
-    choke_tick: usize,
     tx: Sender<PeerEvent>,
     rx: Receiver<PeerEvent>,
     handshake: Handshake,
@@ -61,6 +57,7 @@ impl Peer {
         let peer_id = PeerId::random();
         let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
         let total_pieces = torrent_info.pieces.len();
+        let choker = Choker::new(config.optimistic_choking_cycle);
         let block_assigner = BlockAssigner::new(
             torrent_info.piece_length,
             torrent_info.download_type.length(),
@@ -72,11 +69,8 @@ impl Peer {
             listener,
             torrent_info,
             peers: HashMap::new(),
-            interested_peers: HashSet::new(),
-            unchoked_peers: HashSet::new(),
-            transfer_rates: HashMap::new(),
+            choker,
             block_assigner,
-            choke_tick: 0,
             tx,
             rx,
             handshake,
@@ -161,35 +155,26 @@ impl Peer {
 
     fn peer_disconnected(&mut self, addr: &SocketAddr) {
         self.peers.remove(addr);
-        self.interested_peers.remove(addr);
-        self.unchoked_peers.remove(addr);
-        self.transfer_rates.remove(addr);
+        self.choker.peer_disconnected(addr);
         self.block_assigner.peer_choked(addr);
     }
 
     async fn choke(&mut self) -> anyhow::Result<()> {
-        self.choke_tick += 1;
-        let optimistic = self.choke_tick % self.config.optimistic_choking_cycle == 0;
-        let decision = choke(
-            &self.interested_peers,
-            &self.unchoked_peers,
-            &self.transfer_rates,
-            optimistic,
-        );
+        let decision = self.choker.run();
         for addr in &decision.peers_to_choke {
             info!("choking {}", addr);
             let peer = self.peers.get_mut(addr).expect("invalid peer");
             peer.client_to_peer.choking = true;
             peer.tx.send(Message::Choke).await?;
-            self.unchoked_peers.remove(addr);
+            //self.unchoked_peers.remove(addr);
         }
         for addr in &decision.peers_to_unchoke {
-            if self.unchoked_peers.insert(*addr) {
-                info!("unchoking {}", addr);
-                let peer = self.peers.get_mut(addr).expect("invalid peer");
-                peer.client_to_peer.choking = false;
-                peer.tx.send(Message::Unchoke).await?;
-            }
+            //if self.unchoked_peers.insert(*addr) {
+            info!("unchoking {}", addr);
+            let peer = self.peers.get_mut(addr).expect("invalid peer");
+            peer.client_to_peer.choking = false;
+            peer.tx.send(Message::Unchoke).await?;
+            //}
         }
         Ok(())
     }
@@ -208,11 +193,11 @@ impl Peer {
                 }
                 Message::Interested => {
                     peer_state.peer_to_client.interested = true;
-                    self.interested_peers.insert(addr);
+                    self.choker.peer_interested(addr);
                 }
                 Message::NotInterested => {
                     peer_state.peer_to_client.interested = false;
-                    self.interested_peers.remove(&addr);
+                    self.choker.peer_not_interested(&addr);
                 }
                 Message::Have { piece } => {
                     let mut pieces = BitSet::new();
