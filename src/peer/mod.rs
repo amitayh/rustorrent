@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+pub mod block_assigner;
 pub mod blocks;
 pub mod choke;
 pub mod config;

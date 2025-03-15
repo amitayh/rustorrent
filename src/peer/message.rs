@@ -203,7 +203,7 @@ impl AsyncEncoder for Message {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub struct Block {
     pub piece: usize,
     pub offset: usize,

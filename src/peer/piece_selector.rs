@@ -143,7 +143,6 @@ impl PieceSelector {
         self.peer_transfer_rate.remove(addr);
         self.am_unchoked_by.remove(addr);
         self.peer_pieces.remove(addr);
-        self.block_per_peer.remove(addr);
         for (_, PeerSet(peers)) in self.rarest_piece.iter_mut() {
             peers.remove(addr);
         }
