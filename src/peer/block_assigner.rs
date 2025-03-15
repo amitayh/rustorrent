@@ -5,7 +5,6 @@ use std::{
 };
 
 use bit_set::BitSet;
-use log::info;
 use size::Size;
 use tokio::{
     sync::{
@@ -15,10 +14,10 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::{blocks::Blocks, message::Block};
+use crate::peer::{blocks::Blocks, message::Block};
 
-struct BlockAssigner {
-    unchoked_peers: HashMap<SocketAddr, JoinHandle<()>>,
+pub struct BlockAssigner {
+    unchoked_peers: HashMap<SocketAddr, PeerState>,
     assignment: Arc<Mutex<AssignmentState>>,
     tx: Sender<(SocketAddr, Block)>,
     rx: Receiver<(SocketAddr, Block)>,
@@ -26,12 +25,11 @@ struct BlockAssigner {
 
 impl BlockAssigner {
     pub fn new(piece_size: Size, total_size: Size, block_size: Size) -> Self {
+        let assignment = AssignmentState::new(piece_size, total_size, block_size);
         let (tx, rx) = mpsc::channel(16);
         Self {
             unchoked_peers: HashMap::new(),
-            assignment: Arc::new(Mutex::new(AssignmentState::new(
-                piece_size, total_size, block_size,
-            ))),
+            assignment: Arc::new(Mutex::new(assignment)),
             tx,
             rx,
         }
@@ -44,12 +42,29 @@ impl BlockAssigner {
     pub fn peer_unchoked(&mut self, addr: SocketAddr) {
         let tx = self.tx.clone();
         let assignment = Arc::clone(&self.assignment);
+        let (rate_limit_tx, mut rate_limit_rx) = mpsc::channel(1);
         let join_handle = tokio::spawn(async move {
-            if let Some(block) = assignment.lock().await.assign_block_for(&addr) {
-                tx.send((addr, block)).await.unwrap();
+            loop {
+                if let Some(block) = assignment.lock().await.assign_block_for(&addr) {
+                    tx.send((addr, block)).await.unwrap();
+                }
+                rate_limit_rx.recv().await;
             }
         });
-        self.unchoked_peers.insert(addr, join_handle);
+        self.unchoked_peers
+            .insert(addr, PeerState::new(join_handle, rate_limit_tx));
+    }
+
+    pub fn peer_choked(&mut self, addr: &SocketAddr) {
+        if let Some(peer) = self.unchoked_peers.remove(addr) {
+            peer.join_handle.abort();
+        }
+    }
+
+    pub async fn block_downloaded(&self, addr: &SocketAddr) {
+        if let Some(peer) = self.unchoked_peers.get(addr) {
+            peer.tx.send(()).await.unwrap();
+        }
     }
 
     pub async fn next(&mut self) -> (SocketAddr, Block) {
@@ -57,12 +72,22 @@ impl BlockAssigner {
     }
 }
 
+struct PeerState {
+    join_handle: JoinHandle<()>,
+    tx: Sender<()>,
+}
+
+impl PeerState {
+    fn new(join_handle: JoinHandle<()>, tx: Sender<()>) -> Self {
+        Self { join_handle, tx }
+    }
+}
+
 struct AssignmentState {
     piece_size: Size,
     total_size: Size,
     block_size: Size,
-    peer_pieces: HashMap<SocketAddr, BitSet>,
-    unassigned_blocks: HashMap<usize, VecDeque<Block>>,
+    pieces: HashMap<usize, PieceState>,
 }
 
 impl AssignmentState {
@@ -71,38 +96,48 @@ impl AssignmentState {
             piece_size,
             total_size,
             block_size,
-            peer_pieces: HashMap::new(),
-            unassigned_blocks: HashMap::new(),
+            pieces: HashMap::new(),
         }
     }
 
     fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) {
-        let peer_pieces = self.peer_pieces.entry(addr).or_default();
-        peer_pieces.union_with(pieces);
+        for piece in pieces {
+            let state = self.pieces.entry(piece).or_insert({
+                let blocks = Blocks::new(self.piece_size, self.total_size, self.block_size, piece);
+                PieceState::new(blocks)
+            });
+            state.peers_with_piece.insert(addr);
+        }
     }
 
     fn assign_block_for(&mut self, addr: &SocketAddr) -> Option<Block> {
-        let piece = self
-            .peer_pieces
-            .get(addr)
-            .and_then(|pieces| pieces.iter().next())?;
+        let state = self
+            .pieces
+            .values_mut()
+            .filter(|state| state.peers_with_piece.contains(addr))
+            .min_by_key(|state| state.peers_with_piece.len())?;
 
-        let piece_blocks = self.unassigned_blocks.entry(piece).or_insert_with(|| {
-            Blocks::new(self.piece_size, self.total_size, self.block_size, piece).collect()
-        });
-
-        piece_blocks.pop_front()
+        state.unassigned_blocks.pop_front()
     }
 }
 
-enum AssignmentStatus {
-    Unassigned,
-    Assigned,
+struct PieceState {
+    peers_with_piece: HashSet<SocketAddr>,
+    unassigned_blocks: VecDeque<Block>,
+}
+
+impl PieceState {
+    fn new(blocks: Blocks) -> Self {
+        Self {
+            peers_with_piece: HashSet::new(),
+            unassigned_blocks: blocks.collect(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, time::Duration};
+    use std::time::Duration;
 
     use super::*;
 
@@ -121,6 +156,7 @@ mod tests {
         block_assigner
             .peer_has_pieces(addr, &BitSet::from_bytes(&[0b10000000]))
             .await;
+
         let result = timeout(Duration::from_millis(10), block_assigner.next()).await;
 
         assert!(result.is_err());
@@ -146,7 +182,6 @@ mod tests {
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let addr2 = "127.0.0.2:6881".parse().unwrap();
 
-        let mut result = HashSet::with_capacity(2);
         let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
         block_assigner
             .peer_has_pieces(addr1, &BitSet::from_bytes(&[0b10000000]))
@@ -155,14 +190,61 @@ mod tests {
             .peer_has_pieces(addr2, &BitSet::from_bytes(&[0b10000000]))
             .await;
 
+        // Both peers have piece #0. Distribute its blocks among them.
         block_assigner.peer_unchoked(addr1);
-        result.insert(block_assigner.next().await);
+        assert_eq!(block_assigner.next().await, (addr1, Block::new(0, 0, 1024)));
 
         block_assigner.peer_unchoked(addr2);
-        result.insert(block_assigner.next().await);
-
-        assert_eq!(result.len(), 2);
-        assert!(result.contains(&(addr1, Block::new(0, 0, 1024))));
-        assert!(result.contains(&(addr2, Block::new(0, 1024, 1024))));
+        assert_eq!(
+            block_assigner.next().await,
+            (addr2, Block::new(0, 1024, 1024))
+        );
     }
+
+    #[tokio::test]
+    async fn select_rarest_pieces_first() {
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+
+        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        block_assigner
+            .peer_has_pieces(addr1, &BitSet::from_bytes(&[0b10000000]))
+            .await;
+        block_assigner
+            .peer_has_pieces(addr2, &BitSet::from_bytes(&[0b11000000]))
+            .await;
+
+        // Peer 1 only has piece #0, select it.
+        block_assigner.peer_unchoked(addr1);
+        assert_eq!(block_assigner.next().await, (addr1, Block::new(0, 0, 1024)));
+
+        // Peer 2 has both piece #0 and #1. Since piece #1 is rarer, slect it first.
+        block_assigner.peer_unchoked(addr2);
+        assert_eq!(block_assigner.next().await, (addr2, Block::new(1, 0, 1024)));
+    }
+
+    #[tokio::test]
+    async fn wait_until_previous_block_is_completed_before_emitting_next_block() {
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        block_assigner
+            .peer_has_pieces(addr, &BitSet::from_bytes(&[0b10000000]))
+            .await;
+        block_assigner.peer_unchoked(addr);
+
+        assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 1024)));
+
+        // Next poll hangs
+        let result = timeout(Duration::from_millis(10), block_assigner.next()).await;
+        assert!(result.is_err());
+
+        // Continue with next block once previous one completes
+        block_assigner.block_downloaded(&addr).await;
+        assert_eq!(
+            block_assigner.next().await,
+            (addr, Block::new(0, 1024, 1024))
+        );
+    }
+
+    // TODO: timeout
 }

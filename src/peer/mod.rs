@@ -15,21 +15,19 @@ use std::{io::Result, net::SocketAddr};
 
 use bit_set::BitSet;
 use log::{info, warn};
-use message::Block;
-use priority_queue::PriorityQueue;
 use size::{KiB, Size};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant};
 
+use crate::peer::block_assigner::BlockAssigner;
 use crate::peer::choke::choke;
 use crate::peer::config::Config;
 use crate::peer::connection::Connection;
 use crate::peer::message::Handshake;
 use crate::peer::message::Message;
 use crate::peer::peer_id::PeerId;
-use crate::peer::piece_selector::PeerSet;
 use crate::peer::piece_selector::PieceSelector;
 use crate::peer::state::PeerState;
 use crate::peer::transfer_rate::TransferRate;
@@ -54,7 +52,7 @@ struct Peer {
     // unchoked: HashMap<SocketAddr, Instant>,
     transfer_rates: HashMap<SocketAddr, TransferRate>,
     unchoked_notify: Notify,
-    piece_selector: PieceSelector,
+    block_assigner: BlockAssigner,
     choke_tick: usize,
     tx: Sender<PeerEvent>,
     rx: Receiver<PeerEvent>,
@@ -68,7 +66,7 @@ impl Peer {
         let peer_id = PeerId::random();
         let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
         let total_pieces = torrent_info.pieces.len();
-        let piece_selector = PieceSelector::new(
+        let block_assigner = BlockAssigner::new(
             torrent_info.piece_length,
             torrent_info.download_type.length(),
             BLOCK_SIZE,
@@ -83,7 +81,7 @@ impl Peer {
             unchoked_peers: HashSet::new(),
             transfer_rates: HashMap::new(),
             unchoked_notify: Notify::new(),
-            piece_selector,
+            block_assigner,
             choke_tick: 0,
             tx,
             rx,
@@ -111,8 +109,9 @@ impl Peer {
                 _ = choke.tick() => {
                     self.choke().await?;
                 }
-                Some((addr, block)) = self.piece_selector.next2(&self.transfer_rates) => {
-                    info!("@@@ {}: {:?}", addr, block);
+                (addr, block) = self.block_assigner.next() => {
+                    let peer = self.peers.get_mut(&addr).expect("invalid peer");
+                    peer.tx.send(Message::Request(block)).await.expect("unable to send");
                 }
                 Some(PeerEvent(addr, event)) = self.rx.recv() => {
                     match event {
@@ -171,7 +170,7 @@ impl Peer {
         self.interested_peers.remove(addr);
         self.unchoked_peers.remove(addr);
         self.transfer_rates.remove(addr);
-        self.piece_selector.peer_disconnected(addr);
+        self.block_assigner.peer_choked(addr);
     }
 
     async fn choke(&mut self) -> anyhow::Result<()> {
@@ -205,11 +204,11 @@ impl Peer {
                 Message::KeepAlive => (), // No-op
                 Message::Choke => {
                     peer_state.peer_to_client.choking = true;
-                    self.piece_selector.peer_choked(&addr);
+                    self.block_assigner.peer_choked(&addr);
                 }
                 Message::Unchoke => {
                     peer_state.peer_to_client.choking = false;
-                    self.piece_selector.peer_unchoked(addr);
+                    self.block_assigner.peer_unchoked(addr);
                 }
                 Message::Interested => {
                     peer_state.peer_to_client.interested = true;
@@ -252,7 +251,7 @@ impl Peer {
     }
 
     async fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: BitSet) -> anyhow::Result<()> {
-        self.piece_selector.peer_has_pieces(addr, &pieces);
+        self.block_assigner.peer_has_pieces(addr, &pieces).await;
         let peer = self.peers.get_mut(&addr).expect("invalid peer");
         peer.has_pieces.union_with(&pieces);
         let want = peer.has_pieces.difference(&self.has_pieces);
