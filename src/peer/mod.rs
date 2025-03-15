@@ -16,7 +16,6 @@ use bit_set::BitSet;
 use log::{info, warn};
 use size::{KiB, Size};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Notify;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant};
 
@@ -47,9 +46,7 @@ struct Peer {
     peers: HashMap<SocketAddr, PeerState>,
     interested_peers: HashSet<SocketAddr>,
     unchoked_peers: HashSet<SocketAddr>,
-    // unchoked: HashMap<SocketAddr, Instant>,
     transfer_rates: HashMap<SocketAddr, TransferRate>,
-    unchoked_notify: Notify,
     block_assigner: BlockAssigner,
     choke_tick: usize,
     tx: Sender<PeerEvent>,
@@ -78,7 +75,6 @@ impl Peer {
             interested_peers: HashSet::new(),
             unchoked_peers: HashSet::new(),
             transfer_rates: HashMap::new(),
-            unchoked_notify: Notify::new(),
             block_assigner,
             choke_tick: 0,
             tx,

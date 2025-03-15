@@ -6,7 +6,6 @@ use std::{
 };
 
 use bit_set::BitSet;
-use log::info;
 use size::Size;
 use tokio::{
     sync::{
@@ -14,6 +13,7 @@ use tokio::{
         mpsc::{self, Receiver, Sender},
     },
     task::JoinHandle,
+    time,
 };
 
 use crate::peer::{blocks::Blocks, message::Block};
@@ -50,11 +50,13 @@ impl BlockAssigner {
             tokio::spawn(async move {
                 loop {
                     if let Some(block) = assignment.lock().await.assign_block_for(&addr) {
+                        let notify = Arc::clone(&notify);
                         tx.send((addr, block)).await.unwrap();
-                        info!("???");
-                        tokio::spawn(async {
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                            info!("???");
+                        let assignment = Arc::clone(&assignment);
+                        tokio::spawn(async move {
+                            time::sleep(Duration::from_secs(5)).await;
+                            assignment.lock().await.give_up(block);
+                            notify.notify_waiters();
                         });
                     }
                     notify.notified().await;
@@ -132,6 +134,12 @@ impl AssignmentState {
 
         state.unassigned_blocks.pop_front()
     }
+
+    fn give_up(&mut self, block: Block) {
+        if let Some(piece) = self.pieces.get_mut(&block.piece) {
+            piece.unassigned_blocks.push_front(block);
+        }
+    }
 }
 
 struct PieceState {
@@ -150,8 +158,6 @@ impl PieceState {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
 
     use size::KiB;
@@ -261,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn give_up_on_block_after_timeout_expires() {
-        tokio::time::pause();
+        time::pause();
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
@@ -272,7 +278,7 @@ mod tests {
 
         assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 1024)));
 
-        tokio::time::advance(Duration::from_secs(5)).await;
+        time::advance(Duration::from_secs(5)).await;
 
         assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 1024)));
     }

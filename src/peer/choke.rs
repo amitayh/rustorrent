@@ -8,6 +8,65 @@ use crate::peer::transfer_rate::TransferRate;
 
 const TOP_PEERS: usize = 3;
 
+pub struct Choker {
+    interested: HashSet<SocketAddr>,
+    unchoked_peers: HashSet<SocketAddr>,
+    transfer_rates: HashMap<SocketAddr, TransferRate>,
+}
+
+impl Choker {
+    pub fn new() -> Self {
+        Self {
+            interested: HashSet::new(),
+            unchoked_peers: HashSet::new(),
+            transfer_rates: HashMap::new(),
+        }
+    }
+
+    pub fn peer_interested(&mut self, addr: SocketAddr) {
+        self.interested.insert(addr);
+    }
+
+    pub fn peer_not_interested(&mut self, addr: &SocketAddr) {
+        self.interested.remove(addr);
+    }
+
+    pub fn run(&self, optimisitic: bool) -> ChokeDecision {
+        let mut top_peers = BinaryHeap::with_capacity(TOP_PEERS + 1);
+        for peer in &self.interested {
+            let transfer_rate = self
+                .transfer_rates
+                .get(peer)
+                .unwrap_or(&TransferRate::EMPTY);
+            top_peers.push(Reverse(PeerByTransferRate(*peer, *transfer_rate)));
+            if top_peers.len() > TOP_PEERS {
+                top_peers.pop();
+            }
+        }
+
+        let mut peers_to_choke = self.unchoked_peers.clone();
+        let mut peers_to_unchoke = HashSet::with_capacity(TOP_PEERS + 1);
+        for Reverse(PeerByTransferRate(peer, _)) in top_peers {
+            peers_to_choke.remove(&peer);
+            peers_to_unchoke.insert(peer);
+        }
+
+        if optimisitic {
+            // Add one randomly selected peer from remaining interested peers
+            let remaining = self.interested.difference(&peers_to_unchoke);
+            if let Some(peer) = remaining.choose(&mut rand::rng()) {
+                peers_to_choke.remove(peer);
+                peers_to_unchoke.insert(*peer);
+            }
+        }
+
+        ChokeDecision {
+            peers_to_choke,
+            peers_to_unchoke,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ChokeDecision {
     pub peers_to_choke: HashSet<SocketAddr>,
