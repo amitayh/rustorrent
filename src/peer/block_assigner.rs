@@ -2,9 +2,11 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
     sync::Arc,
+    time::Duration,
 };
 
 use bit_set::BitSet;
+use log::info;
 use size::Size;
 use tokio::{
     sync::{
@@ -49,6 +51,11 @@ impl BlockAssigner {
                 loop {
                     if let Some(block) = assignment.lock().await.assign_block_for(&addr) {
                         tx.send((addr, block)).await.unwrap();
+                        info!("???");
+                        tokio::spawn(async {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            info!("???");
+                        });
                     }
                     notify.notified().await;
                 }
@@ -108,7 +115,7 @@ impl AssignmentState {
 
     fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) {
         for piece in pieces {
-            let state = self.pieces.entry(piece).or_insert({
+            let state = self.pieces.entry(piece).or_insert_with(|| {
                 let blocks = Blocks::new(self.piece_size, self.total_size, self.block_size, piece);
                 PieceState::new(blocks)
             });
@@ -252,5 +259,21 @@ mod tests {
         );
     }
 
-    // TODO: timeout
+    #[tokio::test]
+    async fn give_up_on_block_after_timeout_expires() {
+        tokio::time::pause();
+
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        block_assigner
+            .peer_has_pieces(addr, &BitSet::from_bytes(&[0b10000000]))
+            .await;
+        block_assigner.peer_unchoked(addr);
+
+        assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 1024)));
+
+        tokio::time::advance(Duration::from_secs(5)).await;
+
+        assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 1024)));
+    }
 }

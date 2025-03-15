@@ -6,7 +6,6 @@ pub mod config;
 pub mod connection;
 pub mod message;
 pub mod peer_id;
-pub mod piece_selector;
 pub mod state;
 pub mod transfer_rate;
 
@@ -28,7 +27,6 @@ use crate::peer::connection::Connection;
 use crate::peer::message::Handshake;
 use crate::peer::message::Message;
 use crate::peer::peer_id::PeerId;
-use crate::peer::piece_selector::PieceSelector;
 use crate::peer::state::PeerState;
 use crate::peer::transfer_rate::TransferRate;
 use crate::torrent::Info;
