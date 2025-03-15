@@ -185,6 +185,7 @@ impl Peer {
         for addr in &decision.peers_to_choke {
             info!("choking {}", addr);
             let peer = self.peers.get_mut(addr).expect("invalid peer");
+            peer.client_to_peer.choking = true;
             peer.tx.send(Message::Choke).await?;
             self.unchoked_peers.remove(addr);
         }
@@ -192,6 +193,7 @@ impl Peer {
             if self.unchoked_peers.insert(*addr) {
                 info!("unchoking {}", addr);
                 let peer = self.peers.get_mut(addr).expect("invalid peer");
+                peer.client_to_peer.choking = false;
                 peer.tx.send(Message::Unchoke).await?;
             }
         }
@@ -234,7 +236,7 @@ impl Peer {
                         );
                         return Ok(());
                     }
-                    if self.has_pieces.contains(block.piece) {
+                    if !self.has_pieces.contains(block.piece) {
                         warn!(
                             "peer {} requested piece {} which is not available",
                             addr, block.piece

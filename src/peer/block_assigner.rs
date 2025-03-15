@@ -8,7 +8,7 @@ use bit_set::BitSet;
 use size::Size;
 use tokio::{
     sync::{
-        Mutex,
+        Mutex, Notify,
         mpsc::{self, Receiver, Sender},
     },
     task::JoinHandle,
@@ -40,19 +40,22 @@ impl BlockAssigner {
     }
 
     pub fn peer_unchoked(&mut self, addr: SocketAddr) {
-        let tx = self.tx.clone();
-        let assignment = Arc::clone(&self.assignment);
-        let (rate_limit_tx, mut rate_limit_rx) = mpsc::channel(1);
-        let join_handle = tokio::spawn(async move {
-            loop {
-                if let Some(block) = assignment.lock().await.assign_block_for(&addr) {
-                    tx.send((addr, block)).await.unwrap();
+        let notify = Arc::new(Notify::new());
+        let join_handle = {
+            let tx = self.tx.clone();
+            let assignment = Arc::clone(&self.assignment);
+            let notify = Arc::clone(&notify);
+            tokio::spawn(async move {
+                loop {
+                    if let Some(block) = assignment.lock().await.assign_block_for(&addr) {
+                        tx.send((addr, block)).await.unwrap();
+                    }
+                    notify.notified().await;
                 }
-                rate_limit_rx.recv().await;
-            }
-        });
+            })
+        };
         self.unchoked_peers
-            .insert(addr, PeerState::new(join_handle, rate_limit_tx));
+            .insert(addr, PeerState::new(join_handle, notify));
     }
 
     pub fn peer_choked(&mut self, addr: &SocketAddr) {
@@ -63,7 +66,7 @@ impl BlockAssigner {
 
     pub async fn block_downloaded(&self, addr: &SocketAddr) {
         if let Some(peer) = self.unchoked_peers.get(addr) {
-            peer.tx.send(()).await.unwrap();
+            peer.notify.notify_waiters();
         }
     }
 
@@ -74,12 +77,15 @@ impl BlockAssigner {
 
 struct PeerState {
     join_handle: JoinHandle<()>,
-    tx: Sender<()>,
+    notify: Arc<Notify>,
 }
 
 impl PeerState {
-    fn new(join_handle: JoinHandle<()>, tx: Sender<()>) -> Self {
-        Self { join_handle, tx }
+    fn new(join_handle: JoinHandle<()>, notify: Arc<Notify>) -> Self {
+        Self {
+            join_handle,
+            notify,
+        }
     }
 }
 
