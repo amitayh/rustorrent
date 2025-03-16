@@ -51,21 +51,9 @@ impl Choker {
     }
 
     pub fn run(&mut self) -> ChokeDecision {
-        let mut top_peers = BinaryHeap::with_capacity(TOP_PEERS + 1);
-        for peer in &self.interested_peers {
-            let transfer_rate = self
-                .transfer_rates
-                .get(peer)
-                .unwrap_or(&TransferRate::EMPTY);
-            top_peers.push(Reverse(PeerByTransferRate(*peer, *transfer_rate)));
-            if top_peers.len() > TOP_PEERS {
-                top_peers.pop();
-            }
-        }
-
         let mut peers_to_choke = self.unchoked_peers.clone();
         let mut peers_to_unchoke = HashSet::with_capacity(TOP_PEERS + 1);
-        for Reverse(PeerByTransferRate(peer, _)) in top_peers {
+        for peer in self.top_peers_by_transfer_rate() {
             self.unchoked_peers.insert(peer);
             if !peers_to_choke.remove(&peer) {
                 peers_to_unchoke.insert(peer);
@@ -75,8 +63,7 @@ impl Choker {
         self.tick += 1;
         if self.tick % self.optimistic_choking_cycle == 0 {
             // Optimistic run: add one randomly selected peer from remaining interested peers
-            let remaining = self.interested_peers.difference(&self.unchoked_peers);
-            if let Some(peer) = remaining.choose(&mut rand::rng()) {
+            if let Some(peer) = self.random_interested_peer() {
                 if !peers_to_choke.remove(peer) {
                     peers_to_unchoke.insert(*peer);
                 }
@@ -88,6 +75,28 @@ impl Choker {
             peers_to_choke,
             peers_to_unchoke,
         }
+    }
+
+    fn top_peers_by_transfer_rate(&self) -> impl Iterator<Item = SocketAddr> + use<> {
+        let mut top_peers = BinaryHeap::with_capacity(TOP_PEERS + 1);
+        for peer in &self.interested_peers {
+            let transfer_rate = self
+                .transfer_rates
+                .get(peer)
+                .unwrap_or(&TransferRate::EMPTY);
+            top_peers.push(Reverse(PeerByTransferRate(*peer, *transfer_rate)));
+            if top_peers.len() > TOP_PEERS {
+                top_peers.pop();
+            }
+        }
+        top_peers
+            .into_iter()
+            .map(|Reverse(PeerByTransferRate(peer, _))| peer)
+    }
+
+    fn random_interested_peer(&self) -> Option<&SocketAddr> {
+        let remaining = self.interested_peers.difference(&self.unchoked_peers);
+        remaining.choose(&mut rand::rng())
     }
 }
 

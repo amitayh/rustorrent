@@ -107,7 +107,7 @@ impl Peer {
                             self.handle_message(addr, message).await?;
                         }
                         Event::Disconnected => {
-                            self.peer_disconnected(&addr);
+                            self.peer_disconnected(&addr).await;
                         }
                     }
                 }
@@ -153,10 +153,10 @@ impl Peer {
         Ok(())
     }
 
-    fn peer_disconnected(&mut self, addr: &SocketAddr) {
+    async fn peer_disconnected(&mut self, addr: &SocketAddr) {
         self.peers.remove(addr);
         self.choker.peer_disconnected(addr);
-        self.block_assigner.peer_choked(addr);
+        self.block_assigner.peer_choked(addr).await;
     }
 
     async fn choke(&mut self) -> anyhow::Result<()> {
@@ -182,7 +182,7 @@ impl Peer {
                 Message::KeepAlive => (), // No-op
                 Message::Choke => {
                     peer_state.peer_to_client.choking = true;
-                    self.block_assigner.peer_choked(&addr);
+                    self.block_assigner.peer_choked(&addr).await;
                 }
                 Message::Unchoke => {
                     peer_state.peer_to_client.choking = false;
@@ -219,7 +219,11 @@ impl Peer {
                         );
                         return Ok(());
                     }
-                    //todo!()
+                    //peer_state.tx.send(value)
+                    //self.tx.send(value)
+                }
+                Message::Piece(block) => {
+                    //
                 }
                 _ => todo!(),
             },

@@ -1045,17 +1045,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "priority-queue"
-version = "2.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35d34aad26c181c38e0399695bb8cd445c65222e40f68bebfea809650eb3eda6"
-dependencies = [
- "autocfg",
- "equivalent",
- "indexmap",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.93"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1102,12 +1091,6 @@ checksum = "99d9a13982dcf210057a8a78572b2217b667c3beacbf3a0d8b454f6f82837d38"
 dependencies = [
  "getrandom 0.3.1",
 ]
-
-[[package]]
-name = "rangemap"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f60fcc7d6849342eff22c4350c8b9a989ee8ceabc4b481253e8946b9fe83d684"
 
 [[package]]
 name = "redox_syscall"
@@ -1275,9 +1258,7 @@ dependencies = [
  "hex",
  "log",
  "md5",
- "priority-queue",
  "rand",
- "rangemap",
  "reqwest",
  "sha1",
  "size",
