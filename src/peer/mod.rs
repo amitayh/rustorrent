@@ -166,15 +166,12 @@ impl Peer {
             let peer = self.peers.get_mut(addr).expect("invalid peer");
             peer.client_to_peer.choking = true;
             peer.tx.send(Message::Choke).await?;
-            //self.unchoked_peers.remove(addr);
         }
         for addr in &decision.peers_to_unchoke {
-            //if self.unchoked_peers.insert(*addr) {
             info!("unchoking {}", addr);
             let peer = self.peers.get_mut(addr).expect("invalid peer");
             peer.client_to_peer.choking = false;
             peer.tx.send(Message::Unchoke).await?;
-            //}
         }
         Ok(())
     }
@@ -222,7 +219,7 @@ impl Peer {
                         );
                         return Ok(());
                     }
-                    todo!()
+                    //todo!()
                 }
                 _ => todo!(),
             },
