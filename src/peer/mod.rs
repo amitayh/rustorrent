@@ -5,6 +5,7 @@ pub mod config;
 pub mod connection;
 pub mod message;
 pub mod peer_id;
+pub mod piece_assembler;
 pub mod state;
 pub mod transfer_rate;
 
@@ -106,6 +107,7 @@ impl Peer {
         let mut choke = interval_with_delay(self.config.choking_interval);
         loop {
             tokio::select! {
+                // TODO: disconnect idle peers
                 _ = keep_alive.tick() => {
                     self.broadcast(Message::KeepAlive).await?;
                 }
@@ -141,11 +143,15 @@ impl Peer {
                             peer.client_to_peer.transfer_rate += transfer_rate;
                         }
                         Event::Downloaded(block, _data, transfer_rate) => {
+                            // TODO: verify block was in flight
                             self.block_assigner.block_downloaded(&addr, &block).await;
                             info!("got block data! {:?}", transfer_rate);
                             let peer = self.peers.get_mut(&addr).expect("invalid_peer");
                             peer.peer_to_client.transfer_rate += transfer_rate;
                             self.choker.update_peer_transfer_rate(addr, transfer_rate);
+                            // TODO: add piece to piece assembler
+                            // if piece is complete and valid = broadcast Have
+                            // if invalid - invalidate piece
                         }
                     }
                 }

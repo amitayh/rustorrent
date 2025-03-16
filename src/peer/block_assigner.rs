@@ -57,13 +57,9 @@ impl BlockAssigner {
                         tx.send((addr, block)).await.unwrap();
                         let assignment = Arc::clone(&assignment);
                         tokio::spawn(async move {
-                            tokio::select! {
-                                _ = notify.notified() => (),
-                                _ = time::sleep(Duration::from_secs(5)) => {
-                                    assignment.lock().await.release(block);
-                                    notify.notify_waiters();
-                                }
-                            }
+                            time::sleep(Duration::from_secs(5)).await;
+                            assignment.lock().await.release(block);
+                            notify.notify_waiters();
                         });
                     }
                     notify.notified().await;
@@ -124,6 +120,22 @@ impl AssignmentState {
             pieces: HashMap::new(),
             assigned_blocks: HashMap::new(),
         }
+    }
+
+    fn invalidate(&mut self, piece: usize) {
+        let state = self.pieces.get_mut(&piece).expect("invalid piece");
+        let assigned_block = self
+            .assigned_blocks
+            .values()
+            .flat_map(|blocks| blocks.iter())
+            .find(|block| block.piece == piece);
+        assert!(
+            assigned_block.is_none(),
+            "block belonging to invalidated piece {} is assigned",
+            piece
+        );
+        let blocks = Blocks::new(self.piece_size, self.total_size, self.block_size, piece);
+        state.unassigned_blocks = blocks.collect();
     }
 
     fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) {
@@ -199,7 +211,6 @@ mod tests {
     const PIECE_SIZE: Size = Size::from_const(24);
     const TOTAL_SIZE: Size = Size::from_const(32);
     const BLOCK_SIZE: Size = Size::from_const(8);
-    const BLOCK_SIZE_BYTES: usize = BLOCK_SIZE.bytes() as usize;
 
     #[tokio::test]
     async fn peer_has_pieces_but_choking() {
