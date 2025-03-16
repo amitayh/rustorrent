@@ -54,9 +54,13 @@ impl BlockAssigner {
                         tx.send((addr, block)).await.unwrap();
                         let assignment = Arc::clone(&assignment);
                         tokio::spawn(async move {
-                            time::sleep(Duration::from_secs(5)).await;
-                            assignment.lock().await.release(block);
-                            notify.notify_waiters();
+                            tokio::select! {
+                                _ = notify.notified() => (),
+                                _ = time::sleep(Duration::from_secs(5)) => {
+                                    assignment.lock().await.release(block);
+                                    notify.notify_waiters();
+                                }
+                            }
                         });
                     }
                     notify.notified().await;
@@ -183,12 +187,11 @@ impl PieceState {
 mod tests {
     use super::*;
 
-    use size::KiB;
     use tokio::time::timeout;
 
-    const PIECE_SIZE: Size = Size::from_const(8 * KiB);
-    const TOTAL_SIZE: Size = Size::from_const(24 * KiB);
-    const BLOCK_SIZE: Size = Size::from_const(KiB);
+    const PIECE_SIZE: Size = Size::from_const(24);
+    const TOTAL_SIZE: Size = Size::from_const(32);
+    const BLOCK_SIZE: Size = Size::from_const(8);
     const BLOCK_SIZE_BYTES: usize = BLOCK_SIZE.bytes() as usize;
 
     #[tokio::test]
@@ -213,10 +216,7 @@ mod tests {
         block_assigner.peer_has_pieces(addr, &pieces).await;
         block_assigner.peer_unchoked(addr);
 
-        assert_eq!(
-            block_assigner.next().await,
-            (addr, Block::new(0, 0, BLOCK_SIZE_BYTES))
-        );
+        assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 8)));
     }
 
     #[tokio::test]
@@ -224,24 +224,18 @@ mod tests {
         let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        block_assigner
-            .peer_has_pieces(addr1, &BitSet::from_bytes(&[0b10000000]))
-            .await;
+        let pieces = BitSet::from_bytes(&[0b10000000]);
+        block_assigner.peer_has_pieces(addr1, &pieces).await;
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        block_assigner
-            .peer_has_pieces(addr2, &BitSet::from_bytes(&[0b10000000]))
-            .await;
+        block_assigner.peer_has_pieces(addr2, &pieces).await;
 
         // Both peers have piece #0. Distribute its blocks among them.
         block_assigner.peer_unchoked(addr1);
-        assert_eq!(block_assigner.next().await, (addr1, Block::new(0, 0, 1024)));
+        assert_eq!(block_assigner.next().await, (addr1, Block::new(0, 0, 8)));
 
         block_assigner.peer_unchoked(addr2);
-        assert_eq!(
-            block_assigner.next().await,
-            (addr2, Block::new(0, 1024, 1024))
-        );
+        assert_eq!(block_assigner.next().await, (addr2, Block::new(0, 8, 8)));
     }
 
     #[tokio::test]
@@ -258,11 +252,11 @@ mod tests {
 
         // Peer 1 only has piece #0, select it.
         block_assigner.peer_unchoked(addr1);
-        assert_eq!(block_assigner.next().await, (addr1, Block::new(0, 0, 1024)));
+        assert_eq!(block_assigner.next().await, (addr1, Block::new(0, 0, 8)));
 
         // Peer 2 has both piece #0 and #1. Since piece #1 is rarer, slect it first.
         block_assigner.peer_unchoked(addr2);
-        assert_eq!(block_assigner.next().await, (addr2, Block::new(1, 0, 1024)));
+        assert_eq!(block_assigner.next().await, (addr2, Block::new(1, 0, 8)));
     }
 
     #[tokio::test]
@@ -274,7 +268,7 @@ mod tests {
         block_assigner.peer_has_pieces(addr, &pieces).await;
         block_assigner.peer_unchoked(addr);
 
-        let block = Block::new(0, 0, 1024);
+        let block = Block::new(0, 0, 8);
         assert_eq!(block_assigner.next().await, (addr, block));
 
         // Next poll hangs
@@ -283,10 +277,7 @@ mod tests {
 
         // Continue with next block once previous one completes
         block_assigner.block_downloaded(&addr, &block).await;
-        assert_eq!(
-            block_assigner.next().await,
-            (addr, Block::new(0, 1024, 1024))
-        );
+        assert_eq!(block_assigner.next().await, (addr, Block::new(0, 8, 8)));
     }
 
     #[tokio::test]
@@ -299,11 +290,36 @@ mod tests {
         block_assigner.peer_has_pieces(addr, &pieces).await;
         block_assigner.peer_unchoked(addr);
 
-        assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 1024)));
+        assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 8)));
+
+        //time::advance(Duration::from_secs(5)).await;
+
+        assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 8)));
+    }
+
+    #[tokio::test]
+    //#[ignore = "fix later"]
+    async fn do_not_release_downloaded_blocks() {
+        time::pause();
+        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        let pieces = BitSet::from_bytes(&[0b10000000]);
+        block_assigner.peer_has_pieces(addr, &pieces).await;
+        block_assigner.peer_unchoked(addr);
+
+        let block1 = Block::new(0, 0, 8);
+        assert_eq!(block_assigner.next().await, (addr, block1));
+        block_assigner.block_downloaded(&addr, &block1).await;
 
         time::advance(Duration::from_secs(5)).await;
 
-        assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 1024)));
+        let block2 = Block::new(0, 8, 8);
+        assert_eq!(block_assigner.next().await, (addr, block2));
+        block_assigner.block_downloaded(&addr, &block2).await;
+
+        let block3 = Block::new(0, 16, 8);
+        assert_eq!(block_assigner.next().await, (addr, block3));
     }
 
     #[tokio::test]
@@ -315,7 +331,7 @@ mod tests {
         block_assigner.peer_has_pieces(addr1, &pieces).await;
         block_assigner.peer_unchoked(addr1);
 
-        assert_eq!(block_assigner.next().await, (addr1, Block::new(0, 0, 1024)));
+        assert_eq!(block_assigner.next().await, (addr1, Block::new(0, 0, 8)));
 
         // Peer 1 choked before completing the block, assign to peer 2
         block_assigner.peer_choked(&addr1).await;
@@ -324,7 +340,7 @@ mod tests {
         block_assigner.peer_has_pieces(addr2, &pieces).await;
         block_assigner.peer_unchoked(addr2);
 
-        assert_eq!(block_assigner.next().await, (addr2, Block::new(0, 0, 1024)));
+        assert_eq!(block_assigner.next().await, (addr2, Block::new(0, 0, 8)));
     }
 
     #[tokio::test]
@@ -336,7 +352,7 @@ mod tests {
         block_assigner.peer_has_pieces(addr1, &pieces).await;
         block_assigner.peer_unchoked(addr1);
 
-        let block = Block::new(0, 0, 1024);
+        let block = Block::new(0, 0, 8);
         assert_eq!(block_assigner.next().await, (addr1, block));
 
         // Peer 1 completed downloading block and choked. Assign next block to peer 2
@@ -347,9 +363,6 @@ mod tests {
         block_assigner.peer_has_pieces(addr2, &pieces).await;
         block_assigner.peer_unchoked(addr2);
 
-        assert_eq!(
-            block_assigner.next().await,
-            (addr2, Block::new(0, 1024, 1024))
-        );
+        assert_eq!(block_assigner.next().await, (addr2, Block::new(0, 8, 8)));
     }
 }

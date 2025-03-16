@@ -10,16 +10,18 @@ use tokio::sync::mpsc::Sender;
 use crate::peer::message::Message;
 use crate::peer::transfer_rate::TransferRate;
 
+use super::connection::Command;
+
 #[derive(Debug)]
 pub struct PeerState {
-    pub tx: Sender<Message>,
+    pub tx: Sender<Command>,
     pub has_pieces: BitSet,
     pub client_to_peer: PeerToPeer,
     pub peer_to_client: PeerToPeer,
 }
 
 impl PeerState {
-    pub fn new(tx: Sender<Message>) -> Self {
+    pub fn new(tx: Sender<Command>) -> Self {
         Self {
             tx,
             has_pieces: BitSet::new(),

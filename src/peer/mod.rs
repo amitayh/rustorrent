@@ -10,10 +10,12 @@ pub mod state;
 pub mod transfer_rate;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::{io::Result, net::SocketAddr};
 
 use bit_set::BitSet;
 use log::{info, warn};
+use message::Block;
 use size::{KiB, Size};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -22,6 +24,7 @@ use tokio::time::{self, Instant};
 use crate::peer::block_assigner::BlockAssigner;
 use crate::peer::choke::Choker;
 use crate::peer::config::Config;
+use crate::peer::connection::Command;
 use crate::peer::connection::Connection;
 use crate::peer::message::Handshake;
 use crate::peer::message::Message;
@@ -36,12 +39,14 @@ pub struct PeerEvent(SocketAddr, Event);
 enum Event {
     Disconnected,
     Message(Message),
+    Downloaded(Block, Vec<u8>),
 }
 
 struct Peer {
     peer_id: PeerId,
     listener: TcpListener,
     torrent_info: Info,
+    file_path: PathBuf,
     peers: HashMap<SocketAddr, PeerState>,
     choker: Choker,
     block_assigner: BlockAssigner,
@@ -53,7 +58,7 @@ struct Peer {
 }
 
 impl Peer {
-    fn new(listener: TcpListener, torrent_info: Info, config: Config) -> Self {
+    fn new(listener: TcpListener, torrent_info: Info, file_path: PathBuf, config: Config) -> Self {
         let peer_id = PeerId::random();
         let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
         let total_pieces = torrent_info.pieces.len();
@@ -68,6 +73,7 @@ impl Peer {
             peer_id,
             listener,
             torrent_info,
+            file_path,
             peers: HashMap::new(),
             choker,
             block_assigner,
@@ -99,7 +105,9 @@ impl Peer {
                 }
                 (addr, block) = self.block_assigner.next() => {
                     let peer = self.peers.get_mut(&addr).expect("invalid peer");
-                    peer.tx.send(Message::Request(block)).await.expect("unable to send");
+                    peer.tx.send(Command::Send(Message::Request(block)))
+                        .await
+                        .expect("unable to send");
                 }
                 Some(PeerEvent(addr, event)) = self.rx.recv() => {
                     match event {
@@ -108,6 +116,10 @@ impl Peer {
                         }
                         Event::Disconnected => {
                             self.peer_disconnected(&addr).await;
+                        }
+                        Event::Downloaded(block, data) => {
+                            info!("got block data!");
+                            self.block_assigner.block_downloaded(&addr, &block).await;
                         }
                     }
                 }
@@ -131,7 +143,8 @@ impl Peer {
         send_handshake_first: bool,
     ) -> Result<()> {
         let (rx, tx) = mpsc::channel(16);
-        let mut connection = Connection::new(addr, socket, self.tx.clone(), tx);
+        let mut connection =
+            Connection::new(addr, socket, self.file_path.clone(), self.tx.clone(), tx);
         if send_handshake_first {
             connection.send(&self.handshake).await?;
             connection.wait_for_handshake().await?;
@@ -165,13 +178,13 @@ impl Peer {
             info!("choking {}", addr);
             let peer = self.peers.get_mut(addr).expect("invalid peer");
             peer.client_to_peer.choking = true;
-            peer.tx.send(Message::Choke).await?;
+            peer.tx.send(Command::Send(Message::Choke)).await?;
         }
         for addr in &decision.peers_to_unchoke {
             info!("unchoking {}", addr);
             let peer = self.peers.get_mut(addr).expect("invalid peer");
             peer.client_to_peer.choking = false;
-            peer.tx.send(Message::Unchoke).await?;
+            peer.tx.send(Command::Send(Message::Unchoke)).await?;
         }
         Ok(())
     }
@@ -219,11 +232,7 @@ impl Peer {
                         );
                         return Ok(());
                     }
-                    //peer_state.tx.send(value)
-                    //self.tx.send(value)
-                }
-                Message::Piece(block) => {
-                    //
+                    peer_state.tx.send(Command::Upload(block)).await?;
                 }
                 _ => todo!(),
             },
@@ -238,7 +247,7 @@ impl Peer {
         peer.has_pieces.union_with(&pieces);
         let want = peer.has_pieces.difference(&self.has_pieces);
         if !peer.client_to_peer.interested && peer.peer_to_client.choking && want.count() > 0 {
-            peer.tx.send(Message::Interested).await?;
+            peer.tx.send(Command::Send(Message::Interested)).await?;
         }
         Ok(())
     }
@@ -257,21 +266,22 @@ mod tests {
     async fn one_seeder_one_leecher() {
         env_logger::init();
 
-        let torrent_info = Info::load("assets/alice_in_wonderland.txt").await.unwrap();
+        let file_path = "assets/alice_in_wonderland.txt";
+        let torrent_info = Info::load(&file_path).await.unwrap();
 
         let mut seeder = {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let config = Config::default()
                 .with_unchoking_interval(Duration::from_secs(1))
                 .with_optimistic_unchoking_cycle(2);
-            let mut peer = Peer::new(listener, torrent_info.clone(), config);
+            let mut peer = Peer::new(listener, torrent_info.clone(), file_path.into(), config);
             peer.temp_has_file();
             peer
         };
         let seeder_addr = seeder.address().unwrap();
         let mut leecher = {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            Peer::new(listener, torrent_info, Config::default())
+            Peer::new(listener, torrent_info, file_path.into(), Config::default())
         };
 
         let mut set = JoinSet::new();
