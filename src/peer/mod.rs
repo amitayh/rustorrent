@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 pub mod block_assigner;
 pub mod blocks;
 pub mod choke;
@@ -11,15 +10,15 @@ pub mod transfer_rate;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::{io::Result, net::SocketAddr};
 
 use bit_set::BitSet;
 use log::{info, warn};
 use message::Block;
-use size::{KiB, Size};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::time::{self, Instant};
+use tokio::time::{self, Instant, Interval};
 use transfer_rate::TransferRate;
 
 use crate::peer::block_assigner::BlockAssigner;
@@ -33,8 +32,6 @@ use crate::peer::peer_id::PeerId;
 use crate::peer::state::PeerState;
 use crate::torrent::Info;
 
-const BLOCK_SIZE: Size = Size::from_const(16 * KiB);
-
 pub struct PeerEvent(pub SocketAddr, pub Event);
 
 pub enum Event {
@@ -46,7 +43,6 @@ pub enum Event {
 }
 
 pub struct Peer {
-    peer_id: PeerId,
     listener: TcpListener,
     torrent_info: Info,
     file_path: PathBuf,
@@ -74,11 +70,10 @@ impl Peer {
         let block_assigner = BlockAssigner::new(
             torrent_info.piece_length,
             torrent_info.download_type.length(),
-            BLOCK_SIZE,
+            config.block_size,
         );
         let (tx, rx) = mpsc::channel(128);
         let peer = Self {
-            peer_id,
             listener,
             torrent_info,
             file_path,
@@ -94,21 +89,26 @@ impl Peer {
         (peer, tx)
     }
 
+    #[allow(dead_code)]
     fn temp_has_file(&mut self) {
         for piece in 0..self.torrent_info.pieces.len() {
             self.has_pieces.insert(piece);
         }
     }
 
+    #[allow(dead_code)]
     fn address(&self) -> Result<SocketAddr> {
         self.listener.local_addr()
     }
 
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let start_choking = Instant::now() + self.config.choking_interval;
-        let mut choke = time::interval_at(start_choking, self.config.choking_interval);
+        let mut keep_alive = interval_with_delay(self.config.keep_alive_interval);
+        let mut choke = interval_with_delay(self.config.choking_interval);
         loop {
             tokio::select! {
+                _ = keep_alive.tick() => {
+                    self.broadcast(Message::KeepAlive).await?;
+                }
                 _ = choke.tick() => {
                     self.choke().await?;
                 }
@@ -124,19 +124,28 @@ impl Peer {
                             self.handle_message(addr, message).await?;
                         }
                         Event::Connect => {
-                            let socket = TcpStream::connect(addr).await?;
                             info!("connecting to {}", addr);
-                            self.new_peer(addr, socket, true).await?;
+                            match TcpStream::connect(addr).await {
+                                Ok(socket) => self.new_peer(addr, socket, true).await?,
+                                Err(err) => {
+                                    warn!("error connecting to {}: {}", addr, err);
+                                }
+                            }
                         }
                         Event::Disconnected => {
                             self.peer_disconnected(&addr).await;
                         }
                         Event::Uploaded(_block, transfer_rate) => {
                             info!("sent block data! {:?}", transfer_rate);
+                            let peer = self.peers.get_mut(&addr).expect("invalid_peer");
+                            peer.client_to_peer.transfer_rate += transfer_rate;
                         }
                         Event::Downloaded(block, _data, transfer_rate) => {
                             self.block_assigner.block_downloaded(&addr, &block).await;
                             info!("got block data! {:?}", transfer_rate);
+                            let peer = self.peers.get_mut(&addr).expect("invalid_peer");
+                            peer.peer_to_client.transfer_rate += transfer_rate;
+                            self.choker.update_peer_transfer_rate(addr, transfer_rate);
                         }
                     }
                 }
@@ -146,6 +155,13 @@ impl Peer {
                 }
             }
         }
+    }
+
+    async fn broadcast(&self, message: Message) -> anyhow::Result<()> {
+        for peer in self.peers.values() {
+            peer.tx.send(Command::Send(message.clone())).await?;
+        }
+        Ok(())
     }
 
     async fn new_peer(
@@ -172,6 +188,7 @@ impl Peer {
         let tx = self.tx.clone();
         tokio::spawn(async move {
             connection.start().await?;
+            info!("peer {} disconnected", addr);
             tx.send(PeerEvent(addr, Event::Disconnected)).await?;
             Ok::<(), anyhow::Error>(())
         });
@@ -254,15 +271,21 @@ impl Peer {
     }
 
     async fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: BitSet) -> anyhow::Result<()> {
-        self.block_assigner.peer_has_pieces(addr, &pieces).await;
         let peer = self.peers.get_mut(&addr).expect("invalid peer");
         peer.has_pieces.union_with(&pieces);
         let want = peer.has_pieces.difference(&self.has_pieces);
-        if !peer.client_to_peer.interested && peer.peer_to_client.choking && want.count() > 0 {
+        if !peer.client_to_peer.interested && want.count() > 0 {
             peer.tx.send(Command::Send(Message::Interested)).await?;
+            peer.client_to_peer.interested = true;
         }
+        self.block_assigner.peer_has_pieces(addr, &pieces).await;
         Ok(())
     }
+}
+
+fn interval_with_delay(period: Duration) -> Interval {
+    let start = Instant::now() + period;
+    time::interval_at(start, period)
 }
 
 #[cfg(test)]
@@ -284,6 +307,7 @@ mod tests {
         let mut seeder = {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let config = Config::default()
+                .with_keep_alive_interval(Duration::from_secs(5))
                 .with_unchoking_interval(Duration::from_secs(1))
                 .with_optimistic_unchoking_cycle(2);
             let (mut peer, _) = Peer::new(listener, torrent_info.clone(), file_path.into(), config);
