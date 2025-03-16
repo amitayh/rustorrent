@@ -1,18 +1,12 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 use bencoding::value::Value;
-use log::{info, warn};
-use peer::connection::ConnectionOld;
-use peer::state::SharedStateOld;
-use tokio::net::TcpStream;
-use tokio::sync::RwLock;
+use log::info;
+use peer::{Peer, PeerEvent};
 use tokio::{fs::File, net::TcpListener};
 use tracker::Event;
 
 use crate::codec::AsyncDecoder;
-use crate::peer::message::Handshake;
 use crate::peer::peer_id::PeerId;
 use crate::torrent::Torrent;
 
@@ -47,67 +41,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse .torrent file
     let torrent = load_torrent(&path).await?;
 
-    let temp_dir = {
-        // Create temp dir
-        let mut path = PathBuf::from("/tmp");
-        path.push(format!("torrent-{}", hex::encode(torrent.info.info_hash.0)));
-        tokio::fs::create_dir(&path).await?;
-        path
-    };
-
-    let state = Arc::new(RwLock::new(SharedStateOld::new(temp_dir)));
-
-    // Run server
-    let address = SocketAddr::new("::".parse()?, config.port);
-    info!("starting server...");
-    let listener = TcpListener::bind(&address).await?;
-    info!("listening on {}", &address);
-
-    /*
-        // Listen for messages from peers
-        let (tx, mut rx) = mpsc::channel(100);
-        tokio::spawn(async move {
-            while let Some(message) = rx.recv().await {
-                info!("got message from peer: {:?}", message);
-            }
-        });
-    */
-
-    let handshake = Arc::new(Handshake::new(
-        torrent.info.info_hash.clone(),
-        config.clinet_id.clone(),
-    ));
-    {
-        let handshake = Arc::clone(&handshake);
-        let state = Arc::clone(&state);
-        tokio::spawn(async move {
-            loop {
-                let (socket, addr) = listener.accept().await?;
-                let mut peer = ConnectionOld::new(addr, socket, Arc::clone(&state)).await;
-                peer.wait_for_handshake().await?;
-                peer.send_handshake(&handshake).await?;
-                tokio::spawn(async move { peer.process().await });
-            }
-            #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
-            //while let Ok((socket, addr)) = listener.accept().await {
-            //    let mut peer = Peer::new(socket);
-            //    peer.wait_for_handshake().await?;
-            //    peer.send_handshake(&handshake).await?;
-            //    {
-            //        let mut foo = state.lock().await;
-            //        foo.peer_connected(addr, peer);
-            //    }
-            //    tokio::spawn(async move {
-            //        loop {
-            //            let message = peer.wait_for_message().await?;
-            //            tx.send(message).await?;
-            //        }
-            //    });
-            //}
-            //Ok::<(), std::io::Error>(())
-        });
-    }
+    //let temp_dir = {
+    //    // Create temp dir
+    //    let mut path = PathBuf::from("/tmp");
+    //    path.push(format!("torrent-{}", hex::encode(torrent.info.info_hash.0)));
+    //    tokio::fs::create_dir(&path).await?;
+    //    path
+    //};
 
     let response = tracker::request(&torrent, &config, Some(Event::Started)).await?;
 
@@ -122,35 +62,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Run server
+    let address = SocketAddr::new("::".parse()?, config.port);
+    info!("starting server...");
+    let listener = TcpListener::bind(&address).await?;
+    info!("listening on {}", &address);
+    let (mut client, tx) = Peer::new(
+        listener,
+        torrent.info,
+        path.into(),
+        peer::config::Config::default(),
+    );
+
     let len = response.peers.len();
     for (i, peer_info) in response.peers.into_iter().enumerate() {
-        let handshake = Arc::clone(&handshake);
-        let state = Arc::clone(&state);
-        tokio::spawn(async move {
-            let address = peer_info.address;
-            info!("connecting to peer {}/{}: {}...", i + 1, len, address);
-            match TcpStream::connect(address).await {
-                Ok(socket) => {
-                    info!("connected");
-                    let mut peer = ConnectionOld::new(address, socket, Arc::clone(&state)).await;
-                    peer.send_handshake(&handshake).await?;
-                    peer.wait_for_handshake().await?;
-
-                    let peer_ids_match = peer_info
-                        .peer_id
-                        .as_ref()
-                        .is_none_or(|peer_id| peer_id == &handshake.peer_id);
-                    if !peer_ids_match {
-                        warn!("peer id mismatch");
-                        // disconnect peer
-                    }
-                    peer.process().await?;
-                }
-                Err(err) => log::warn!("unable to connect to {}: {:?}", address, err),
-            }
-            Ok::<(), anyhow::Error>(())
-        });
+        let addr = peer_info.address;
+        info!("connecting to peer {}/{}: {}...", i + 1, len, addr);
+        tx.send(PeerEvent(addr, peer::Event::Connect)).await?;
     }
+    client.start().await?;
 
     tokio::signal::ctrl_c().await?;
 

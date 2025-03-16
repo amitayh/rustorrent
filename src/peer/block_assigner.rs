@@ -38,7 +38,10 @@ impl BlockAssigner {
     }
 
     pub async fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) {
-        self.assignment.lock().await.peer_has_pieces(addr, pieces)
+        self.assignment.lock().await.peer_has_pieces(addr, pieces);
+        if let Some(peer) = self.unchoked_peers.get(&addr) {
+            peer.notify.notify_waiters();
+        }
     }
 
     pub fn peer_unchoked(&mut self, addr: SocketAddr) {
@@ -137,7 +140,10 @@ impl AssignmentState {
         let state = self
             .pieces
             .values_mut()
-            .filter(|state| state.peers_with_piece.contains(&addr))
+            .filter(|state| {
+                // TODO: test
+                state.peers_with_piece.contains(&addr) && !state.unassigned_blocks.is_empty()
+            })
             .min_by_key(|state| state.peers_with_piece.len())?;
 
         let block = state.unassigned_blocks.pop_front();
@@ -169,6 +175,7 @@ impl AssignmentState {
     }
 }
 
+#[derive(Debug)]
 struct PieceState {
     peers_with_piece: HashSet<SocketAddr>,
     unassigned_blocks: VecDeque<Block>,
@@ -215,6 +222,19 @@ mod tests {
         let pieces = BitSet::from_bytes(&[0b10000000]);
         block_assigner.peer_has_pieces(addr, &pieces).await;
         block_assigner.peer_unchoked(addr);
+
+        assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 8)));
+    }
+
+    #[tokio::test]
+    async fn peer_unchoked_after_notifying_on_completed_piece() {
+        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        block_assigner.peer_unchoked(addr);
+
+        let pieces = BitSet::from_bytes(&[0b10000000]);
+        block_assigner.peer_has_pieces(addr, &pieces).await;
 
         assert_eq!(block_assigner.next().await, (addr, Block::new(0, 0, 8)));
     }

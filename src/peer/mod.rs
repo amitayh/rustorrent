@@ -20,6 +20,7 @@ use size::{KiB, Size};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant};
+use transfer_rate::TransferRate;
 
 use crate::peer::block_assigner::BlockAssigner;
 use crate::peer::choke::Choker;
@@ -34,15 +35,17 @@ use crate::torrent::Info;
 
 const BLOCK_SIZE: Size = Size::from_const(16 * KiB);
 
-pub struct PeerEvent(SocketAddr, Event);
+pub struct PeerEvent(pub SocketAddr, pub Event);
 
-enum Event {
+pub enum Event {
+    Connect,
     Disconnected,
     Message(Message),
-    Downloaded(Block, Vec<u8>),
+    Uploaded(Block, TransferRate),
+    Downloaded(Block, Vec<u8>, TransferRate),
 }
 
-struct Peer {
+pub struct Peer {
     peer_id: PeerId,
     listener: TcpListener,
     torrent_info: Info,
@@ -58,7 +61,12 @@ struct Peer {
 }
 
 impl Peer {
-    fn new(listener: TcpListener, torrent_info: Info, file_path: PathBuf, config: Config) -> Self {
+    pub fn new(
+        listener: TcpListener,
+        torrent_info: Info,
+        file_path: PathBuf,
+        config: Config,
+    ) -> (Self, Sender<PeerEvent>) {
         let peer_id = PeerId::random();
         let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
         let total_pieces = torrent_info.pieces.len();
@@ -69,7 +77,7 @@ impl Peer {
             BLOCK_SIZE,
         );
         let (tx, rx) = mpsc::channel(128);
-        Self {
+        let peer = Self {
             peer_id,
             listener,
             torrent_info,
@@ -77,12 +85,13 @@ impl Peer {
             peers: HashMap::new(),
             choker,
             block_assigner,
-            tx,
+            tx: tx.clone(),
             rx,
             handshake,
             has_pieces: BitSet::with_capacity(total_pieces),
             config,
-        }
+        };
+        (peer, tx)
     }
 
     fn temp_has_file(&mut self) {
@@ -95,7 +104,7 @@ impl Peer {
         self.listener.local_addr()
     }
 
-    async fn start(&mut self) -> anyhow::Result<()> {
+    pub async fn start(&mut self) -> anyhow::Result<()> {
         let start_choking = Instant::now() + self.config.choking_interval;
         let mut choke = time::interval_at(start_choking, self.config.choking_interval);
         loop {
@@ -114,12 +123,20 @@ impl Peer {
                         Event::Message(message) => {
                             self.handle_message(addr, message).await?;
                         }
+                        Event::Connect => {
+                            let socket = TcpStream::connect(addr).await?;
+                            info!("connecting to {}", addr);
+                            self.new_peer(addr, socket, true).await?;
+                        }
                         Event::Disconnected => {
                             self.peer_disconnected(&addr).await;
                         }
-                        Event::Downloaded(block, data) => {
-                            info!("got block data!");
+                        Event::Uploaded(_block, transfer_rate) => {
+                            info!("sent block data! {:?}", transfer_rate);
+                        }
+                        Event::Downloaded(block, _data, transfer_rate) => {
                             self.block_assigner.block_downloaded(&addr, &block).await;
+                            info!("got block data! {:?}", transfer_rate);
                         }
                     }
                 }
@@ -129,11 +146,6 @@ impl Peer {
                 }
             }
         }
-    }
-
-    async fn connect(&mut self, addr: SocketAddr) -> Result<()> {
-        let socket = TcpStream::connect(addr).await?;
-        self.new_peer(addr, socket, true).await
     }
 
     async fn new_peer(
@@ -274,12 +286,12 @@ mod tests {
             let config = Config::default()
                 .with_unchoking_interval(Duration::from_secs(1))
                 .with_optimistic_unchoking_cycle(2);
-            let mut peer = Peer::new(listener, torrent_info.clone(), file_path.into(), config);
+            let (mut peer, _) = Peer::new(listener, torrent_info.clone(), file_path.into(), config);
             peer.temp_has_file();
             peer
         };
         let seeder_addr = seeder.address().unwrap();
-        let mut leecher = {
+        let (mut leecher, leecher_tx) = {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             Peer::new(listener, torrent_info, file_path.into(), Config::default())
         };
@@ -287,7 +299,11 @@ mod tests {
         let mut set = JoinSet::new();
         set.spawn(async move { seeder.start().await });
         set.spawn(async move {
-            leecher.connect(seeder_addr).await.unwrap();
+            leecher_tx
+                .send(PeerEvent(seeder_addr, Event::Connect))
+                .await
+                .unwrap();
+
             leecher.start().await
         });
 
