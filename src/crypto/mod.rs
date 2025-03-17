@@ -24,7 +24,7 @@ impl std::fmt::Debug for Md5 {
     }
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct Sha1(pub [u8; 20]);
 
 impl Sha1 {

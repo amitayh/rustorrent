@@ -77,6 +77,10 @@ impl Choker {
         }
     }
 
+    pub fn is_unchoked(&self, addr: &SocketAddr) -> bool {
+        self.unchoked_peers.contains(addr)
+    }
+
     fn top_peers_by_transfer_rate(&self) -> impl Iterator<Item = SocketAddr> + use<> {
         let mut top_peers = BinaryHeap::with_capacity(TOP_PEERS + 1);
         for peer in &self.interested_peers {
