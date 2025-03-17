@@ -54,9 +54,9 @@ impl Info {
         }
         let mut all = Vec::with_capacity(pieces.len() / SHA1_LEN);
         for i in (0..pieces.len()).step_by(SHA1_LEN) {
-            let mut sha = [0; SHA1_LEN];
-            sha.copy_from_slice(&pieces[i..(i + SHA1_LEN)]);
-            all.push(Sha1(sha));
+            let mut bytes = [0; SHA1_LEN];
+            bytes.copy_from_slice(&pieces[i..(i + SHA1_LEN)]);
+            all.push(Sha1(bytes));
         }
         Ok(all)
     }

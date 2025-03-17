@@ -51,18 +51,22 @@ impl BlockAssigner {
             let assignment = Arc::clone(&self.assignment);
             let notify = Arc::clone(&notify);
             tokio::spawn(async move {
+                let mut timeout = None;
                 loop {
                     if let Some(block) = assignment.lock().await.assign(addr) {
                         let notify = Arc::clone(&notify);
                         tx.send((addr, block)).await.unwrap();
                         let assignment = Arc::clone(&assignment);
-                        tokio::spawn(async move {
+                        timeout = Some(tokio::spawn(async move {
                             time::sleep(Duration::from_secs(5)).await;
                             assignment.lock().await.release(block);
                             notify.notify_waiters();
-                        });
+                        }));
                     }
                     notify.notified().await;
+                    if let Some(timeout) = timeout.take() {
+                        timeout.abort();
+                    }
                 }
             })
         };
@@ -122,6 +126,7 @@ impl AssignmentState {
         }
     }
 
+    #[allow(dead_code)]
     fn invalidate(&mut self, piece: usize) {
         let state = self.pieces.get_mut(&piece).expect("invalid piece");
         let assigned_block = self

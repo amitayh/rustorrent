@@ -62,7 +62,7 @@ impl Choker {
 
         self.tick += 1;
         if self.tick % self.optimistic_choking_cycle == 0 {
-            // Optimistic run: add one randomly selected peer from remaining interested peers
+            // Optimistic run: randomly unchaoke one remaining peer
             if let Some(peer) = self.random_interested_peer() {
                 if !peers_to_choke.remove(peer) {
                     peers_to_unchoke.insert(*peer);
