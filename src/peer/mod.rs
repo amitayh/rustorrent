@@ -11,10 +11,12 @@ pub mod transfer_rate;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{io::Result, net::SocketAddr};
 
 use bit_set::BitSet;
+use block_assigner::BlockAssignerConfig;
 use log::{info, warn};
 use message::Block;
 use tokio::net::{TcpListener, TcpStream};
@@ -72,6 +74,7 @@ impl Peer {
             torrent_info.piece_length,
             torrent_info.download_type.length(),
             config.block_size,
+            config.block_assigner_config.clone(),
         );
         let (tx, rx) = mpsc::channel(128);
         let peer = Self {

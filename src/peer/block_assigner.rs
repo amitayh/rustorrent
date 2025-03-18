@@ -19,6 +19,7 @@ use tokio::{
 use crate::peer::{blocks::Blocks, message::Block};
 
 pub struct BlockAssigner {
+    config: Arc<BlockAssignerConfig>,
     unchoked_peers: HashMap<SocketAddr, PeerHandle>,
     assignment: Arc<Mutex<AssignmentState>>,
     tx: Sender<(SocketAddr, Block)>,
@@ -26,10 +27,16 @@ pub struct BlockAssigner {
 }
 
 impl BlockAssigner {
-    pub fn new(piece_size: Size, total_size: Size, block_size: Size) -> Self {
+    pub fn new(
+        piece_size: Size,
+        total_size: Size,
+        block_size: Size,
+        config: BlockAssignerConfig,
+    ) -> Self {
         let assignment = AssignmentState::new(piece_size, total_size, block_size);
         let (tx, rx) = mpsc::channel(16);
         Self {
+            config: Arc::new(config),
             unchoked_peers: HashMap::new(),
             assignment: Arc::new(Mutex::new(assignment)),
             tx,
@@ -49,16 +56,18 @@ impl BlockAssigner {
         let join_handle = {
             let tx = self.tx.clone();
             let assignment = Arc::clone(&self.assignment);
+            let config = Arc::clone(&self.config);
             let notify = Arc::clone(&notify);
             tokio::spawn(async move {
                 let mut timeout = None;
                 loop {
                     if let Some(block) = assignment.lock().await.assign(addr) {
-                        let notify = Arc::clone(&notify);
                         tx.send((addr, block)).await.unwrap();
                         let assignment = Arc::clone(&assignment);
+                        let config = Arc::clone(&config);
+                        let notify = Arc::clone(&notify);
                         timeout = Some(tokio::spawn(async move {
-                            time::sleep(Duration::from_secs(5)).await;
+                            time::sleep(config.block_timeout).await;
                             assignment.lock().await.release(block);
                             notify.notify_waiters();
                         }));
@@ -90,6 +99,19 @@ impl BlockAssigner {
 
     pub async fn next(&mut self) -> (SocketAddr, Block) {
         self.rx.recv().await.unwrap()
+    }
+}
+
+#[derive(Clone)]
+pub struct BlockAssignerConfig {
+    pub block_timeout: Duration,
+}
+
+impl Default for BlockAssignerConfig {
+    fn default() -> Self {
+        Self {
+            block_timeout: Duration::from_secs(5),
+        }
     }
 }
 
@@ -219,7 +241,12 @@ mod tests {
 
     #[tokio::test]
     async fn peer_has_pieces_but_choking() {
-        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -232,7 +259,12 @@ mod tests {
 
     #[tokio::test]
     async fn one_unchoked_peer() {
-        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -244,7 +276,12 @@ mod tests {
 
     #[tokio::test]
     async fn peer_unchoked_after_notifying_on_completed_piece() {
-        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         block_assigner.peer_unchoked(addr);
@@ -257,7 +294,12 @@ mod tests {
 
     #[tokio::test]
     async fn distribute_same_piece_between_two_peers() {
-        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -276,7 +318,12 @@ mod tests {
 
     #[tokio::test]
     async fn select_rarest_pieces_first() {
-        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -297,7 +344,12 @@ mod tests {
 
     #[tokio::test]
     async fn wait_until_previous_block_is_completed_before_emitting_next_block() {
-        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -319,7 +371,12 @@ mod tests {
     #[tokio::test]
     async fn give_up_on_block_after_timeout_expires() {
         time::pause();
-        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -337,7 +394,12 @@ mod tests {
     //#[ignore = "fix later"]
     async fn do_not_release_downloaded_blocks() {
         time::pause();
-        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -360,7 +422,12 @@ mod tests {
 
     #[tokio::test]
     async fn assign_abandoned_block_to_other_peer_if_needed() {
-        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -381,7 +448,12 @@ mod tests {
 
     #[tokio::test]
     async fn do_not_reassign_downloaded_block() {
-        let mut block_assigner = BlockAssigner::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);

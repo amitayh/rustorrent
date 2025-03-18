@@ -1,5 +1,6 @@
 use std::io::{Result, Write};
 
+use size::Size;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub trait Encoder {
@@ -12,4 +13,8 @@ pub trait AsyncEncoder {
 
 pub trait AsyncDecoder: Sized {
     async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self>;
+}
+
+pub trait TransportMessage {
+    fn transport_bytes(&self) -> usize;
 }

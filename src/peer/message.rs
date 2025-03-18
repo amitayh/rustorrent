@@ -3,7 +3,7 @@ use std::io::{Error, ErrorKind, Result};
 use bit_set::BitSet;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::codec::{AsyncDecoder, AsyncEncoder};
+use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
 use crate::crypto::Sha1;
 use crate::peer::peer_id::PeerId;
 
@@ -67,6 +67,24 @@ impl AsyncDecoder for Handshake {
     }
 }
 
+//impl Decoder for Handshake {
+//    type Item = Self;
+//    type Error = std::io::Error;
+//
+//    fn decode(
+//        &mut self,
+//        src: &mut BytesMut,
+//    ) -> std::result::Result<Option<Self::Item>, Self::Error> {
+//        let protocol = {
+//            let length = src.get_u8();
+//            let mut buf = vec![0; length as usize];
+//            src.get_u32(&mut buf);
+//            String::from_utf8(buf).map_err(|err| Error::new(ErrorKind::InvalidData, err))?
+//        };
+//        todo!()
+//    }
+//}
+
 impl AsyncEncoder for Handshake {
     async fn encode<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
         let len = self
@@ -79,7 +97,18 @@ impl AsyncEncoder for Handshake {
         stream.write_all(&[0; 8]).await?;
         stream.write_all(&self.info_hash.0).await?;
         stream.write_all(&self.peer_id.0).await?;
+        stream.flush().await?;
         Ok(())
+    }
+}
+
+impl TransportMessage for Handshake {
+    fn transport_bytes(&self) -> usize {
+        1 + // pstr len
+            self.protocol.bytes().len() + // pstr bytes
+            8 + // reserved
+            20 + // info hash
+            20 // peer id
     }
 }
 
@@ -90,10 +119,16 @@ pub enum Message {
     Unchoke,
     Interested,
     NotInterested,
-    Have { piece: usize },
+    Have {
+        piece: usize,
+    },
     Bitfield(BitSet),
     Request(Block),
-    Piece(Block),
+    Piece {
+        piece: usize,
+        offset: usize,
+        data: Vec<u8>,
+    },
     Cancel(Block),
     Port(u16),
 }
@@ -127,7 +162,13 @@ impl AsyncDecoder for Message {
             (ID_PIECE, 9..) => {
                 let piece = stream.read_u32().await? as usize;
                 let offset = stream.read_u32().await? as usize;
-                Ok(Self::Piece(Block::new(piece, offset, length - 9)))
+                let mut data = vec![0; length - 9];
+                stream.read_exact(&mut data).await?;
+                Ok(Self::Piece {
+                    piece,
+                    offset,
+                    data,
+                })
             }
             (ID_CANCEL, 13) => {
                 let block = Block::decode(stream).await?;
@@ -171,7 +212,7 @@ impl AsyncEncoder for Message {
                 stream.write_u32(*piece as u32).await?;
             }
             Self::Bitfield(bitset) => {
-                let bytes = bitset.clone().into_bit_vec().to_bytes();
+                let bytes = bitset.get_ref().to_bytes();
                 stream.write_u32(1 + (bytes.len() as u32)).await?;
                 stream.write_u8(ID_BITFIELD).await?;
                 stream.write_all(&bytes).await?;
@@ -181,12 +222,17 @@ impl AsyncEncoder for Message {
                 stream.write_u8(ID_REQUEST).await?;
                 block.encode(stream).await?;
             }
-            Self::Piece(block) => {
-                let length = 9 + block.length;
+            Self::Piece {
+                piece,
+                offset,
+                data,
+            } => {
+                let length = 9 + data.len();
                 stream.write_u32(length as u32).await?;
                 stream.write_u8(ID_PIECE).await?;
-                stream.write_u32(block.piece as u32).await?;
-                stream.write_u32(block.offset as u32).await?;
+                stream.write_u32(*piece as u32).await?;
+                stream.write_u32(*offset as u32).await?;
+                stream.write_all(data).await?;
             }
             Self::Cancel(block) => {
                 stream.write_u32(13).await?;
@@ -199,7 +245,31 @@ impl AsyncEncoder for Message {
                 stream.write_u16(*port).await?;
             }
         }
+        stream.flush().await?;
         Ok(())
+    }
+}
+
+impl TransportMessage for Message {
+    fn transport_bytes(&self) -> usize {
+        let bytes = match self {
+            Self::KeepAlive => 0,
+            Self::Choke => 1,
+            Self::Unchoke => 1,
+            Self::Interested => 1,
+            Self::NotInterested => 1,
+            Self::Have { piece: _ } => 5,
+            Self::Bitfield(bitset) => 1 + bitset.get_ref().to_bytes().len(),
+            Self::Request(_) => 13,
+            Self::Piece {
+                piece: _,
+                offset: _,
+                data,
+            } => 9 + data.len(),
+            Self::Cancel(_) => 13,
+            Self::Port(_) => 3,
+        };
+        4 + bytes
     }
 }
 
@@ -242,16 +312,58 @@ impl AsyncEncoder for Block {
     }
 }
 
+// ------------------------------------------------------------
+
+/*
+struct HandshakeCodec;
+
+impl Decoder for HandshakeCodec {
+    type Item = Handshake;
+    type Error = std::io::Error;
+
+    fn decode(
+        &mut self,
+        src: &mut BytesMut,
+    ) -> std::result::Result<Option<Self::Item>, Self::Error> {
+        Ok(None)
+    }
+}
+
+impl Encoder<Handshake> for HandshakeCodec {
+    type Error = std::io::Error;
+
+    fn encode(
+        &mut self,
+        item: Handshake,
+        dst: &mut BytesMut,
+    ) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
+}
+*/
+
+// ------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
-    use std::fmt::Debug;
+    use std::{
+        fmt::Debug,
+        io::{Cursor, Seek},
+    };
 
     use super::*;
 
-    async fn verify_encode_decode<T: AsyncEncoder + AsyncDecoder + PartialEq + Debug>(message: T) {
-        let (mut read, mut write) = tokio::io::duplex(128);
-        message.encode(&mut write).await.expect("unable to encode");
-        let message_read = T::decode(&mut read).await.expect("unable to decode");
+    async fn verify_encode_decode<
+        T: AsyncEncoder + AsyncDecoder + TransportMessage + PartialEq + Debug,
+    >(
+        message: T,
+    ) {
+        let length = message.transport_bytes();
+        let mut cursor = Cursor::new(Vec::with_capacity(length));
+        message.encode(&mut cursor).await.expect("unable to encode");
+        assert_eq!(length, cursor.position() as usize);
+        cursor.rewind().expect("unable to rewind");
+        let message_read = T::decode(&mut cursor).await.expect("unable to decode");
         assert_eq!(message, message_read);
     }
 
@@ -302,7 +414,12 @@ mod tests {
 
     #[tokio::test]
     async fn piece() {
-        verify_encode_decode(Message::Piece(Block::new(1, 2, 5))).await;
+        verify_encode_decode(Message::Piece {
+            piece: 1,
+            offset: 2,
+            data: vec![1, 2, 3],
+        })
+        .await;
     }
 
     #[tokio::test]
