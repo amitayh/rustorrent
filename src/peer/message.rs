@@ -1,6 +1,8 @@
+use std::fmt::Formatter;
 use std::io::{Error, ErrorKind, Result};
 
 use bit_set::BitSet;
+use size::Size;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
@@ -112,7 +114,7 @@ impl TransportMessage for Handshake {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 pub enum Message {
     KeepAlive,
     Choke,
@@ -131,6 +133,36 @@ pub enum Message {
     },
     Cancel(Block),
     Port(u16),
+}
+
+impl std::fmt::Debug for Message {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Message::KeepAlive => write!(f, "KeepAlive"),
+            Message::Choke => write!(f, "Choke"),
+            Message::Unchoke => write!(f, "Unchoke"),
+            Message::Interested => write!(f, "Interested"),
+            Message::NotInterested => write!(f, "NotInterested"),
+            Message::Have { piece } => write!(f, "Have {{ piece: {} }}", piece),
+            Message::Bitfield(bitset) => write!(f, "Bitfield({:?})", bitset),
+            Message::Request(block) => write!(f, "Request({:?})", block),
+            Message::Piece {
+                piece,
+                offset,
+                data,
+            } => {
+                write!(
+                    f,
+                    "Piece {{ piece: {}, offset: {}, data: <{} bytes> }}",
+                    piece,
+                    offset,
+                    data.len()
+                )
+            }
+            Message::Cancel(block) => write!(f, "Cancel({:?})", block),
+            Message::Port(port) => write!(f, "Port({})", port),
+        }
+    }
 }
 
 impl AsyncDecoder for Message {
@@ -287,6 +319,10 @@ impl Block {
             offset,
             length,
         }
+    }
+
+    pub fn global_offset(&self, piece_size: usize) -> usize {
+        (self.piece * piece_size) + self.offset
     }
 }
 

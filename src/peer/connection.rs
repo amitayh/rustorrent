@@ -22,6 +22,7 @@ pub struct Connection {
     addr: SocketAddr,
     socket: TcpStream,
     file_path: PathBuf,
+    piece_size: Size,
     tx: Sender<PeerEvent>,
     rx: Receiver<Command>,
 }
@@ -31,6 +32,7 @@ impl Connection {
         addr: SocketAddr,
         socket: TcpStream,
         file_path: PathBuf,
+        piece_size: Size,
         tx: Sender<PeerEvent>,
         rx: Receiver<Command>,
     ) -> Self {
@@ -38,6 +40,7 @@ impl Connection {
             addr,
             socket,
             file_path,
+            piece_size,
             tx,
             rx,
         }
@@ -50,8 +53,8 @@ impl Connection {
     }
 
     pub async fn send<T: AsyncEncoder + Debug>(&mut self, message: &T) -> Result<()> {
+        info!("> sending message: {:?}", message);
         message.encode(&mut self.socket).await?;
-        info!("> sent message: {:?}", message);
         Ok(())
     }
 
@@ -64,40 +67,32 @@ impl Connection {
                         self.send(&message).await?;
                     }
                     Command::Upload(block) => {
+                        let mut data = vec![0; block.length];
                         let mut file = File::open(&self.file_path).await?;
-                        file.seek(SeekFrom::Start(block.offset as u64)).await?;
-                        let mut reader = file.take(block.length as u64);
+                        let offset = block.global_offset(self.piece_size.bytes() as usize);
+                        file.seek(SeekFrom::Start(offset as u64)).await?;
+                        file.read_exact(&mut data).await?;
                         let transfer_begin = Instant::now();
-                        //self.send(&Message::Piece(block)).await?;
-                        let bytes = tokio::io::copy(&mut reader, &mut self.socket).await? as usize;
+                        let message = Message::Piece {
+                            piece: block.piece,
+                            offset: block.offset,
+                            data,
+                        };
+                        self.send(&message).await?;
                         let duration = Instant::now() - transfer_begin;
-                        if bytes != block.length {
-                            warn!("peer {} requested block {:?}, actually transferred {} bytes",
-                                self.addr, block, bytes);
-                        }
-                        let transfer_rate = TransferRate(Size::from_bytes(bytes), duration);
+                        let size = Size::from_bytes(message.transport_bytes());
+                        let transfer_rate = TransferRate(size, duration);
                         self.tx.send(PeerEvent(
                             self.addr, Event::Uploaded(block, transfer_rate))).await?;
                     }
                 },
                 // TODO: measure download speed
-                message = Message::decode(&mut self.socket) => {
+                message = decode_message(&mut self.socket) => {
                     match message {
-                        Ok(message) => {
-                            info!("< got message: {:?}", &message);
-                            //if let Message::Piece(block) = message {
-                            //    let mut data = vec![0; block.length];
-                            //    let transfer_begin = Instant::now();
-                            //    self.socket.read_exact(&mut data).await?;
-                            //    let duration = Instant::now() - transfer_begin;
-                            //    let size = Size::from_bytes(block.length);
-                            //    let transfer_rate = TransferRate(size, duration);
-                            //    self.tx.send(PeerEvent(
-                            //        self.addr, Event::Downloaded(
-                            //            block, data, transfer_rate))).await?;
-                            //} else {
-                            //    self.tx.send(PeerEvent(self.addr, Event::Message(message))).await?;
-                            //}
+                        Ok((message, transfer_rate)) => {
+                            info!("< got message: {:?} ({})", &message, &transfer_rate);
+                            self.tx.send(PeerEvent(
+                                self.addr, Event::Message(message, transfer_rate))).await?;
                         }
                         Err(err) => {
                             warn!("failed to decode message: {}", err);
@@ -112,15 +107,15 @@ impl Connection {
         }
         Ok(())
     }
+}
 
-    async fn decode_message(&mut self) -> anyhow::Result<(Message, TransferRate)> {
-        let transfer_begin = Instant::now();
-        let message = Message::decode(&mut self.socket).await?;
-        let duration = Instant::now() - transfer_begin;
-        let size = Size::from_bytes(message.transport_bytes());
-        let transfer_rate = TransferRate(size, duration);
-        Ok((message, transfer_rate))
-    }
+async fn decode_message(socket: &mut TcpStream) -> std::io::Result<(Message, TransferRate)> {
+    let transfer_begin = Instant::now();
+    let message = Message::decode(socket).await?;
+    let duration = Instant::now() - transfer_begin;
+    let size = Size::from_bytes(message.transport_bytes());
+    let transfer_rate = TransferRate(size, duration);
+    Ok((message, transfer_rate))
 }
 
 pub enum Command {

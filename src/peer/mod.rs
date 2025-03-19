@@ -39,9 +39,8 @@ pub struct PeerEvent(pub SocketAddr, pub Event);
 pub enum Event {
     Connect,
     Disconnected,
-    Message(Message),
+    Message(Message, TransferRate),
     Uploaded(Block, TransferRate),
-    Downloaded(Block, Vec<u8>, TransferRate),
 }
 
 pub struct Peer {
@@ -126,7 +125,8 @@ impl Peer {
                 }
                 Some(PeerEvent(addr, event)) = self.rx.recv() => {
                     match event {
-                        Event::Message(message) => {
+                        Event::Message(message, transfer_rate) => {
+                            self.choker.update_peer_transfer_rate(addr, transfer_rate);
                             self.handle_message(addr, message).await?;
                         }
                         Event::Connect => {
@@ -141,17 +141,8 @@ impl Peer {
                         Event::Disconnected => {
                             self.peer_disconnected(&addr).await;
                         }
-                        Event::Uploaded(_block, transfer_rate) => {
-                            info!("sent block data! {:?}", transfer_rate);
-                        }
-                        Event::Downloaded(block, _data, transfer_rate) => {
-                            // TODO: verify block was in flight
-                            self.block_assigner.block_downloaded(&addr, &block).await;
-                            info!("got block data! {:?}", transfer_rate);
-                            self.choker.update_peer_transfer_rate(addr, transfer_rate);
-                            // TODO: add piece to piece assembler
-                            // if piece is complete and valid = broadcast Have
-                            // if invalid - invalidate piece
+                        Event::Uploaded(_block, _transfer_rate) => {
+                            //info!("sent block data! {:?}", transfer_rate);
                         }
                     }
                 }
@@ -177,8 +168,14 @@ impl Peer {
         send_handshake_first: bool,
     ) -> Result<()> {
         let (rx, tx) = mpsc::channel(16);
-        let mut connection =
-            Connection::new(addr, socket, self.file_path.clone(), self.tx.clone(), tx);
+        let mut connection = Connection::new(
+            addr,
+            socket,
+            self.file_path.clone(),
+            self.torrent_info.piece_length,
+            self.tx.clone(),
+            tx,
+        );
         if send_handshake_first {
             connection.send(&self.handshake).await?;
             connection.wait_for_handshake().await?;
@@ -263,7 +260,16 @@ impl Peer {
                     }
                     peer_state.send(Command::Upload(block)).await?;
                 }
-                _ => todo!(),
+                Message::Piece {
+                    piece,
+                    offset,
+                    data,
+                } => {
+                    // TODO: verify block was in flight
+                    let block = Block::new(piece, offset, data.len());
+                    self.block_assigner.block_downloaded(&addr, &block).await;
+                }
+                Message::Cancel(_) | Message::Port(_) => todo!(),
             },
             None => panic!("invalid peer"),
         }

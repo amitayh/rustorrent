@@ -3,7 +3,6 @@ use size::Size;
 use crate::peer::message::Block;
 
 pub struct Blocks {
-    piece_size: usize,
     block_size: usize,
     piece: usize,
     offset: usize,
@@ -20,7 +19,6 @@ impl Blocks {
         let piece_end = (piece_start + piece_size).min(total_size);
 
         Self {
-            piece_size,
             block_size,
             piece,
             offset: 0,
@@ -34,7 +32,7 @@ impl Iterator for Blocks {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.offset < self.end {
-            let block_size = self.block_size.min(self.piece_size - self.offset);
+            let block_size = self.block_size.min(self.end - self.offset);
             let block = Block::new(self.piece, self.offset, block_size);
             self.offset += block_size;
             Some(block)
@@ -89,7 +87,7 @@ mod tests {
             0,
         );
 
-        assert_eq!(Some(Block::new(0, 0, BLOCK_SIZE_BYTES)), blocks.next());
+        assert_eq!(Some(Block::new(0, 0, 1024)), blocks.next());
         assert_eq!(Some(Block::new(0, 1024, 42)), blocks.next());
         assert_eq!(None, blocks.next());
     }
@@ -131,6 +129,19 @@ mod tests {
 
         assert_eq!(Some(Block::new(2, 0, BLOCK_SIZE_BYTES)), blocks.next());
         assert_eq!(Some(Block::new(2, 1024, BLOCK_SIZE_BYTES)), blocks.next());
+        assert_eq!(None, blocks.next());
+    }
+
+    #[test]
+    fn real_world_example() {
+        let mut blocks = Blocks::new(
+            Size::from_bytes(32768),
+            Size::from_bytes(170600),
+            Size::from_bytes(16384),
+            5,
+        );
+
+        assert_eq!(Some(Block::new(5, 0, 6760)), blocks.next());
         assert_eq!(None, blocks.next());
     }
 }

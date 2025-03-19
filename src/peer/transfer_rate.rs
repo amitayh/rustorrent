@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    fmt::Display,
     ops::{Add, AddAssign},
     time::Duration,
 };
@@ -8,6 +9,15 @@ use size::Size;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct TransferRate(pub Size, pub Duration);
+
+impl Display for TransferRate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let TransferRate(size, duration) = self;
+        let seconds = duration.as_secs_f64();
+        let size_per_second = size / seconds;
+        write!(f, "{}/s", size_per_second)
+    }
+}
 
 impl TransferRate {
     pub const EMPTY: Self = Self(Size::from_const(0), Duration::ZERO);
