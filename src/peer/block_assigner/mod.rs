@@ -1,3 +1,5 @@
+mod peer_handle;
+
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet, VecDeque},
@@ -8,15 +10,12 @@ use std::{
 
 use bit_set::BitSet;
 use size::Size;
-use tokio::{
-    sync::{
-        Mutex, Notify,
-        mpsc::{self, Receiver, Sender},
-    },
-    task::JoinHandle,
-    time,
+use tokio::sync::{
+    Mutex,
+    mpsc::{self, Receiver, Sender},
 };
 
+use crate::peer::block_assigner::peer_handle::PeerHandle;
 use crate::peer::{blocks::Blocks, message::Block};
 
 pub struct BlockAssigner {
@@ -48,53 +47,29 @@ impl BlockAssigner {
     pub async fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) {
         self.assignment.lock().await.peer_has_pieces(addr, pieces);
         if let Some(peer) = self.unchoked_peers.get(&addr) {
-            peer.notify.notify_waiters();
+            peer.notify();
         }
     }
 
     pub fn peer_unchoked(&mut self, addr: SocketAddr) {
-        let notify = Arc::new(Notify::new());
-        let join_handle = {
-            let tx = self.tx.clone();
-            let assignment = Arc::clone(&self.assignment);
-            let config = Arc::clone(&self.config);
-            let notify = Arc::clone(&notify);
-            tokio::spawn(async move {
-                let mut timeout = None;
-                loop {
-                    if let Some(block) = assignment.lock().await.assign(addr) {
-                        tx.send((addr, block)).await.unwrap();
-                        let assignment = Arc::clone(&assignment);
-                        let config = Arc::clone(&config);
-                        let notify = Arc::clone(&notify);
-                        timeout = Some(tokio::spawn(async move {
-                            time::sleep(config.block_timeout).await;
-                            assignment.lock().await.release(&block);
-                            notify.notify_waiters();
-                        }));
-                    }
-                    notify.notified().await;
-                    if let Some(timeout) = timeout.take() {
-                        timeout.abort();
-                    }
-                }
-            })
-        };
-        self.unchoked_peers
-            .insert(addr, PeerHandle::new(join_handle, notify));
+        let peer = PeerHandle::spawn(
+            Arc::clone(&self.assignment),
+            Arc::clone(&self.config),
+            self.tx.clone(),
+            addr,
+        );
+        self.unchoked_peers.insert(addr, peer);
     }
 
     pub async fn peer_choked(&mut self, addr: &SocketAddr) {
-        if let Some(peer) = self.unchoked_peers.remove(addr) {
-            self.assignment.lock().await.peer_choked(addr);
-            peer.join_handle.abort();
-        }
+        self.unchoked_peers.remove(addr);
+        self.assignment.lock().await.peer_choked(addr);
     }
 
     pub async fn block_downloaded(&self, addr: &SocketAddr, block: &Block) {
         self.assignment.lock().await.block_downloaded(addr, block);
         if let Some(peer) = self.unchoked_peers.get(addr) {
-            peer.notify.notify_waiters();
+            peer.notify();
         }
     }
 
@@ -116,26 +91,11 @@ impl Default for BlockAssignerConfig {
     }
 }
 
-struct PeerHandle {
-    join_handle: JoinHandle<()>,
-    notify: Arc<Notify>,
-}
-
-impl PeerHandle {
-    fn new(join_handle: JoinHandle<()>, notify: Arc<Notify>) -> Self {
-        Self {
-            join_handle,
-            notify,
-        }
-    }
-}
-
 struct AssignmentState {
     piece_size: Size,
     total_size: Size,
     block_size: Size,
     pieces: HashMap<usize, PieceState>,
-    assigned_blocks: HashMap<SocketAddr, HashSet<Block>>,
 }
 
 impl AssignmentState {
@@ -145,23 +105,23 @@ impl AssignmentState {
             total_size,
             block_size,
             pieces: HashMap::new(),
-            assigned_blocks: HashMap::new(),
+            //assigned_blocks: HashMap::new(),
         }
     }
 
     #[allow(dead_code)]
     fn invalidate(&mut self, piece: usize) {
         let state = self.pieces.get_mut(&piece).expect("invalid piece");
-        let assigned_block = self
-            .assigned_blocks
-            .values()
-            .flat_map(|blocks| blocks.iter())
-            .find(|block| block.piece == piece);
-        assert!(
-            assigned_block.is_none(),
-            "block belonging to invalidated piece {} is assigned",
-            piece
-        );
+        //let assigned_block = self
+        //    .assigned_blocks
+        //    .values()
+        //    .flat_map(|blocks| blocks.iter())
+        //    .find(|block| block.piece == piece);
+        //assert!(
+        //    assigned_block.is_none(),
+        //    "block belonging to invalidated piece {} is assigned",
+        //    piece
+        //);
         let blocks = Blocks::new(self.piece_size, self.total_size, self.block_size, piece);
         state.unassigned_blocks = blocks.collect();
     }
@@ -183,26 +143,24 @@ impl AssignmentState {
             .filter(|piece| piece.is_eligible(&addr))
             .max_by_key(|piece| piece.priority())?;
 
-        let assigned_block = piece.assign();
+        let assigned_block = piece.assign(addr);
         if let Some(block) = &assigned_block {
-            let peer_blocks = self.assigned_blocks.entry(addr).or_default();
-            peer_blocks.insert(*block);
+            //let peer_blocks = self.assigned_blocks.entry(addr).or_default();
+            //peer_blocks.insert(*block);
         }
         assigned_block
     }
 
     fn peer_choked(&mut self, addr: &SocketAddr) {
-        if let Some(blocks_assigned_to_peer) = self.assigned_blocks.remove(addr) {
-            for block in &blocks_assigned_to_peer {
-                self.release(block);
-            }
+        for piece in self.pieces.values_mut() {
+            piece.peer_choked(addr);
         }
     }
 
     fn block_downloaded(&mut self, addr: &SocketAddr, block: &Block) {
-        if let Some(blocks_assigned_to_peer) = self.assigned_blocks.get_mut(addr) {
-            blocks_assigned_to_peer.remove(block);
-        }
+        //if let Some(blocks_assigned_to_peer) = self.assigned_blocks.get_mut(addr) {
+        //    blocks_assigned_to_peer.remove(block);
+        //}
     }
 
     fn release(&mut self, block: &Block) {
@@ -215,7 +173,7 @@ impl AssignmentState {
 struct PieceState {
     peers_with_piece: HashSet<SocketAddr>,
     unassigned_blocks: VecDeque<Block>,
-    assigned_blocks: HashSet<Block>,
+    assigned_blocks: HashMap<Block, SocketAddr>,
 }
 
 impl PieceState {
@@ -223,20 +181,18 @@ impl PieceState {
         Self {
             peers_with_piece: HashSet::new(),
             unassigned_blocks: blocks.collect(),
-            assigned_blocks: HashSet::new(),
+            assigned_blocks: HashMap::new(),
         }
     }
 
-    fn assign(&mut self) -> Option<Block> {
-        let block = self.unassigned_blocks.pop_front();
-        if let Some(block) = block {
-            self.assigned_blocks.insert(block);
-        }
-        block
+    fn assign(&mut self, addr: SocketAddr) -> Option<Block> {
+        let block = self.unassigned_blocks.pop_front()?;
+        self.assigned_blocks.insert(block, addr);
+        Some(block)
     }
 
     fn release(&mut self, block: &Block) -> bool {
-        if let Some(block) = self.assigned_blocks.take(block) {
+        if let Some((block, _)) = self.assigned_blocks.remove_entry(block) {
             self.unassigned_blocks.push_front(block);
             return true;
         }
@@ -256,13 +212,23 @@ impl PieceState {
     fn is_eligible(&self, addr: &SocketAddr) -> bool {
         self.peers_with_piece.contains(addr) && !self.unassigned_blocks.is_empty()
     }
+
+    fn peer_choked(&mut self, addr: &SocketAddr) {
+        self.assigned_blocks.retain(|block, assigned_peer| {
+            if assigned_peer == addr {
+                self.unassigned_blocks.push_front(*block);
+                return false;
+            }
+            true
+        });
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use tokio::time::timeout;
+    use tokio::time;
 
     const PIECE_SIZE: Size = Size::from_const(24);
     const TOTAL_SIZE: Size = Size::from_const(32);
@@ -281,7 +247,7 @@ mod tests {
         let pieces = BitSet::from_bytes(&[0b10000000]);
         block_assigner.peer_has_pieces(addr, &pieces).await;
 
-        let result = timeout(Duration::from_millis(10), block_assigner.next()).await;
+        let result = time::timeout(Duration::from_millis(10), block_assigner.next()).await;
 
         assert!(result.is_err());
     }
@@ -416,7 +382,7 @@ mod tests {
         assert_eq!(block_assigner.next().await, (addr, block));
 
         // Next poll hangs
-        let result = timeout(Duration::from_millis(10), block_assigner.next()).await;
+        let result = time::timeout(Duration::from_millis(10), block_assigner.next()).await;
         assert!(result.is_err());
 
         // Continue with next block once previous one completes
