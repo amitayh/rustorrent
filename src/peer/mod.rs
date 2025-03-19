@@ -201,7 +201,7 @@ impl Peer {
     async fn peer_disconnected(&mut self, addr: &SocketAddr) {
         self.peers.remove(addr);
         self.choker.peer_disconnected(addr);
-        self.block_assigner.peer_choked(addr).await;
+        self.block_assigner.peer_disconnected(addr).await;
     }
 
     async fn choke(&mut self) -> anyhow::Result<()> {

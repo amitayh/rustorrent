@@ -7,7 +7,7 @@ use tokio::{
 
 use crate::peer::message::Block;
 
-use super::{AssignmentState, BlockAssignerConfig};
+use super::{Assignment, BlockAssignerConfig};
 
 pub struct PeerHandle {
     join_handle: JoinHandle<()>,
@@ -16,7 +16,7 @@ pub struct PeerHandle {
 
 impl PeerHandle {
     pub fn spawn(
-        assignment: Arc<Mutex<AssignmentState>>,
+        assignment: Arc<Mutex<Assignment>>,
         config: Arc<BlockAssignerConfig>,
         tx: Sender<(SocketAddr, Block)>,
         addr: SocketAddr,
@@ -27,14 +27,14 @@ impl PeerHandle {
             tokio::spawn(async move {
                 let mut timeout = None;
                 loop {
-                    if let Some(block) = assignment.lock().await.assign(addr) {
+                    if let Some(block) = assignment.lock().await.assign(&addr) {
                         tx.send((addr, block)).await.unwrap();
                         let assignment = Arc::clone(&assignment);
                         let config = Arc::clone(&config);
                         let notify = Arc::clone(&notify);
                         timeout = Some(tokio::spawn(async move {
                             tokio::time::sleep(config.block_timeout).await;
-                            assignment.lock().await.release(&block);
+                            assignment.lock().await.release(&addr, block);
                             notify.notify_waiters();
                         }));
                     }
