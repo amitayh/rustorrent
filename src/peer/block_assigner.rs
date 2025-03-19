@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
     sync::Arc,
@@ -68,7 +69,7 @@ impl BlockAssigner {
                         let notify = Arc::clone(&notify);
                         timeout = Some(tokio::spawn(async move {
                             time::sleep(config.block_timeout).await;
-                            assignment.lock().await.release(block);
+                            assignment.lock().await.release(&block);
                             notify.notify_waiters();
                         }));
                     }
@@ -176,26 +177,23 @@ impl AssignmentState {
     }
 
     fn assign(&mut self, addr: SocketAddr) -> Option<Block> {
-        let state = self
+        let piece = self
             .pieces
             .values_mut()
-            .filter(|state| {
-                // TODO: test
-                state.peers_with_piece.contains(&addr) && !state.unassigned_blocks.is_empty()
-            })
-            .min_by_key(|state| state.peers_with_piece.len())?;
+            .filter(|piece| piece.is_eligible(&addr))
+            .max_by_key(|piece| piece.priority())?;
 
-        let block = state.unassigned_blocks.pop_front();
-        if let Some(block) = &block {
+        let assigned_block = piece.assign();
+        if let Some(block) = &assigned_block {
             let peer_blocks = self.assigned_blocks.entry(addr).or_default();
             peer_blocks.insert(*block);
         }
-        block
+        assigned_block
     }
 
     fn peer_choked(&mut self, addr: &SocketAddr) {
         if let Some(blocks_assigned_to_peer) = self.assigned_blocks.remove(addr) {
-            for block in blocks_assigned_to_peer {
+            for block in &blocks_assigned_to_peer {
                 self.release(block);
             }
         }
@@ -207,10 +205,9 @@ impl AssignmentState {
         }
     }
 
-    fn release(&mut self, block: Block) {
-        if let Some(piece) = self.pieces.get_mut(&block.piece) {
-            piece.unassigned_blocks.push_front(block);
-        }
+    fn release(&mut self, block: &Block) {
+        let state = self.pieces.get_mut(&block.piece).expect("invalid piece");
+        state.release(block);
     }
 }
 
@@ -218,6 +215,7 @@ impl AssignmentState {
 struct PieceState {
     peers_with_piece: HashSet<SocketAddr>,
     unassigned_blocks: VecDeque<Block>,
+    assigned_blocks: HashSet<Block>,
 }
 
 impl PieceState {
@@ -225,7 +223,38 @@ impl PieceState {
         Self {
             peers_with_piece: HashSet::new(),
             unassigned_blocks: blocks.collect(),
+            assigned_blocks: HashSet::new(),
         }
+    }
+
+    fn assign(&mut self) -> Option<Block> {
+        let block = self.unassigned_blocks.pop_front();
+        if let Some(block) = block {
+            self.assigned_blocks.insert(block);
+        }
+        block
+    }
+
+    fn release(&mut self, block: &Block) -> bool {
+        if let Some(block) = self.assigned_blocks.take(block) {
+            self.unassigned_blocks.push_front(block);
+            return true;
+        }
+        false
+    }
+
+    fn priority(&self) -> (bool, Reverse<usize>) {
+        (
+            // Favor pieces which are already in flight in order to reduce fragmentation
+            !self.assigned_blocks.is_empty(),
+            // Otherwise, favor rarest piece first
+            Reverse(self.peers_with_piece.len()),
+        )
+    }
+
+    // TODO: test
+    fn is_eligible(&self, addr: &SocketAddr) -> bool {
+        self.peers_with_piece.contains(addr) && !self.unassigned_blocks.is_empty()
     }
 }
 
@@ -275,7 +304,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_unchoked_after_notifying_on_completed_piece() {
+    async fn peer_unchoked_before_notifying_on_completed_piece() {
         let mut block_assigner = BlockAssigner::new(
             PIECE_SIZE,
             TOTAL_SIZE,
@@ -333,13 +362,40 @@ mod tests {
         let pieces = BitSet::from_bytes(&[0b11000000]);
         block_assigner.peer_has_pieces(addr2, &pieces).await;
 
+        // Peer 2 has both piece #0 and #1. Since piece #1 is rarer, slect it first.
+        block_assigner.peer_unchoked(addr2);
+        assert_eq!(block_assigner.next().await, (addr2, Block::new(1, 0, 8)));
+
+        // Peer 1 only has piece #0, select it.
+        block_assigner.peer_unchoked(addr1);
+        assert_eq!(block_assigner.next().await, (addr1, Block::new(0, 0, 8)));
+    }
+
+    #[tokio::test]
+    async fn prioritize_pieces_that_already_started_downloading() {
+        let mut block_assigner = BlockAssigner::new(
+            PIECE_SIZE,
+            TOTAL_SIZE,
+            BLOCK_SIZE,
+            BlockAssignerConfig::default(),
+        );
+
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let pieces = BitSet::from_bytes(&[0b10000000]);
+        block_assigner.peer_has_pieces(addr1, &pieces).await;
+
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        let pieces = BitSet::from_bytes(&[0b11000000]);
+        block_assigner.peer_has_pieces(addr2, &pieces).await;
+
         // Peer 1 only has piece #0, select it.
         block_assigner.peer_unchoked(addr1);
         assert_eq!(block_assigner.next().await, (addr1, Block::new(0, 0, 8)));
 
-        // Peer 2 has both piece #0 and #1. Since piece #1 is rarer, slect it first.
+        // Peer 2 has both piece #0 and #1. Piece #1 is rarer, but peer 1 already started
+        // downloading piece #0, so prioritize it first.
         block_assigner.peer_unchoked(addr2);
-        assert_eq!(block_assigner.next().await, (addr2, Block::new(1, 0, 8)));
+        assert_eq!(block_assigner.next().await, (addr2, Block::new(0, 8, 8)));
     }
 
     #[tokio::test]
@@ -391,7 +447,6 @@ mod tests {
     }
 
     #[tokio::test]
-    //#[ignore = "fix later"]
     async fn do_not_release_downloaded_blocks() {
         time::pause();
         let mut block_assigner = BlockAssigner::new(
