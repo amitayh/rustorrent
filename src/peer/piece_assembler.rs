@@ -32,7 +32,7 @@ impl PieceAssembler {
 pub enum Status {
     Incomplete,
     Invalid,
-    Valid,
+    Valid(Vec<u8>),
 }
 
 struct PieceState {
@@ -63,8 +63,9 @@ impl PieceState {
             hasher.update(&data);
         }
         let sha1 = Sha1(hasher.finalize().into());
+        dbg!(&sha1, &self.sha1);
         if self.sha1 == sha1 {
-            Status::Valid
+            Status::Valid(self.data.drain(..).flatten().flatten().collect())
         } else {
             Status::Invalid
         }
@@ -79,9 +80,9 @@ mod tests {
 
     fn sizes() -> Sizes {
         Sizes::new(
-            Size::from_bytes(16),
-            Size::from_bytes(24),
             Size::from_bytes(8),
+            Size::from_bytes(12),
+            Size::from_bytes(4),
         )
     }
 
@@ -89,7 +90,7 @@ mod tests {
     fn piece_incomplete() {
         let mut assembler = PieceAssembler::new(&sizes(), vec![Sha1([0; 20]), Sha1([0; 20])]);
 
-        assert_eq!(assembler.add(0, 0, vec![0; 8]), Status::Incomplete);
+        assert_eq!(assembler.add(0, 0, vec![0; 4]), Status::Incomplete);
     }
 
     #[test]
@@ -97,21 +98,24 @@ mod tests {
         let mut assembler = PieceAssembler::new(
             &sizes(),
             vec![
-                Sha1::from_hex("e129f27c5103bc5cc44bcdf0a15e160d445066ff").unwrap(),
+                Sha1::from_hex("30c921e4aae2b54c45f25de2e89f35ec1ce24e14").unwrap(),
                 Sha1([0; 20]),
             ],
         );
 
-        assert_eq!(assembler.add(0, 0, vec![0; 8]), Status::Incomplete);
-        assert_eq!(assembler.add(0, 8, vec![0; 8]), Status::Valid);
+        assert_eq!(assembler.add(0, 0, vec![0; 4]), Status::Incomplete);
+        assert_eq!(
+            assembler.add(0, 4, vec![1; 4]),
+            Status::Valid(vec![0, 0, 0, 0, 1, 1, 1, 1])
+        );
     }
 
     #[test]
     fn piece_complete_but_invalid() {
         let mut assembler = PieceAssembler::new(&sizes(), vec![Sha1([0; 20]), Sha1([0; 20])]);
 
-        assert_eq!(assembler.add(0, 0, vec![0; 8]), Status::Incomplete);
-        assert_eq!(assembler.add(0, 8, vec![0; 8]), Status::Invalid);
+        assert_eq!(assembler.add(0, 0, vec![0; 4]), Status::Incomplete);
+        assert_eq!(assembler.add(0, 4, vec![0; 4]), Status::Invalid);
     }
 
     #[test]
@@ -131,28 +135,28 @@ mod tests {
 
         assert_eq!(assembler.add(0, 0, vec![0; 8]), Status::Incomplete);
         assert_eq!(assembler.add(0, 8, vec![0; 8]), Status::Incomplete);
-        assert_eq!(assembler.add(0, 16, vec![0; 8]), Status::Valid);
+        assert!(matches!(assembler.add(0, 16, vec![0; 8]), Status::Valid(_)));
         assert_eq!(assembler.add(1, 0, vec![0; 8]), Status::Incomplete);
-        assert_eq!(assembler.add(1, 8, vec![0; 4]), Status::Valid);
+        assert!(matches!(assembler.add(1, 8, vec![0; 4]), Status::Valid(_)));
     }
 
     #[test]
     fn add_blocks_out_of_order() {
         let sizes = Sizes::new(
-            Size::from_bytes(24),
-            Size::from_bytes(36),
-            Size::from_bytes(8),
+            Size::from_bytes(6),
+            Size::from_bytes(6),
+            Size::from_bytes(2),
         );
         let mut assembler = PieceAssembler::new(
             &sizes,
-            vec![
-                Sha1::from_hex("d3399b7262fb56cb9ed053d68db9291c410839c4").unwrap(),
-                Sha1::from_hex("2c513f149e737ec4063fc1d37aee9beabc4b4bbf").unwrap(),
-            ],
+            vec![Sha1::from_hex("20bb50f8b56e82fd951e14fd0476eee5e0fa26e4").unwrap()],
         );
 
-        assert_eq!(assembler.add(0, 0, vec![0; 8]), Status::Incomplete);
-        assert_eq!(assembler.add(0, 16, vec![0; 8]), Status::Incomplete);
-        assert_eq!(assembler.add(0, 8, vec![0; 8]), Status::Valid);
+        assert_eq!(assembler.add(0, 0, vec![1; 2]), Status::Incomplete);
+        assert_eq!(assembler.add(0, 4, vec![3; 2]), Status::Incomplete);
+        assert_eq!(
+            assembler.add(0, 2, vec![2; 2]),
+            Status::Valid(vec![1, 1, 2, 2, 3, 3])
+        );
     }
 }

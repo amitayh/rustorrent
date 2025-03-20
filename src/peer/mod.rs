@@ -268,7 +268,7 @@ impl Peer {
                             .send(Command::Send(Message::Request(block)))
                             .await?;
                     }
-                    if self.assembler.add(piece, offset, data) == Status::Valid {
+                    if let Status::Valid(_) = self.assembler.add(piece, offset, data) {
                         self.broadcast(Message::Have { piece }).await?;
                     }
                 }
