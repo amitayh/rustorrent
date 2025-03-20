@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use core::f64;
+
 use sha1::Digest;
 
 use crate::crypto::Sha1;
@@ -10,7 +12,7 @@ pub struct Joiner {
     pieces: Vec<PieceState>,
 }
 
-// TODO: alternative names: joiner, Combiner, Stitcher, Fuser
+// TODO: alternative names: Combiner, Stitcher, Fuser
 impl Joiner {
     pub fn new(sizes: &Sizes, hashes: Vec<Sha1>) -> Self {
         assert_eq!(sizes.total_pieces, hashes.len());
@@ -24,6 +26,7 @@ impl Joiner {
     }
 
     pub fn add(&mut self, piece: usize, offset: usize, data: Vec<u8>) -> Status {
+        assert_eq!(offset % self.block_size, 0, "invalid offset");
         let piece = self.pieces.get_mut(piece).expect("invalid piece");
         let block = offset / self.block_size;
         piece.add(block, data)
@@ -38,6 +41,7 @@ pub enum Status {
 }
 
 struct PieceState {
+    size: usize,
     offset: u64,
     sha1: Sha1,
     data: Vec<Option<Vec<u8>>>,
@@ -45,32 +49,39 @@ struct PieceState {
 
 impl PieceState {
     fn new(piece: usize, offset: u64, sha1: Sha1, sizes: &Sizes) -> Self {
-        let piece_size = sizes.piece_size(piece) as f64;
+        let piece_size = sizes.piece_size(piece);
         let block_size = sizes.block_size.bytes() as f64;
-        let blocks_per_piece = (piece_size / block_size).ceil() as usize;
-        let data = vec![None; blocks_per_piece];
-        Self { offset, sha1, data }
+        let blocks = ((piece_size as f64) / block_size).ceil() as usize;
+        let data = vec![None; blocks];
+        Self {
+            size: piece_size,
+            offset,
+            sha1,
+            data,
+        }
     }
 
     fn add(&mut self, block: usize, data: Vec<u8>) -> Status {
         let block_data = self.data.get_mut(block).expect("invalid block index");
         *block_data = Some(data);
 
-        let all_blocks_completed = self.data.iter().all(|block_data| block_data.is_some());
-        if !all_blocks_completed {
+        if self.data.iter().any(|block_data| block_data.is_none()) {
             return Status::Incomplete;
         }
 
         let mut hasher = sha1::Sha1::new();
-        for data in self.data.iter_mut().flatten() {
-            hasher.update(&data);
+        let mut piece_data = Vec::with_capacity(self.size);
+        for block_data in self.data.iter_mut() {
+            let block_data = block_data.take().expect("complete piece");
+            hasher.update(&block_data);
+            piece_data.extend(block_data);
         }
         let sha1 = Sha1(hasher.finalize().into());
+
         if self.sha1 == sha1 {
-            let data = self.data.drain(..).flatten().flatten().collect();
             Status::Valid {
                 offset: self.offset,
-                data,
+                data: piece_data,
             }
         } else {
             Status::Invalid
@@ -125,6 +136,25 @@ mod tests {
 
         assert_eq!(joiner.add(0, 0, vec![0; 4]), Status::Incomplete);
         assert_eq!(joiner.add(0, 4, vec![0; 4]), Status::Invalid);
+    }
+
+    #[test]
+    fn reset_piece_after_invalidation() {
+        let mut joiner = Joiner::new(
+            &sizes(),
+            vec![
+                Sha1::from_hex("05fe405753166f125559e7c9ac558654f107c7e9").unwrap(),
+                Sha1([0; 20]),
+            ],
+        );
+
+        // Invalid piece data
+        assert_eq!(joiner.add(0, 0, vec![1; 4]), Status::Incomplete);
+        assert_eq!(joiner.add(0, 4, vec![1; 4]), Status::Invalid);
+
+        // Valid piece data
+        assert_eq!(joiner.add(0, 0, vec![0; 4]), Status::Incomplete);
+        assert!(matches!(joiner.add(0, 4, vec![0; 4]), Status::Valid { .. }));
     }
 
     #[test]
