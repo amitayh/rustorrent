@@ -5,12 +5,13 @@ use sha1::Digest;
 use crate::crypto::Sha1;
 use crate::peer::sizes::Sizes;
 
-pub struct PieceAssembler {
+pub struct Joiner {
     block_size: usize,
     pieces: Vec<PieceState>,
 }
 
-impl PieceAssembler {
+// TODO: alternative names: joiner, Combiner, Stitcher, Fuser
+impl Joiner {
     pub fn new(sizes: &Sizes, hashes: Vec<Sha1>) -> Self {
         assert_eq!(sizes.total_pieces, hashes.len());
         let block_size = sizes.block_size.bytes() as usize;
@@ -65,7 +66,6 @@ impl PieceState {
             hasher.update(&data);
         }
         let sha1 = Sha1(hasher.finalize().into());
-        dbg!(&sha1, &self.sha1);
         if self.sha1 == sha1 {
             let data = self.data.drain(..).flatten().flatten().collect();
             Status::Valid {
@@ -94,14 +94,14 @@ mod tests {
 
     #[test]
     fn piece_incomplete() {
-        let mut assembler = PieceAssembler::new(&sizes(), vec![Sha1([0; 20]), Sha1([0; 20])]);
+        let mut joiner = Joiner::new(&sizes(), vec![Sha1([0; 20]), Sha1([0; 20])]);
 
-        assert_eq!(assembler.add(0, 0, vec![0; 4]), Status::Incomplete);
+        assert_eq!(joiner.add(0, 0, vec![0; 4]), Status::Incomplete);
     }
 
     #[test]
     fn piece_complete() {
-        let mut assembler = PieceAssembler::new(
+        let mut joiner = Joiner::new(
             &sizes(),
             vec![
                 Sha1::from_hex("30c921e4aae2b54c45f25de2e89f35ec1ce24e14").unwrap(),
@@ -109,9 +109,9 @@ mod tests {
             ],
         );
 
-        assert_eq!(assembler.add(0, 0, vec![0; 4]), Status::Incomplete);
+        assert_eq!(joiner.add(0, 0, vec![0; 4]), Status::Incomplete);
         assert_eq!(
-            assembler.add(0, 4, vec![1; 4]),
+            joiner.add(0, 4, vec![1; 4]),
             Status::Valid {
                 offset: 0,
                 data: vec![0, 0, 0, 0, 1, 1, 1, 1]
@@ -121,10 +121,10 @@ mod tests {
 
     #[test]
     fn piece_complete_but_invalid() {
-        let mut assembler = PieceAssembler::new(&sizes(), vec![Sha1([0; 20]), Sha1([0; 20])]);
+        let mut joiner = Joiner::new(&sizes(), vec![Sha1([0; 20]), Sha1([0; 20])]);
 
-        assert_eq!(assembler.add(0, 0, vec![0; 4]), Status::Incomplete);
-        assert_eq!(assembler.add(0, 4, vec![0; 4]), Status::Invalid);
+        assert_eq!(joiner.add(0, 0, vec![0; 4]), Status::Incomplete);
+        assert_eq!(joiner.add(0, 4, vec![0; 4]), Status::Invalid);
     }
 
     #[test]
@@ -134,7 +134,7 @@ mod tests {
             Size::from_bytes(36),
             Size::from_bytes(8),
         );
-        let mut assembler = PieceAssembler::new(
+        let mut joiner = Joiner::new(
             &sizes,
             vec![
                 Sha1::from_hex("d3399b7262fb56cb9ed053d68db9291c410839c4").unwrap(),
@@ -142,15 +142,15 @@ mod tests {
             ],
         );
 
-        assert_eq!(assembler.add(0, 0, vec![0; 8]), Status::Incomplete);
-        assert_eq!(assembler.add(0, 8, vec![0; 8]), Status::Incomplete);
+        assert_eq!(joiner.add(0, 0, vec![0; 8]), Status::Incomplete);
+        assert_eq!(joiner.add(0, 8, vec![0; 8]), Status::Incomplete);
         assert!(matches!(
-            assembler.add(0, 16, vec![0; 8]),
+            joiner.add(0, 16, vec![0; 8]),
             Status::Valid { .. }
         ));
-        assert_eq!(assembler.add(1, 0, vec![0; 8]), Status::Incomplete);
+        assert_eq!(joiner.add(1, 0, vec![0; 8]), Status::Incomplete);
         assert!(matches!(
-            assembler.add(1, 8, vec![0; 4]),
+            joiner.add(1, 8, vec![0; 4]),
             Status::Valid { offset: 24, .. }
         ));
     }
@@ -162,15 +162,15 @@ mod tests {
             Size::from_bytes(6),
             Size::from_bytes(2),
         );
-        let mut assembler = PieceAssembler::new(
+        let mut joiner = Joiner::new(
             &sizes,
             vec![Sha1::from_hex("20bb50f8b56e82fd951e14fd0476eee5e0fa26e4").unwrap()],
         );
 
-        assert_eq!(assembler.add(0, 0, vec![1; 2]), Status::Incomplete);
-        assert_eq!(assembler.add(0, 4, vec![3; 2]), Status::Incomplete);
+        assert_eq!(joiner.add(0, 0, vec![1; 2]), Status::Incomplete);
+        assert_eq!(joiner.add(0, 4, vec![3; 2]), Status::Incomplete);
         assert_eq!(
-            assembler.add(0, 2, vec![2; 2]),
+            joiner.add(0, 2, vec![2; 2]),
             Status::Valid {
                 offset: 0,
                 data: vec![1, 1, 2, 2, 3, 3]

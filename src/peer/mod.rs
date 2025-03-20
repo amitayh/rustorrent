@@ -1,14 +1,13 @@
-pub mod assignment;
-pub mod blocks;
-pub mod choke;
+mod blocks;
+mod choke;
 pub mod config;
-pub mod connection;
-pub mod handler;
-pub mod message;
+mod connection;
+mod handler;
+mod message;
 pub mod peer_id;
-pub mod piece_assembler;
-pub mod sizes;
-pub mod transfer_rate;
+mod piece;
+mod sizes;
+mod transfer_rate;
 
 use std::collections::{HashMap, HashSet};
 use std::io::SeekFrom;
@@ -18,24 +17,24 @@ use std::{io::Result, net::SocketAddr};
 
 use bit_set::BitSet;
 use log::{info, warn};
-use message::Block;
-use piece_assembler::{PieceAssembler, Status};
-use sizes::Sizes;
-use tokio::fs::{File, OpenOptions};
+use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant, Interval};
-use transfer_rate::TransferRate;
 
-use crate::peer::assignment::Assignment;
 use crate::peer::choke::Choker;
 use crate::peer::config::Config;
 use crate::peer::connection::Command;
 use crate::peer::connection::Connection;
+use crate::peer::message::Block;
 use crate::peer::message::Handshake;
 use crate::peer::message::Message;
 use crate::peer::peer_id::PeerId;
+use crate::peer::piece::Distributor;
+use crate::peer::piece::{Joiner, Status};
+use crate::peer::sizes::Sizes;
+use crate::peer::transfer_rate::TransferRate;
 use crate::torrent::Info;
 
 pub struct PeerEvent(pub SocketAddr, pub Event);
@@ -53,8 +52,8 @@ pub struct Peer {
     file_path: PathBuf,
     peers: HashMap<SocketAddr, Sender<Command>>,
     choker: Choker,
-    assignment: Assignment,
-    assembler: PieceAssembler,
+    distributor: Distributor,
+    joiner: Joiner,
     tx: Sender<PeerEvent>,
     rx: Receiver<PeerEvent>,
     handshake: Handshake,
@@ -79,8 +78,8 @@ impl Peer {
             torrent_info.download_type.length(),
             config.block_size,
         );
-        let assignment = Assignment::new(&sizes);
-        let assembler = PieceAssembler::new(&sizes, torrent_info.pieces.clone());
+        let distributor = Distributor::new(&sizes);
+        let joiner = Joiner::new(&sizes, torrent_info.pieces.clone());
 
         let (tx, rx) = mpsc::channel(128);
         let peer = Self {
@@ -89,8 +88,8 @@ impl Peer {
             file_path,
             peers: HashMap::new(),
             choker,
-            assignment,
-            assembler,
+            distributor,
+            joiner,
             tx: tx.clone(),
             rx,
             handshake,
@@ -106,7 +105,7 @@ impl Peer {
         for piece in 0..self.torrent_info.pieces.len() {
             self.has_pieces.insert(piece);
         }
-        self.assignment.client_has_pieces(&self.has_pieces);
+        self.distributor.client_has_pieces(&self.has_pieces);
     }
 
     #[allow(dead_code)]
@@ -204,7 +203,7 @@ impl Peer {
     fn peer_disconnected(&mut self, addr: &SocketAddr) {
         self.peers.remove(addr);
         self.choker.peer_disconnected(addr);
-        self.assignment.peer_disconnected(addr);
+        self.distributor.peer_disconnected(addr);
     }
 
     async fn choke(&mut self) -> anyhow::Result<()> {
@@ -226,9 +225,9 @@ impl Peer {
         match self.peers.get_mut(&addr) {
             Some(peer_state) => match message {
                 Message::KeepAlive => (), // No-op
-                Message::Choke => self.assignment.peer_choked(addr),
+                Message::Choke => self.distributor.peer_choked(addr),
                 Message::Unchoke => {
-                    if let Some(block) = self.assignment.peer_unchoked(addr) {
+                    if let Some(block) = self.distributor.peer_unchoked(addr) {
                         peer_state
                             .send(Command::Send(Message::Request(block)))
                             .await?;
@@ -266,20 +265,22 @@ impl Peer {
                 } => {
                     // TODO: verify block was in flight
                     let block = Block::new(piece, offset, data.len());
-                    if let Some(block) = self.assignment.block_downloaded(&addr, &block) {
+                    if let Some(block) = self.distributor.block_downloaded(&addr, &block) {
                         peer_state
                             .send(Command::Send(Message::Request(block)))
                             .await?;
                     }
-                    if let Status::Valid { offset, data } = self.assembler.add(piece, offset, data)
-                    {
+                    if let Status::Valid { offset, data } = self.joiner.add(piece, offset, data) {
                         let mut file = OpenOptions::new()
                             .create(true)
                             .write(true)
+                            .truncate(true)
                             .open(&self.file_path)
                             .await?;
                         file.seek(SeekFrom::Start(offset)).await?;
                         file.write_all(&data).await?;
+                        self.has_pieces.insert(piece);
+                        self.distributor.client_has_piece(piece);
                         self.broadcast(Message::Have { piece }).await?;
                     }
                 }
@@ -297,7 +298,7 @@ impl Peer {
             peer.send(Command::Send(Message::Interested)).await?;
             self.interested.insert(addr);
         }
-        if let Some(block) = self.assignment.peer_has_pieces(addr, &pieces) {
+        if let Some(block) = self.distributor.peer_has_pieces(addr, &pieces) {
             peer.send(Command::Send(Message::Request(block))).await?;
         }
         Ok(())
