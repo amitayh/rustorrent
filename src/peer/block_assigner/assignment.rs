@@ -8,6 +8,7 @@ use size::Size;
 use crate::peer::{blocks::Blocks, message::Block};
 
 pub struct Assignment {
+    has_pieces: BitSet,
     peers: HashMap<SocketAddr, PeerState>,
     pieces: Vec<PieceState>,
 }
@@ -24,18 +25,24 @@ impl Assignment {
         }
 
         Self {
+            has_pieces: BitSet::with_capacity(total_pieces),
             peers: HashMap::new(),
             pieces,
         }
     }
 
-    pub fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) {
+    pub fn client_has_pieces(&mut self, pieces: &BitSet) {
+        self.has_pieces.union_with(pieces);
+    }
+
+    pub fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) -> Option<Block> {
         let peer = self.peers.entry(addr).or_default();
         peer.has_pieces.union_with(pieces);
         for piece in pieces {
             let piece = self.pieces.get_mut(piece).expect("invalid piece");
             piece.peer_has_piece();
         }
+        self.assign(&addr)
     }
 
     pub fn peer_disconnected(&mut self, addr: &SocketAddr) {
@@ -47,8 +54,18 @@ impl Assignment {
         }
     }
 
+    pub fn peer_unchoked(&mut self, addr: SocketAddr) -> Option<Block> {
+        let peer = self.peers.entry(addr).or_default();
+        peer.choking = false;
+        self.assign(&addr)
+    }
+
+    // TODO: make private
     pub fn assign(&mut self, addr: &SocketAddr) -> Option<Block> {
         let peer = self.peers.get_mut(addr).expect("invalid peer");
+        if peer.choking || peer.has_pieces.difference(&self.has_pieces).count() == 0 {
+            return None;
+        }
         let (piece, _) = peer
             .has_pieces
             .iter()
@@ -86,10 +103,22 @@ impl Assignment {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 struct PeerState {
+    choking: bool,
     has_pieces: BitSet,
     assigned_blocks: HashSet<Block>,
+}
+
+impl Default for PeerState {
+    fn default() -> Self {
+        Self {
+            choking: true,
+            // TODO: add capacity
+            has_pieces: BitSet::new(),
+            assigned_blocks: HashSet::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -151,14 +180,45 @@ mod tests {
     const TOTAL_SIZE: Size = Size::from_const(32);
     const BLOCK_SIZE: Size = Size::from_const(8);
 
-    //#[test]
-    //fn peer_unchoked_but_has_no_pieces() {
-    //    let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+    #[test]
+    fn peer_unchoked_but_has_no_pieces() {
+        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let addr = "127.0.0.1:6881".parse().unwrap();
 
-    //    let addr = "127.0.0.1:6881".parse().unwrap();
-    //    let pieces = BitSet::from_bytes(&[0b10000000]);
-    //    assignment.peer_has_pieces(addr, &pieces);
+        assert!(assignment.peer_unchoked(addr).is_none());
+    }
 
-    //    assert!(assignment.assign(&addr).is_none());
-    //}
+    #[test]
+    fn peer_unchoked_but_client_already_has_that_piece() {
+        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        let pieces = BitSet::from_bytes(&[0b10000000]);
+        assignment.client_has_pieces(&pieces);
+
+        assert!(assignment.peer_has_pieces(addr, &pieces).is_none());
+        assert!(assignment.peer_unchoked(addr).is_none());
+    }
+
+    #[test]
+    fn assign_a_block_to_request_from_peer() {
+        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        let pieces = BitSet::from_bytes(&[0b10000000]);
+
+        assert!(assignment.peer_has_pieces(addr, &pieces).is_none());
+        assert_eq!(assignment.peer_unchoked(addr), Some(Block::new(0, 0, 8)));
+    }
+
+    #[test]
+    fn peer_unchoked_before_notifying_on_completed_piece() {
+        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        let pieces = BitSet::from_bytes(&[0b10000000]);
+
+        assert!(assignment.peer_unchoked(addr).is_none());
+        assert_eq!(
+            assignment.peer_has_pieces(addr, &pieces),
+            Some(Block::new(0, 0, 8))
+        );
+    }
 }
