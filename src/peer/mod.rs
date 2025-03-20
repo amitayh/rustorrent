@@ -7,6 +7,7 @@ pub mod handler;
 pub mod message;
 pub mod peer_id;
 pub mod piece_assembler;
+pub mod sizes;
 pub mod transfer_rate;
 
 use std::collections::{HashMap, HashSet};
@@ -17,7 +18,8 @@ use std::{io::Result, net::SocketAddr};
 use bit_set::BitSet;
 use log::{info, warn};
 use message::Block;
-use piece_assembler::PieceAssembler;
+use piece_assembler::{PieceAssembler, Status};
+use sizes::Sizes;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant, Interval};
@@ -69,16 +71,13 @@ impl Peer {
         let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
         let total_pieces = torrent_info.pieces.len();
         let choker = Choker::new(config.optimistic_choking_cycle);
-        let assignment = Assignment::new(
+        let sizes = Sizes::new(
             torrent_info.piece_length,
             torrent_info.download_type.length(),
             config.block_size,
         );
-        let assembler = PieceAssembler::new(
-            torrent_info.piece_length,
-            config.block_size,
-            torrent_info.pieces.clone(),
-        );
+        let assignment = Assignment::new(&sizes);
+        let assembler = PieceAssembler::new(&sizes, torrent_info.pieces.clone());
 
         let (tx, rx) = mpsc::channel(128);
         let peer = Self {
@@ -269,7 +268,7 @@ impl Peer {
                             .send(Command::Send(Message::Request(block)))
                             .await?;
                     }
-                    if self.assembler.add(piece, offset, data) {
+                    if self.assembler.add(piece, offset, data) == Status::Valid {
                         info!("piece {} complete and valid!", piece);
                     }
                 }

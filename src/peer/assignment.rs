@@ -7,6 +7,8 @@ use size::Size;
 
 use crate::peer::{blocks::Blocks, message::Block};
 
+use super::sizes::Sizes;
+
 pub struct Assignment {
     has_pieces: BitSet,
     peers: HashMap<SocketAddr, PeerState>,
@@ -14,18 +16,15 @@ pub struct Assignment {
 }
 
 impl Assignment {
-    pub fn new(piece_size: Size, total_size: Size, block_size: Size) -> Self {
-        let total_pieces =
-            ((total_size.bytes() as f64) / (piece_size.bytes() as f64)).ceil() as usize;
-
-        let mut pieces = Vec::with_capacity(total_pieces);
-        for piece in 0..total_pieces {
-            let blocks = Blocks::new(piece_size, total_size, block_size, piece);
+    pub fn new(sizes: &Sizes) -> Self {
+        let mut pieces = Vec::with_capacity(sizes.total_pieces);
+        for piece in 0..sizes.total_pieces {
+            let blocks = Blocks::new(sizes, piece);
             pieces.push(PieceState::new(blocks));
         }
 
         Self {
-            has_pieces: BitSet::with_capacity(total_pieces),
+            has_pieces: BitSet::with_capacity(sizes.total_pieces),
             peers: HashMap::new(),
             pieces,
         }
@@ -174,13 +173,17 @@ impl PieceState {
 mod tests {
     use super::*;
 
-    const PIECE_SIZE: Size = Size::from_const(24);
-    const TOTAL_SIZE: Size = Size::from_const(32);
-    const BLOCK_SIZE: Size = Size::from_const(8);
+    fn sizes() -> Sizes {
+        Sizes::new(
+            Size::from_bytes(24),
+            Size::from_bytes(32),
+            Size::from_bytes(8),
+        )
+    }
 
     #[test]
     fn peer_unchoked_but_has_no_pieces() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
         let addr = "127.0.0.1:6881".parse().unwrap();
 
         assert!(assignment.peer_unchoked(addr).is_none());
@@ -188,7 +191,7 @@ mod tests {
 
     #[test]
     fn peer_unchoked_but_client_already_has_that_piece() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
         assignment.client_has_pieces(&pieces);
@@ -199,7 +202,7 @@ mod tests {
 
     #[test]
     fn assign_a_block_to_request_from_peer() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
 
@@ -209,7 +212,7 @@ mod tests {
 
     #[test]
     fn peer_unchoked_before_notifying_on_completed_piece() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
 
@@ -222,7 +225,7 @@ mod tests {
 
     #[test]
     fn distribute_same_piece_between_two_peers() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -238,7 +241,7 @@ mod tests {
 
     #[test]
     fn select_rarest_pieces_first() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -257,7 +260,7 @@ mod tests {
 
     #[test]
     fn prioritize_pieces_that_already_started_downloading() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -277,7 +280,7 @@ mod tests {
 
     #[test]
     fn continue_to_next_block_after_previous_block_completed_downloading() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
@@ -293,7 +296,7 @@ mod tests {
 
     #[test]
     fn release_abandoned_block() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
         let block = Block::new(0, 0, 8);
@@ -310,7 +313,7 @@ mod tests {
 
     #[test]
     fn assign_abandoned_block_to_other_peer_if_needed() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
 
         let pieces = BitSet::from_bytes(&[0b10000000]);
         let block = Block::new(0, 0, 8);
@@ -329,7 +332,7 @@ mod tests {
 
     #[test]
     fn do_not_reassign_downloaded_block() {
-        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+        let mut assignment = Assignment::new(&sizes());
 
         let pieces = BitSet::from_bytes(&[0b10000000]);
         let block1 = Block::new(0, 0, 8);

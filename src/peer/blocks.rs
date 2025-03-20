@@ -2,6 +2,8 @@ use size::Size;
 
 use crate::peer::message::Block;
 
+use super::sizes::Sizes;
+
 pub struct Blocks {
     block_size: usize,
     piece: usize,
@@ -10,10 +12,10 @@ pub struct Blocks {
 }
 
 impl Blocks {
-    pub fn new(piece_size: Size, total_size: Size, block_size: Size, piece: usize) -> Self {
-        let piece_size = piece_size.bytes() as usize;
-        let total_size = total_size.bytes() as usize;
-        let block_size = block_size.bytes() as usize;
+    pub fn new(sizes: &Sizes, piece: usize) -> Self {
+        let piece_size = sizes.piece_size.bytes() as usize;
+        let total_size = sizes.total_size.bytes() as usize;
+        let block_size = sizes.block_size.bytes() as usize;
 
         let piece_start = piece_size * piece;
         let piece_end = (piece_start + piece_size).min(total_size);
@@ -54,9 +56,7 @@ mod tests {
     #[test]
     fn one_piece_one_block() {
         let mut blocks = Blocks::new(
-            Size::from_kibibytes(1),
-            Size::from_kibibytes(1),
-            BLOCK_SIZE,
+            &Sizes::new(Size::from_kibibytes(1), Size::from_kibibytes(1), BLOCK_SIZE),
             0,
         );
 
@@ -67,9 +67,7 @@ mod tests {
     #[test]
     fn one_piece_multiple_blocks() {
         let mut blocks = Blocks::new(
-            Size::from_kibibytes(2),
-            Size::from_kibibytes(2),
-            BLOCK_SIZE,
+            &Sizes::new(Size::from_kibibytes(2), Size::from_kibibytes(2), BLOCK_SIZE),
             0,
         );
 
@@ -81,9 +79,11 @@ mod tests {
     #[test]
     fn uneven_block_sizes() {
         let mut blocks = Blocks::new(
-            BLOCK_SIZE + Size::from_bytes(42),
-            Size::from_kibibytes(2),
-            BLOCK_SIZE,
+            &Sizes::new(
+                BLOCK_SIZE + Size::from_bytes(42),
+                Size::from_kibibytes(2),
+                BLOCK_SIZE,
+            ),
             0,
         );
 
@@ -95,9 +95,11 @@ mod tests {
     #[test]
     fn uneven_block_sizes_in_non_first_piece() {
         let mut blocks = Blocks::new(
-            BLOCK_SIZE + Size::from_bytes(42),
-            Size::from_kibibytes(4),
-            BLOCK_SIZE,
+            &Sizes::new(
+                BLOCK_SIZE + Size::from_bytes(42),
+                Size::from_kibibytes(4),
+                BLOCK_SIZE,
+            ),
             1,
         );
 
@@ -109,9 +111,7 @@ mod tests {
     #[test]
     fn uneven_block_sizes_in_last_piece() {
         let mut blocks = Blocks::new(
-            Size::from_kibibytes(3),
-            Size::from_kibibytes(8),
-            BLOCK_SIZE,
+            &Sizes::new(Size::from_kibibytes(3), Size::from_kibibytes(8), BLOCK_SIZE),
             1,
         );
 
@@ -121,9 +121,7 @@ mod tests {
         assert_eq!(None, blocks.next());
 
         let mut blocks = Blocks::new(
-            Size::from_kibibytes(3),
-            Size::from_kibibytes(8),
-            BLOCK_SIZE,
+            &Sizes::new(Size::from_kibibytes(3), Size::from_kibibytes(8), BLOCK_SIZE),
             2,
         );
 
@@ -135,9 +133,11 @@ mod tests {
     #[test]
     fn real_world_example() {
         let mut blocks = Blocks::new(
-            Size::from_bytes(32768),
-            Size::from_bytes(170600),
-            Size::from_bytes(16384),
+            &Sizes::new(
+                Size::from_bytes(32768),
+                Size::from_bytes(170600),
+                Size::from_bytes(16384),
+            ),
             5,
         );
 
