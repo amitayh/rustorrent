@@ -45,6 +45,21 @@ impl Assignment {
         self.assign(&addr)
     }
 
+    pub fn peer_unchoked(&mut self, addr: SocketAddr) -> Option<Block> {
+        let peer = self.peers.entry(addr).or_default();
+        peer.choking = false;
+        self.assign(&addr)
+    }
+
+    pub fn peer_choked(&mut self, addr: SocketAddr) {
+        let peer = self.peers.entry(addr).or_default();
+        peer.choking = true;
+        for block in peer.assigned_blocks.drain() {
+            let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
+            piece.release(block);
+        }
+    }
+
     pub fn block_downloaded(&mut self, addr: &SocketAddr, block: &Block) -> Option<Block> {
         let peer = self.peers.get_mut(addr).expect("invalid peer");
         let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
@@ -53,23 +68,23 @@ impl Assignment {
         self.assign(addr)
     }
 
+    pub fn release(&mut self, addr: &SocketAddr, block: Block) {
+        let peer = self.peers.get_mut(addr).expect("invalid peer");
+        let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
+        peer.assigned_blocks.remove(&block);
+        piece.release(block);
+    }
+
     pub fn peer_disconnected(&mut self, addr: &SocketAddr) {
-        if let Some(peer) = self.peers.remove(addr) {
-            for block in peer.assigned_blocks {
+        if let Some(mut peer) = self.peers.remove(addr) {
+            for block in peer.assigned_blocks.drain() {
                 let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
                 piece.release(block);
             }
         }
     }
 
-    pub fn peer_unchoked(&mut self, addr: SocketAddr) -> Option<Block> {
-        let peer = self.peers.entry(addr).or_default();
-        peer.choking = false;
-        self.assign(&addr)
-    }
-
-    // TODO: make private
-    pub fn assign(&mut self, addr: &SocketAddr) -> Option<Block> {
+    fn assign(&mut self, addr: &SocketAddr) -> Option<Block> {
         let peer = self.peers.get_mut(addr).expect("invalid peer");
         if peer.choking || peer.has_pieces.difference(&self.has_pieces).count() == 0 {
             return None;
@@ -85,22 +100,6 @@ impl Assignment {
         peer.assigned_blocks.insert(block);
         Some(block)
     }
-
-    pub fn peer_choked(&mut self, addr: &SocketAddr) {
-        if let Some(peer) = self.peers.remove(addr) {
-            for block in peer.assigned_blocks {
-                let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-                piece.release(block);
-            }
-        }
-    }
-
-    pub fn release(&mut self, addr: &SocketAddr, block: Block) {
-        let peer = self.peers.get_mut(addr).expect("invalid peer");
-        let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-        peer.assigned_blocks.remove(&block);
-        piece.release(block);
-    }
 }
 
 #[derive(Debug)]
@@ -114,7 +113,6 @@ impl Default for PeerState {
     fn default() -> Self {
         Self {
             choking: true,
-            // TODO: add capacity
             has_pieces: BitSet::new(),
             assigned_blocks: HashSet::new(),
         }
@@ -283,17 +281,14 @@ mod tests {
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_bytes(&[0b10000000]);
-        let first_block = Block::new(0, 0, 8);
-        let second_block = Block::new(0, 8, 8);
+        let block1 = Block::new(0, 0, 8);
+        let block2 = Block::new(0, 8, 8);
 
         assert!(assignment.peer_has_pieces(addr, &pieces).is_none());
-        assert_eq!(assignment.peer_unchoked(addr), Some(first_block));
+        assert_eq!(assignment.peer_unchoked(addr), Some(block1));
 
         // Continue with next block once previous one completes
-        assert_eq!(
-            assignment.block_downloaded(&addr, &first_block),
-            Some(second_block)
-        );
+        assert_eq!(assignment.block_downloaded(&addr, &block1), Some(block2));
     }
 
     #[test]
@@ -311,5 +306,45 @@ mod tests {
 
         // Next unchoke re-assigns the same abandoned block
         assert_eq!(assignment.peer_unchoked(addr), Some(block));
+    }
+
+    #[test]
+    fn assign_abandoned_block_to_other_peer_if_needed() {
+        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+
+        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let block = Block::new(0, 0, 8);
+
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        assert!(assignment.peer_has_pieces(addr1, &pieces).is_none());
+        assert_eq!(assignment.peer_unchoked(addr1), Some(block));
+
+        // Peer 1 choked before completing the block, assign to peer 2
+        assignment.peer_choked(addr1);
+
+        let addr2 = "127.0.0.1:6881".parse().unwrap();
+        assert!(assignment.peer_has_pieces(addr2, &pieces).is_none());
+        assert_eq!(assignment.peer_unchoked(addr2), Some(block));
+    }
+
+    #[test]
+    fn do_not_reassign_downloaded_block() {
+        let mut assignment = Assignment::new(PIECE_SIZE, TOTAL_SIZE, BLOCK_SIZE);
+
+        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let block1 = Block::new(0, 0, 8);
+        let block2 = Block::new(0, 8, 8);
+
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        assert!(assignment.peer_has_pieces(addr1, &pieces).is_none());
+        assert_eq!(assignment.peer_unchoked(addr1), Some(block1));
+
+        // Peer 1 completed downloading block #1 and choked. Assign next block to peer 2
+        assert_eq!(assignment.block_downloaded(&addr1, &block1), Some(block2));
+        assignment.peer_choked(addr1);
+
+        let addr2 = "127.0.0.1:6881".parse().unwrap();
+        assert!(assignment.peer_has_pieces(addr2, &pieces).is_none());
+        assert_eq!(assignment.peer_unchoked(addr2), Some(block2));
     }
 }

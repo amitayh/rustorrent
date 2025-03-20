@@ -2,14 +2,12 @@ use std::time::Duration;
 
 use size::Size;
 
-use super::block_assigner::BlockAssignerConfig;
-
 pub struct Config {
     pub keep_alive_interval: Duration,
     pub choking_interval: Duration,
     pub optimistic_choking_cycle: usize,
     pub block_size: Size,
-    pub block_assigner_config: BlockAssignerConfig,
+    pub block_timeout: Duration,
 }
 
 #[allow(dead_code)]
@@ -37,7 +35,7 @@ impl Default for Config {
             choking_interval: Duration::from_secs(10),
             optimistic_choking_cycle: 3,
             block_size: Size::from_kibibytes(16),
-            block_assigner_config: BlockAssignerConfig::default(),
+            block_timeout: Duration::from_secs(5),
         }
     }
 }
