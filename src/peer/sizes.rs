@@ -18,4 +18,12 @@ impl Sizes {
             total_pieces,
         }
     }
+
+    pub fn piece_size(&self, piece: usize) -> usize {
+        let piece_size = self.piece_size.bytes() as usize;
+        let total_size = self.total_size.bytes() as usize;
+        let piece_start = piece_size * piece;
+        let piece_end = (piece_start + piece_size).min(total_size);
+        piece_end - piece_start
+    }
 }

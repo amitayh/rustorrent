@@ -269,7 +269,7 @@ impl Peer {
                             .await?;
                     }
                     if self.assembler.add(piece, offset, data) == Status::Valid {
-                        info!("piece {} complete and valid!", piece);
+                        self.broadcast(Message::Have { piece }).await?;
                     }
                 }
                 Message::Cancel(_) | Message::Port(_) => todo!(),

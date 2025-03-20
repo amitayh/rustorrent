@@ -1,5 +1,3 @@
-use size::Size;
-
 use crate::peer::message::Block;
 
 use super::sizes::Sizes;
@@ -13,18 +11,12 @@ pub struct Blocks {
 
 impl Blocks {
     pub fn new(sizes: &Sizes, piece: usize) -> Self {
-        let piece_size = sizes.piece_size.bytes() as usize;
-        let total_size = sizes.total_size.bytes() as usize;
         let block_size = sizes.block_size.bytes() as usize;
-
-        let piece_start = piece_size * piece;
-        let piece_end = (piece_start + piece_size).min(total_size);
-
         Self {
             block_size,
             piece,
             offset: 0,
-            end: piece_end - piece_start,
+            end: sizes.piece_size(piece),
         }
     }
 }
@@ -46,9 +38,10 @@ impl Iterator for Blocks {
 
 #[cfg(test)]
 mod tests {
-    use size::KiB;
-
     use super::*;
+
+    use size::KiB;
+    use size::Size;
 
     const BLOCK_SIZE: Size = Size::from_const(KiB);
     const BLOCK_SIZE_BYTES: usize = BLOCK_SIZE.bytes() as usize;
