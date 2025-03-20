@@ -11,6 +11,7 @@ pub mod sizes;
 pub mod transfer_rate;
 
 use std::collections::{HashMap, HashSet};
+use std::io::SeekFrom;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::{io::Result, net::SocketAddr};
@@ -20,6 +21,8 @@ use log::{info, warn};
 use message::Block;
 use piece_assembler::{PieceAssembler, Status};
 use sizes::Sizes;
+use tokio::fs::{File, OpenOptions};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant, Interval};
@@ -268,7 +271,15 @@ impl Peer {
                             .send(Command::Send(Message::Request(block)))
                             .await?;
                     }
-                    if let Status::Valid(_) = self.assembler.add(piece, offset, data) {
+                    if let Status::Valid { offset, data } = self.assembler.add(piece, offset, data)
+                    {
+                        let mut file = OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .open(&self.file_path)
+                            .await?;
+                        file.seek(SeekFrom::Start(offset)).await?;
+                        file.write_all(&data).await?;
                         self.broadcast(Message::Have { piece }).await?;
                     }
                 }
@@ -327,7 +338,7 @@ mod tests {
         let seeder_addr = seeder.address().unwrap();
         let (mut leecher, leecher_tx) = {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            Peer::new(listener, torrent_info, file_path.into(), Config::default())
+            Peer::new(listener, torrent_info, "/tmp/foo".into(), Config::default())
         };
 
         let mut set = JoinSet::new();

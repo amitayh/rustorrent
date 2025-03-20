@@ -22,8 +22,13 @@ impl Sizes {
     pub fn piece_size(&self, piece: usize) -> usize {
         let piece_size = self.piece_size.bytes() as usize;
         let total_size = self.total_size.bytes() as usize;
-        let piece_start = piece_size * piece;
+        let piece_start = self.piece_offset(piece);
         let piece_end = (piece_start + piece_size).min(total_size);
         piece_end - piece_start
+    }
+
+    pub fn piece_offset(&self, piece: usize) -> usize {
+        let piece_size = self.piece_size.bytes() as usize;
+        piece_size * piece
     }
 }

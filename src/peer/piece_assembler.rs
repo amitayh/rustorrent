@@ -16,7 +16,8 @@ impl PieceAssembler {
         let block_size = sizes.block_size.bytes() as usize;
         let mut pieces = Vec::with_capacity(sizes.total_pieces);
         for (piece, sha1) in hashes.into_iter().enumerate() {
-            pieces.push(PieceState::new(piece, sha1, sizes));
+            let offset = sizes.piece_offset(piece) as u64;
+            pieces.push(PieceState::new(piece, offset, sha1, sizes));
         }
         Self { block_size, pieces }
     }
@@ -32,21 +33,22 @@ impl PieceAssembler {
 pub enum Status {
     Incomplete,
     Invalid,
-    Valid(Vec<u8>),
+    Valid { offset: u64, data: Vec<u8> },
 }
 
 struct PieceState {
+    offset: u64,
     sha1: Sha1,
     data: Vec<Option<Vec<u8>>>,
 }
 
 impl PieceState {
-    fn new(piece: usize, sha1: Sha1, sizes: &Sizes) -> Self {
+    fn new(piece: usize, offset: u64, sha1: Sha1, sizes: &Sizes) -> Self {
         let piece_size = sizes.piece_size(piece) as f64;
         let block_size = sizes.block_size.bytes() as f64;
         let blocks_per_piece = (piece_size / block_size).ceil() as usize;
         let data = vec![None; blocks_per_piece];
-        Self { sha1, data }
+        Self { offset, sha1, data }
     }
 
     fn add(&mut self, block: usize, data: Vec<u8>) -> Status {
@@ -65,7 +67,11 @@ impl PieceState {
         let sha1 = Sha1(hasher.finalize().into());
         dbg!(&sha1, &self.sha1);
         if self.sha1 == sha1 {
-            Status::Valid(self.data.drain(..).flatten().flatten().collect())
+            let data = self.data.drain(..).flatten().flatten().collect();
+            Status::Valid {
+                offset: self.offset,
+                data,
+            }
         } else {
             Status::Invalid
         }
@@ -106,7 +112,10 @@ mod tests {
         assert_eq!(assembler.add(0, 0, vec![0; 4]), Status::Incomplete);
         assert_eq!(
             assembler.add(0, 4, vec![1; 4]),
-            Status::Valid(vec![0, 0, 0, 0, 1, 1, 1, 1])
+            Status::Valid {
+                offset: 0,
+                data: vec![0, 0, 0, 0, 1, 1, 1, 1]
+            }
         );
     }
 
@@ -135,9 +144,15 @@ mod tests {
 
         assert_eq!(assembler.add(0, 0, vec![0; 8]), Status::Incomplete);
         assert_eq!(assembler.add(0, 8, vec![0; 8]), Status::Incomplete);
-        assert!(matches!(assembler.add(0, 16, vec![0; 8]), Status::Valid(_)));
+        assert!(matches!(
+            assembler.add(0, 16, vec![0; 8]),
+            Status::Valid { .. }
+        ));
         assert_eq!(assembler.add(1, 0, vec![0; 8]), Status::Incomplete);
-        assert!(matches!(assembler.add(1, 8, vec![0; 4]), Status::Valid(_)));
+        assert!(matches!(
+            assembler.add(1, 8, vec![0; 4]),
+            Status::Valid { offset: 24, .. }
+        ));
     }
 
     #[test]
@@ -156,7 +171,10 @@ mod tests {
         assert_eq!(assembler.add(0, 4, vec![3; 2]), Status::Incomplete);
         assert_eq!(
             assembler.add(0, 2, vec![2; 2]),
-            Status::Valid(vec![1, 1, 2, 2, 3, 3])
+            Status::Valid {
+                offset: 0,
+                data: vec![1, 1, 2, 2, 3, 3]
+            }
         );
     }
 }

@@ -1,6 +1,6 @@
 use crate::peer::message::Block;
 
-use super::sizes::Sizes;
+use crate::peer::sizes::Sizes;
 
 pub struct Blocks {
     block_size: usize,

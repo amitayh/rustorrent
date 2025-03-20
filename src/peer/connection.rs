@@ -97,7 +97,6 @@ impl Connection {
                         Err(err) => {
                             warn!("failed to decode message: {}", err);
                             if err.kind() == ErrorKind::UnexpectedEof {
-                                // Disconnected
                                 break;
                             }
                         }

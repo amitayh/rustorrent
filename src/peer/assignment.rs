@@ -3,11 +3,9 @@ use std::collections::{HashSet, VecDeque};
 use std::{collections::HashMap, net::SocketAddr};
 
 use bit_set::BitSet;
-use size::Size;
 
+use crate::peer::sizes::Sizes;
 use crate::peer::{blocks::Blocks, message::Block};
-
-use super::sizes::Sizes;
 
 pub struct Assignment {
     has_pieces: BitSet,
@@ -172,6 +170,8 @@ impl PieceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use size::Size;
 
     fn sizes() -> Sizes {
         Sizes::new(
