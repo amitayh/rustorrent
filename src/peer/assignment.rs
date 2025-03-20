@@ -63,7 +63,7 @@ impl Assignment {
     pub fn block_downloaded(&mut self, addr: &SocketAddr, block: &Block) -> Option<Block> {
         let peer = self.peers.get_mut(addr).expect("invalid peer");
         let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-        peer.assigned_blocks.remove(&block);
+        peer.assigned_blocks.remove(block);
         piece.block_downloaded();
         self.assign(addr)
     }

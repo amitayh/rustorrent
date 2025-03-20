@@ -2,7 +2,6 @@ use std::fmt::Formatter;
 use std::io::{Error, ErrorKind, Result};
 
 use bit_set::BitSet;
-use size::Size;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
@@ -68,24 +67,6 @@ impl AsyncDecoder for Handshake {
         })
     }
 }
-
-//impl Decoder for Handshake {
-//    type Item = Self;
-//    type Error = std::io::Error;
-//
-//    fn decode(
-//        &mut self,
-//        src: &mut BytesMut,
-//    ) -> std::result::Result<Option<Self::Item>, Self::Error> {
-//        let protocol = {
-//            let length = src.get_u8();
-//            let mut buf = vec![0; length as usize];
-//            src.get_u32(&mut buf);
-//            String::from_utf8(buf).map_err(|err| Error::new(ErrorKind::InvalidData, err))?
-//        };
-//        todo!()
-//    }
-//}
 
 impl AsyncEncoder for Handshake {
     async fn encode<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
@@ -347,38 +328,6 @@ impl AsyncEncoder for Block {
         Ok(())
     }
 }
-
-// ------------------------------------------------------------
-
-/*
-struct HandshakeCodec;
-
-impl Decoder for HandshakeCodec {
-    type Item = Handshake;
-    type Error = std::io::Error;
-
-    fn decode(
-        &mut self,
-        src: &mut BytesMut,
-    ) -> std::result::Result<Option<Self::Item>, Self::Error> {
-        Ok(None)
-    }
-}
-
-impl Encoder<Handshake> for HandshakeCodec {
-    type Error = std::io::Error;
-
-    fn encode(
-        &mut self,
-        item: Handshake,
-        dst: &mut BytesMut,
-    ) -> std::result::Result<(), Self::Error> {
-        Ok(())
-    }
-}
-*/
-
-// ------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

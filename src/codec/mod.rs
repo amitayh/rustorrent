@@ -1,6 +1,5 @@
 use std::io::{Result, Write};
 
-use size::Size;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub trait Encoder {
