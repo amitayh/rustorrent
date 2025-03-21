@@ -13,8 +13,8 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
 
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
-use crate::peer::message::Block;
-use crate::peer::message::{Handshake, Message};
+use crate::message::Block;
+use crate::message::{Handshake, Message};
 use crate::peer::transfer_rate::TransferRate;
 use crate::peer::{Event, PeerEvent};
 

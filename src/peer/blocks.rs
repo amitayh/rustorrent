@@ -1,5 +1,4 @@
-use crate::peer::message::Block;
-
+use crate::message::Block;
 use crate::peer::sizes::Sizes;
 
 pub struct Blocks {

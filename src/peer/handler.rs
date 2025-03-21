@@ -1,7 +1,7 @@
 #![allow(dead_code)]
-use crate::peer::message::Block;
 
-use super::message::Message;
+use crate::message::Block;
+use crate::message::Message;
 
 struct EventLoop;
 

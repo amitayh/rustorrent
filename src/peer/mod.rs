@@ -3,7 +3,6 @@ mod choke;
 pub mod config;
 mod connection;
 mod handler;
-mod message;
 pub mod peer_id;
 mod piece;
 mod sizes;
@@ -23,13 +22,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant, Interval};
 
+use crate::message::Block;
+use crate::message::Handshake;
+use crate::message::Message;
 use crate::peer::choke::Choker;
 use crate::peer::config::Config;
 use crate::peer::connection::Command;
 use crate::peer::connection::Connection;
-use crate::peer::message::Block;
-use crate::peer::message::Handshake;
-use crate::peer::message::Message;
 use crate::peer::peer_id::PeerId;
 use crate::peer::piece::Distributor;
 use crate::peer::piece::{Joiner, Status};
@@ -270,18 +269,22 @@ impl Peer {
                             .send(Command::Send(Message::Request(block)))
                             .await?;
                     }
-                    if let Status::Valid { offset, data } = self.joiner.add(piece, offset, data) {
-                        let mut file = OpenOptions::new()
-                            .create(true)
-                            .write(true)
-                            .truncate(true)
-                            .open(&self.file_path)
-                            .await?;
-                        file.seek(SeekFrom::Start(offset)).await?;
-                        file.write_all(&data).await?;
-                        self.has_pieces.insert(piece);
-                        self.distributor.client_has_piece(piece);
-                        self.broadcast(Message::Have { piece }).await?;
+                    match self.joiner.add(piece, offset, data) {
+                        Status::Incomplete => (),
+                        Status::Invalid => self.distributor.invalidate(piece),
+                        Status::Valid { offset, data } => {
+                            let mut file = OpenOptions::new()
+                                .create(true)
+                                .write(true)
+                                .truncate(true)
+                                .open(&self.file_path)
+                                .await?;
+                            file.seek(SeekFrom::Start(offset)).await?;
+                            file.write_all(&data).await?;
+                            self.has_pieces.insert(piece);
+                            self.distributor.client_has_piece(piece);
+                            self.broadcast(Message::Have { piece }).await?;
+                        }
                     }
                 }
                 Message::Cancel(_) | Message::Port(_) => todo!(),

@@ -4,8 +4,9 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use bit_set::BitSet;
 
+use crate::message::Block;
+use crate::peer::blocks::Blocks;
 use crate::peer::sizes::Sizes;
-use crate::peer::{blocks::Blocks, message::Block};
 
 pub struct Distributor {
     has_pieces: BitSet,
@@ -74,6 +75,10 @@ impl Distributor {
         let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
         peer.assigned_blocks.remove(&block);
         piece.release(block);
+    }
+
+    pub fn invalidate(&self, piece: usize) {
+        todo!()
     }
 
     pub fn peer_disconnected(&mut self, addr: &SocketAddr) {

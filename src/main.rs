@@ -13,6 +13,7 @@ use crate::torrent::Torrent;
 mod bencoding;
 mod codec;
 mod crypto;
+mod message;
 mod peer;
 mod torrent;
 mod tracker;
