@@ -288,7 +288,7 @@ impl Peer {
                     match self.joiner.add(piece, offset, data) {
                         Status::Incomplete => (),
                         Status::Invalid => self.distributor.invalidate(piece),
-                        Status::Valid { offset, data } => {
+                        Status::Complete { offset, data } => {
                             let mut file = OpenOptions::new()
                                 .write(true)
                                 .truncate(false)

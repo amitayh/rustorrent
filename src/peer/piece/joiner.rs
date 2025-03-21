@@ -37,7 +37,7 @@ impl Joiner {
 pub enum Status {
     Incomplete,
     Invalid,
-    Valid { offset: u64, data: Vec<u8> },
+    Complete { offset: u64, data: Vec<u8> },
 }
 
 struct PieceState {
@@ -79,7 +79,7 @@ impl PieceState {
         let sha1 = Sha1(hasher.finalize().into());
 
         if self.sha1 == sha1 {
-            Status::Valid {
+            Status::Complete {
                 offset: self.offset,
                 data: piece_data,
             }
@@ -123,7 +123,7 @@ mod tests {
         assert_eq!(joiner.add(0, 0, vec![0; 4]), Status::Incomplete);
         assert_eq!(
             joiner.add(0, 4, vec![1; 4]),
-            Status::Valid {
+            Status::Complete {
                 offset: 0,
                 data: vec![0, 0, 0, 0, 1, 1, 1, 1]
             }
@@ -154,7 +154,10 @@ mod tests {
 
         // Valid piece data
         assert_eq!(joiner.add(0, 0, vec![0; 4]), Status::Incomplete);
-        assert!(matches!(joiner.add(0, 4, vec![0; 4]), Status::Valid { .. }));
+        assert!(matches!(
+            joiner.add(0, 4, vec![0; 4]),
+            Status::Complete { .. }
+        ));
     }
 
     #[test]
@@ -176,12 +179,12 @@ mod tests {
         assert_eq!(joiner.add(0, 8, vec![0; 8]), Status::Incomplete);
         assert!(matches!(
             joiner.add(0, 16, vec![0; 8]),
-            Status::Valid { .. }
+            Status::Complete { .. }
         ));
         assert_eq!(joiner.add(1, 0, vec![0; 8]), Status::Incomplete);
         assert!(matches!(
             joiner.add(1, 8, vec![0; 4]),
-            Status::Valid { offset: 24, .. }
+            Status::Complete { offset: 24, .. }
         ));
     }
 
@@ -201,7 +204,7 @@ mod tests {
         assert_eq!(joiner.add(0, 4, vec![3; 2]), Status::Incomplete);
         assert_eq!(
             joiner.add(0, 2, vec![2; 2]),
-            Status::Valid {
+            Status::Complete {
                 offset: 0,
                 data: vec![1, 1, 2, 2, 3, 3]
             }

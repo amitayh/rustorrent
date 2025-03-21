@@ -120,13 +120,18 @@ impl EventLoop {
                 }
                 match self.joiner.add(piece, block_offset, block_data) {
                     Status::Incomplete => (), // Noting to do, wait for next block
-                    Status::Invalid => self.distributor.invalidate(piece),
-                    Status::Valid {
+                    Status::Invalid => {
+                        warn!("piece {} sha1 mismatch", piece);
+                        self.distributor.invalidate(piece);
+                    }
+                    Status::Complete {
                         offset: piece_offset,
                         data: piece_data,
                     } => {
-                        self.distributor.client_has_piece(piece);
                         actions.push(Action::Broadcast(Message::Have { piece }));
+                        for not_interesting in self.distributor.client_has_piece(piece) {
+                            actions.push(Action::Send(not_interesting, Message::NotInterested));
+                        }
                         actions.push(Action::IntegratePiece {
                             offset: piece_offset,
                             data: piece_data,
@@ -180,6 +185,7 @@ impl From<Action> for Actions {
 
 #[cfg(test)]
 mod tests {
+    use log::info;
     use size::Size;
 
     use crate::{
@@ -197,6 +203,34 @@ mod tests {
             event_loop.keep_alive(),
             Actions(vec![Action::Broadcast(Message::KeepAlive)])
         );
+    }
+
+    #[test]
+    fn sequence() {
+        env_logger::init();
+
+        let mut event_loop = create_event_loop();
+
+        let addr = "127.0.0.1:6881".parse().unwrap();
+
+        run(&mut event_loop, addr, Message::Have { piece: 0 });
+        run(&mut event_loop, addr, Message::Unchoke);
+        run(
+            &mut event_loop,
+            addr,
+            Message::Piece {
+                piece: 0,
+                offset: 0,
+                data: vec![0; 16384],
+            },
+        );
+        dbg!(event_loop.run_chokig_algorithm());
+    }
+
+    fn run(event_loop: &mut EventLoop, addr: SocketAddr, message: Message) {
+        info!("<<< {:?}", &message);
+        let actions = event_loop.handle(addr, Message::Have { piece: 0 });
+        info!(">>> {:?}", actions);
     }
 
     fn create_event_loop() -> EventLoop {

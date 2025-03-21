@@ -33,8 +33,19 @@ impl Distributor {
         self.has_pieces.contains(piece)
     }
 
-    pub fn client_has_piece(&mut self, piece: usize) {
+    pub fn client_has_piece(&mut self, piece: usize) -> HashSet<SocketAddr> {
         self.has_pieces.insert(piece);
+        self.peers
+            .iter()
+            .filter_map(|(addr, peer)| {
+                let remaining = self.has_pieces.difference(&peer.has_pieces);
+                if remaining.count() == 0 {
+                    Some(*addr)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn client_has_pieces(&mut self, pieces: &BitSet) {
@@ -206,7 +217,7 @@ mod tests {
     fn peer_unchoked_but_client_already_has_that_piece() {
         let mut distributor = Distributor::new(&sizes());
         let addr = "127.0.0.1:6881".parse().unwrap();
-        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let pieces = BitSet::from_iter([0]);
         distributor.client_has_pieces(&pieces);
 
         assert!(distributor.peer_has_pieces(addr, &pieces).is_none());
@@ -217,7 +228,7 @@ mod tests {
     fn assign_a_block_to_request_from_peer() {
         let mut distributor = Distributor::new(&sizes());
         let addr = "127.0.0.1:6881".parse().unwrap();
-        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let pieces = BitSet::from_iter([0]);
 
         assert!(distributor.peer_has_pieces(addr, &pieces).is_none());
         assert_eq!(distributor.peer_unchoked(addr), Some(Block::new(0, 0, 8)));
@@ -227,7 +238,7 @@ mod tests {
     fn peer_unchoked_before_notifying_on_completed_piece() {
         let mut distributor = Distributor::new(&sizes());
         let addr = "127.0.0.1:6881".parse().unwrap();
-        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let pieces = BitSet::from_iter([0]);
 
         assert!(distributor.peer_unchoked(addr).is_none());
         assert_eq!(
@@ -241,7 +252,7 @@ mod tests {
         let mut distributor = Distributor::new(&sizes());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let pieces = BitSet::from_iter([0]);
         assert!(distributor.peer_has_pieces(addr1, &pieces).is_none());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
@@ -257,11 +268,11 @@ mod tests {
         let mut distributor = Distributor::new(&sizes());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let pieces = BitSet::from_iter([0]);
         assert!(distributor.peer_has_pieces(addr1, &pieces).is_none());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        let pieces = BitSet::from_bytes(&[0b11000000]);
+        let pieces = BitSet::from_iter([0, 1]);
         assert!(distributor.peer_has_pieces(addr2, &pieces).is_none());
 
         // Peer 2 has both piece #0 and #1. Since piece #1 is rarer, select it first.
@@ -276,11 +287,11 @@ mod tests {
         let mut distributor = Distributor::new(&sizes());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let pieces = BitSet::from_iter([0]);
         assert!(distributor.peer_has_pieces(addr1, &pieces).is_none());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        let pieces = BitSet::from_bytes(&[0b11000000]);
+        let pieces = BitSet::from_iter([0, 1]);
         assert!(distributor.peer_has_pieces(addr2, &pieces).is_none());
 
         // Peer 1 only has piece #0, select it.
@@ -296,7 +307,7 @@ mod tests {
         let mut distributor = Distributor::new(&sizes());
 
         let addr = "127.0.0.1:6881".parse().unwrap();
-        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let pieces = BitSet::from_iter([0]);
         let block1 = Block::new(0, 0, 8);
         let block2 = Block::new(0, 8, 8);
 
@@ -311,7 +322,7 @@ mod tests {
     fn release_abandoned_block() {
         let mut distributor = Distributor::new(&sizes());
         let addr = "127.0.0.1:6881".parse().unwrap();
-        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let pieces = BitSet::from_iter([0]);
         let block = Block::new(0, 0, 8);
 
         assert!(distributor.peer_has_pieces(addr, &pieces).is_none());
@@ -328,7 +339,7 @@ mod tests {
     fn assign_abandoned_block_to_other_peer_if_needed() {
         let mut distributor = Distributor::new(&sizes());
 
-        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let pieces = BitSet::from_iter([0]);
         let block = Block::new(0, 0, 8);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
@@ -347,7 +358,7 @@ mod tests {
     fn do_not_reassign_downloaded_block() {
         let mut distributor = Distributor::new(&sizes());
 
-        let pieces = BitSet::from_bytes(&[0b10000000]);
+        let pieces = BitSet::from_iter([0]);
         let block1 = Block::new(0, 0, 8);
         let block2 = Block::new(0, 8, 8);
 
@@ -362,5 +373,25 @@ mod tests {
         let addr2 = "127.0.0.1:6881".parse().unwrap();
         assert!(distributor.peer_has_pieces(addr2, &pieces).is_none());
         assert_eq!(distributor.peer_unchoked(addr2), Some(block2));
+    }
+
+    #[test]
+    fn find_all_peers_that_are_no_longer_interesting() {
+        let mut distributor = Distributor::new(&sizes());
+
+        // Peer 1 has pieces #0 and #1
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let pieces = BitSet::from_iter([0, 1]);
+        assert!(distributor.peer_has_pieces(addr1, &pieces).is_none());
+
+        // Peer 2 has only piece #0
+        let addr2 = "127.0.0.1:6881".parse().unwrap();
+        let pieces = BitSet::from_iter([0]);
+        assert!(distributor.peer_has_pieces(addr2, &pieces).is_none());
+
+        // Once piece #0 is downloaded, we're no longer interested in peer 2
+        let not_interesting = distributor.client_has_piece(0);
+        assert_eq!(not_interesting.len(), 1);
+        assert!(not_interesting.contains(&addr2));
     }
 }
