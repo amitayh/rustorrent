@@ -1,3 +1,5 @@
-pub mod decoder;
-pub mod encoder;
-pub mod value;
+mod decoder;
+mod encoder;
+mod value;
+
+pub use value::*;

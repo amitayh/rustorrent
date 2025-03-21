@@ -7,7 +7,7 @@ use tokio_util::io::StreamReader;
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
-use crate::bencoding::value::Value;
+use crate::bencoding::Value;
 use crate::codec::AsyncDecoder;
 use crate::tracker::response::TrackerResponse;
 use crate::{Config, torrent::Torrent};

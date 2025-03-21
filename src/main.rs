@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use bencoding::value::Value;
+use bencoding::Value;
 use log::info;
 use peer::{Peer, PeerEvent};
 use tokio::{fs::File, net::TcpListener};
