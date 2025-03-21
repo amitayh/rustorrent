@@ -7,7 +7,7 @@ use tokio::{fs::File, net::TcpListener};
 use tracker::Event;
 
 use crate::codec::AsyncDecoder;
-use crate::peer::peer_id::PeerId;
+use crate::peer::PeerId;
 use crate::torrent::Torrent;
 
 mod bencoding;
@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener,
         torrent.info,
         path.into(),
-        peer::config::Config::default(),
+        peer::Config::default(),
         false,
     )
     .await;

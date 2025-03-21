@@ -1,12 +1,15 @@
 mod blocks;
 mod choke;
-pub mod config;
+mod config;
 mod connection;
-mod handler;
-pub mod peer_id;
+mod event_loop;
+mod peer_id;
 mod piece;
 mod sizes;
 mod transfer_rate;
+
+pub use config::*;
+pub use peer_id::*;
 
 use std::collections::{HashMap, HashSet};
 use std::io::SeekFrom;
@@ -26,10 +29,8 @@ use crate::message::Block;
 use crate::message::Handshake;
 use crate::message::Message;
 use crate::peer::choke::Choker;
-use crate::peer::config::Config;
 use crate::peer::connection::Command;
 use crate::peer::connection::Connection;
-use crate::peer::peer_id::PeerId;
 use crate::peer::piece::Distributor;
 use crate::peer::piece::{Joiner, Status};
 use crate::peer::sizes::Sizes;

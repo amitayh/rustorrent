@@ -84,7 +84,7 @@ pub async fn request(
 mod tests {
     use crate::{
         crypto::Sha1,
-        peer::peer_id::PeerId,
+        peer::PeerId,
         torrent::{DownloadType, Info},
     };
 

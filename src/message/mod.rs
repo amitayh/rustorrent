@@ -16,7 +16,7 @@ mod tests {
     use bit_set::BitSet;
 
     use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
-    use crate::{crypto::Sha1, peer::peer_id::PeerId};
+    use crate::{crypto::Sha1, peer::PeerId};
 
     use super::*;
 

@@ -29,6 +29,10 @@ impl Distributor {
         }
     }
 
+    pub fn is_available(&self, piece: usize) -> bool {
+        self.has_pieces.contains(piece)
+    }
+
     pub fn client_has_piece(&mut self, piece: usize) {
         self.has_pieces.insert(piece);
     }
