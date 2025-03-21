@@ -11,7 +11,7 @@ mod transfer_rate;
 pub use config::*;
 pub use peer_id::*;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::SeekFrom;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,15 +25,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant, Interval};
 
-use crate::message::Block;
 use crate::message::Handshake;
 use crate::message::Message;
-use crate::peer::choke::Choker;
 use crate::peer::connection::Command;
 use crate::peer::connection::Connection;
-use crate::peer::piece::Distributor;
-use crate::peer::piece::{Joiner, Status};
-use crate::peer::sizes::Sizes;
+use crate::peer::event_loop::EventLoop;
 use crate::peer::transfer_rate::TransferRate;
 use crate::torrent::Info;
 
@@ -43,7 +39,7 @@ pub enum Event {
     Connect,
     Disconnected,
     Message(Message, TransferRate),
-    Uploaded(Block, TransferRate),
+    //Uploaded(Block, TransferRate),
 }
 
 pub struct Peer {
@@ -51,14 +47,10 @@ pub struct Peer {
     torrent_info: Info,
     file_path: PathBuf,
     peers: HashMap<SocketAddr, Sender<Command>>,
-    choker: Choker,
-    distributor: Distributor,
-    joiner: Joiner,
+    event_loop: EventLoop,
     tx: Sender<PeerEvent>,
     rx: Receiver<PeerEvent>,
     handshake: Handshake,
-    has_pieces: BitSet,
-    interested: HashSet<SocketAddr>,
     config: Config,
 }
 
@@ -73,14 +65,12 @@ impl Peer {
         let peer_id = PeerId::random();
         let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
         let total_pieces = torrent_info.pieces.len();
-        let choker = Choker::new(config.optimistic_choking_cycle);
-        let sizes = Sizes::new(
-            torrent_info.piece_length,
-            torrent_info.download_type.length(),
-            config.block_size,
-        );
-        let distributor = Distributor::new(&sizes);
-        let joiner = Joiner::new(&sizes, torrent_info.pieces.clone());
+        let has_pieces = if seeding {
+            BitSet::from_iter(0..total_pieces)
+        } else {
+            BitSet::with_capacity(total_pieces)
+        };
+        let event_loop = EventLoop::new(torrent_info.clone(), config.clone(), has_pieces);
 
         if !seeding {
             let file = OpenOptions::new()
@@ -102,25 +92,13 @@ impl Peer {
             torrent_info,
             file_path,
             peers: HashMap::new(),
-            choker,
-            distributor,
-            joiner,
+            event_loop,
             tx: tx.clone(),
             rx,
             handshake,
-            has_pieces: BitSet::with_capacity(total_pieces),
-            interested: HashSet::new(),
             config,
         };
         (peer, tx)
-    }
-
-    #[allow(dead_code)]
-    fn temp_has_file(&mut self) {
-        for piece in 0..self.torrent_info.pieces.len() {
-            self.has_pieces.insert(piece);
-        }
-        self.distributor.client_has_pieces(&self.has_pieces);
     }
 
     #[allow(dead_code)]
@@ -132,50 +110,61 @@ impl Peer {
         let mut keep_alive = interval_with_delay(self.config.keep_alive_interval);
         let mut choke = interval_with_delay(self.config.choking_interval);
         loop {
-            tokio::select! {
+            let event = tokio::select! {
                 // TODO: disconnect idle peers
-                _ = keep_alive.tick() => {
-                    self.broadcast(Message::KeepAlive).await?;
-                }
-                _ = choke.tick() => {
-                    self.choke().await?;
-                }
+                _ = keep_alive.tick() => event_loop::Event::KeepAliveTick,
+                _ = choke.tick() => event_loop::Event::ChokeTick,
                 Some(PeerEvent(addr, event)) = self.rx.recv() => {
                     match event {
-                        Event::Message(message, transfer_rate) => {
-                            self.choker.update_peer_transfer_rate(addr, transfer_rate);
-                            self.handle_message(addr, message).await?;
+                        Event::Message(message, _transfer_rate) => {
+                            event_loop::Event::Message(addr, message)
                         }
                         Event::Connect => {
                             info!("connecting to {}", addr);
                             match TcpStream::connect(addr).await {
                                 Ok(socket) => self.new_peer(addr, socket, true).await?,
-                                Err(err) => {
-                                    warn!("error connecting to {}: {}", addr, err);
-                                }
+                                Err(err) => warn!("error connecting to {}: {}", addr, err),
                             }
+                            event_loop::Event::Connect(addr)
                         }
-                        Event::Disconnected => {
-                            self.peer_disconnected(&addr);
-                        }
-                        Event::Uploaded(_block, _transfer_rate) => {
-                            //info!("sent block data! {:?}", transfer_rate);
-                        }
+                        Event::Disconnected => event_loop::Event::Disconnect(addr),
                     }
                 }
                 Ok((socket, addr)) = self.listener.accept() => {
                     info!("got new connection from {}", &addr);
                     self.new_peer(addr, socket, false).await?;
+                    event_loop::Event::Connect(addr)
+                }
+            };
+
+            for action in self.event_loop.handle(event).0 {
+                match action {
+                    event_loop::Action::Send(addr, message) => {
+                        let peer = self.peers.get(&addr).expect("invalid peer");
+                        peer.send(Command::Send(message)).await?;
+                    }
+                    event_loop::Action::Broadcast(message) => {
+                        for peer in self.peers.values() {
+                            peer.send(Command::Send(message.clone())).await?;
+                        }
+                    }
+                    event_loop::Action::Upload(addr, block) => {
+                        let peer = self.peers.get(&addr).expect("invalid peer");
+                        peer.send(Command::Upload(block)).await?;
+                    }
+                    event_loop::Action::IntegratePiece { offset, data } => {
+                        // TODO: run this in a blocking task
+                        let mut file = OpenOptions::new()
+                            .write(true)
+                            .truncate(false)
+                            .open(&self.file_path)
+                            .await?;
+                        file.seek(SeekFrom::Start(offset)).await?;
+                        file.write_all(&data).await?;
+                    }
                 }
             }
         }
-    }
-
-    async fn broadcast(&self, message: Message) -> anyhow::Result<()> {
-        for peer in self.peers.values() {
-            peer.send(Command::Send(message.clone())).await?;
-        }
-        Ok(())
     }
 
     async fn new_peer(
@@ -200,10 +189,6 @@ impl Peer {
             connection.wait_for_handshake().await?;
             connection.send(&self.handshake).await?;
         }
-        if !self.has_pieces.is_empty() {
-            let bitfield = Message::Bitfield(self.has_pieces.clone());
-            connection.send(&bitfield).await?;
-        }
         self.peers.insert(addr, rx);
         let tx = self.tx.clone();
         tokio::spawn(async move {
@@ -212,113 +197,6 @@ impl Peer {
             tx.send(PeerEvent(addr, Event::Disconnected)).await?;
             Ok::<(), anyhow::Error>(())
         });
-        Ok(())
-    }
-
-    fn peer_disconnected(&mut self, addr: &SocketAddr) {
-        self.peers.remove(addr);
-        self.choker.peer_disconnected(addr);
-        self.distributor.peer_disconnected(addr);
-    }
-
-    async fn choke(&mut self) -> anyhow::Result<()> {
-        let decision = self.choker.run();
-        for addr in &decision.peers_to_choke {
-            info!("choking {}", addr);
-            let peer = self.peers.get_mut(addr).expect("invalid peer");
-            peer.send(Command::Send(Message::Choke)).await?;
-        }
-        for addr in &decision.peers_to_unchoke {
-            info!("unchoking {}", addr);
-            let peer = self.peers.get_mut(addr).expect("invalid peer");
-            peer.send(Command::Send(Message::Unchoke)).await?;
-        }
-        Ok(())
-    }
-
-    async fn handle_message(&mut self, addr: SocketAddr, message: Message) -> anyhow::Result<()> {
-        match self.peers.get_mut(&addr) {
-            Some(peer_state) => match message {
-                Message::KeepAlive => (), // No-op
-                Message::Choke => self.distributor.peer_choked(addr),
-                Message::Unchoke => {
-                    if let Some(block) = self.distributor.peer_unchoked(addr) {
-                        peer_state
-                            .send(Command::Send(Message::Request(block)))
-                            .await?;
-                    }
-                }
-                Message::Interested => self.choker.peer_interested(addr),
-                Message::NotInterested => self.choker.peer_not_interested(&addr),
-                Message::Have { piece } => {
-                    let mut pieces = BitSet::new();
-                    pieces.insert(piece);
-                    self.peer_has_pieces(addr, pieces).await?;
-                }
-                Message::Bitfield(pieces) => self.peer_has_pieces(addr, pieces).await?,
-                Message::Request(block) => {
-                    if !self.choker.is_unchoked(&addr) {
-                        warn!(
-                            "peer {} requested block {:?} while being choked",
-                            addr, block
-                        );
-                        return Ok(());
-                    }
-                    if !self.has_pieces.contains(block.piece) {
-                        warn!(
-                            "peer {} requested piece {} which is not available",
-                            addr, block.piece
-                        );
-                        return Ok(());
-                    }
-                    peer_state.send(Command::Upload(block)).await?;
-                }
-                Message::Piece {
-                    piece,
-                    offset,
-                    data,
-                } => {
-                    // TODO: verify block was in flight
-                    let block = Block::new(piece, offset, data.len());
-                    if let Some(block) = self.distributor.block_downloaded(&addr, &block) {
-                        peer_state
-                            .send(Command::Send(Message::Request(block)))
-                            .await?;
-                    }
-                    match self.joiner.add(piece, offset, data) {
-                        Status::Incomplete => (),
-                        Status::Invalid => self.distributor.invalidate(piece),
-                        Status::Complete { offset, data } => {
-                            let mut file = OpenOptions::new()
-                                .write(true)
-                                .truncate(false)
-                                .open(&self.file_path)
-                                .await?;
-                            file.seek(SeekFrom::Start(offset)).await?;
-                            file.write_all(&data).await?;
-                            self.has_pieces.insert(piece);
-                            self.distributor.client_has_piece(piece);
-                            self.broadcast(Message::Have { piece }).await?;
-                        }
-                    }
-                }
-                Message::Cancel(_) | Message::Port(_) => todo!(),
-            },
-            None => panic!("invalid peer"),
-        }
-        Ok(())
-    }
-
-    async fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: BitSet) -> anyhow::Result<()> {
-        let peer = self.peers.get_mut(&addr).expect("invalid peer");
-        let want = pieces.difference(&self.has_pieces);
-        if !self.interested.contains(&addr) && want.count() > 0 {
-            peer.send(Command::Send(Message::Interested)).await?;
-            self.interested.insert(addr);
-        }
-        if let Some(block) = self.distributor.peer_has_pieces(addr, &pieces) {
-            peer.send(Command::Send(Message::Request(block))).await?;
-        }
         Ok(())
     }
 }
@@ -350,7 +228,7 @@ mod tests {
                 .with_keep_alive_interval(Duration::from_secs(5))
                 .with_unchoking_interval(Duration::from_secs(1))
                 .with_optimistic_unchoking_cycle(2);
-            let (mut peer, _) = Peer::new(
+            let (peer, _) = Peer::new(
                 listener,
                 torrent_info.clone(),
                 file_path.into(),
@@ -358,7 +236,6 @@ mod tests {
                 true,
             )
             .await;
-            peer.temp_has_file();
             peer
         };
         let seeder_addr = seeder.address().unwrap();

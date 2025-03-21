@@ -51,7 +51,8 @@ impl Choker {
     }
 
     pub fn run(&mut self) -> ChokeDecision {
-        let mut peers_to_choke = self.unchoked_peers.clone();
+        // TODO: test take
+        let mut peers_to_choke = std::mem::take(&mut self.unchoked_peers);
         let mut peers_to_unchoke = HashSet::with_capacity(TOP_PEERS + 1);
         for peer in self.top_peers_by_transfer_rate() {
             self.unchoked_peers.insert(peer);

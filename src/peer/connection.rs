@@ -72,18 +72,18 @@ impl Connection {
                         let offset = block.global_offset(self.piece_size.bytes() as usize);
                         file.seek(SeekFrom::Start(offset as u64)).await?;
                         file.read_exact(&mut data).await?;
-                        let transfer_begin = Instant::now();
+                        //let transfer_begin = Instant::now();
                         let message = Message::Piece {
                             piece: block.piece,
                             offset: block.offset,
                             data,
                         };
                         self.send(&message).await?;
-                        let duration = Instant::now() - transfer_begin;
-                        let size = Size::from_bytes(message.transport_bytes());
-                        let transfer_rate = TransferRate(size, duration);
-                        self.tx.send(PeerEvent(
-                            self.addr, Event::Uploaded(block, transfer_rate))).await?;
+                        //let duration = Instant::now() - transfer_begin;
+                        //let size = Size::from_bytes(message.transport_bytes());
+                        //let transfer_rate = TransferRate(size, duration);
+                        //self.tx.send(PeerEvent(
+                        //    self.addr, Event::Uploaded(block, transfer_rate))).await?;
                     }
                 },
                 // TODO: measure download speed

@@ -16,7 +16,7 @@ use crate::peer::{
 };
 use crate::torrent::Info;
 
-struct EventLoop {
+pub struct EventLoop {
     choker: Choker,
     distributor: Distributor,
     joiner: Joiner,
@@ -24,38 +24,51 @@ struct EventLoop {
 }
 
 impl EventLoop {
-    fn new(torrent_info: Info, config: Config) -> Self {
+    pub fn new(torrent_info: Info, config: Config, has_pieces: BitSet) -> Self {
         let sizes = Sizes::new(
             torrent_info.piece_length,
             torrent_info.download_type.length(),
             config.block_size,
         );
+        let mut distributor = Distributor::new(&sizes);
+        distributor.client_has_pieces(&has_pieces);
         Self {
             choker: Choker::new(config.optimistic_choking_cycle),
-            distributor: Distributor::new(&sizes),
+            distributor,
             joiner: Joiner::new(&sizes, torrent_info.pieces.clone()),
             am_interested: HashSet::new(),
         }
     }
 
-    fn keep_alive(&self) -> Actions {
-        Action::Broadcast(Message::KeepAlive).into()
+    pub fn handle(&mut self, event: Event) -> Actions {
+        match event {
+            Event::KeepAliveTick => Action::Broadcast(Message::KeepAlive).into(),
+            Event::ChokeTick => {
+                let decision = self.choker.run();
+                let choke = decision
+                    .peers_to_choke
+                    .into_iter()
+                    .map(|addr| Action::Send(addr, Message::Choke));
+                let unchoke = decision
+                    .peers_to_unchoke
+                    .into_iter()
+                    .map(|addr| Action::Send(addr, Message::Unchoke));
+                Actions(choke.chain(unchoke).collect())
+            }
+            Event::Message(addr, message) => self.handle_message(addr, message),
+            Event::Connect(addr) => {
+                let pieces = self.distributor.has_pieces.clone();
+                Action::Send(addr, Message::Bitfield(pieces)).into()
+            }
+            Event::Disconnect(addr) => {
+                self.choker.peer_disconnected(&addr);
+                self.distributor.peer_disconnected(&addr);
+                Actions::none()
+            }
+        }
     }
 
-    fn run_chokig_algorithm(&mut self) -> Actions {
-        let decision = self.choker.run();
-        let choke = decision
-            .peers_to_choke
-            .into_iter()
-            .map(|addr| Action::Send(addr, Message::Choke));
-        let unchoke = decision
-            .peers_to_unchoke
-            .into_iter()
-            .map(|addr| Action::Send(addr, Message::Unchoke));
-        Actions(choke.chain(unchoke).collect())
-    }
-
-    fn handle(&mut self, addr: SocketAddr, message: Message) -> Actions {
+    fn handle_message(&mut self, addr: SocketAddr, message: Message) -> Actions {
         match message {
             Message::KeepAlive => Actions::none(),
 
@@ -81,7 +94,7 @@ impl EventLoop {
 
             Message::Have { piece } => {
                 let pieces = BitSet::from_iter([piece]);
-                self.handle(addr, Message::Bitfield(pieces))
+                self.handle_message(addr, Message::Bitfield(pieces))
             }
 
             Message::Bitfield(pieces) => {
@@ -147,29 +160,27 @@ impl EventLoop {
             }
         }
     }
-
-    fn connect(&self, addr: SocketAddr) -> Actions {
-        let pieces = BitSet::new();
-        Action::Send(addr, Message::Bitfield(pieces)).into()
-    }
-
-    fn disconnect(&mut self, addr: &SocketAddr) -> Actions {
-        self.choker.peer_disconnected(addr);
-        self.distributor.peer_disconnected(addr);
-        Actions::none()
-    }
 }
 
 #[derive(Debug, PartialEq)]
-enum Action {
-    Broadcast(Message),
+pub enum Event {
+    KeepAliveTick,
+    ChokeTick,
+    Message(SocketAddr, Message),
+    Connect(SocketAddr),
+    Disconnect(SocketAddr),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Action {
     Send(SocketAddr, Message),
+    Broadcast(Message),
     Upload(SocketAddr, Block),
     IntegratePiece { offset: u64, data: Vec<u8> },
 }
 
 #[derive(Debug, PartialEq)]
-struct Actions(Vec<Action>);
+pub struct Actions(pub Vec<Action>);
 
 impl Actions {
     fn none() -> Self {
@@ -197,10 +208,10 @@ mod tests {
 
     #[test]
     fn keep_alive() {
-        let event_loop = create_event_loop();
+        let mut event_loop = create_event_loop();
 
         assert_eq!(
-            event_loop.keep_alive(),
+            event_loop.handle(Event::KeepAliveTick),
             Actions(vec![Action::Broadcast(Message::KeepAlive)])
         );
     }
@@ -213,24 +224,27 @@ mod tests {
 
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        run(&mut event_loop, addr, Message::Have { piece: 0 });
-        run(&mut event_loop, addr, Message::Unchoke);
         run(
             &mut event_loop,
-            addr,
-            Message::Piece {
-                piece: 0,
-                offset: 0,
-                data: vec![0; 16384],
-            },
+            Event::Message(addr, Message::Have { piece: 0 }),
         );
-        dbg!(event_loop.run_chokig_algorithm());
+        run(&mut event_loop, Event::Message(addr, Message::Unchoke));
+        run(
+            &mut event_loop,
+            Event::Message(
+                addr,
+                Message::Piece {
+                    piece: 0,
+                    offset: 0,
+                    data: vec![0; 16384],
+                },
+            ),
+        );
     }
 
-    fn run(event_loop: &mut EventLoop, addr: SocketAddr, message: Message) {
-        info!("<<< {:?}", &message);
-        let actions = event_loop.handle(addr, Message::Have { piece: 0 });
-        info!(">>> {:?}", actions);
+    fn run(event_loop: &mut EventLoop, event: Event) {
+        info!("<<< {:?}", &event);
+        info!(">>> {:?}", event_loop.handle(event));
     }
 
     fn create_event_loop() -> EventLoop {
@@ -252,6 +266,6 @@ mod tests {
             },
         };
 
-        EventLoop::new(torrent, Config::default())
+        EventLoop::new(torrent, Config::default(), BitSet::new())
     }
 }

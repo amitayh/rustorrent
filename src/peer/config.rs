@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use size::Size;
 
+#[derive(Clone)]
 pub struct Config {
     pub keep_alive_interval: Duration,
     pub choking_interval: Duration,

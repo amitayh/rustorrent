@@ -9,7 +9,7 @@ use crate::peer::blocks::Blocks;
 use crate::peer::sizes::Sizes;
 
 pub struct Distributor {
-    has_pieces: BitSet,
+    pub has_pieces: BitSet,
     peers: HashMap<SocketAddr, PeerState>,
     pieces: Vec<PieceState>,
 }
@@ -38,12 +38,8 @@ impl Distributor {
         self.peers
             .iter()
             .filter_map(|(addr, peer)| {
-                let remaining = self.has_pieces.difference(&peer.has_pieces);
-                if remaining.count() == 0 {
-                    Some(*addr)
-                } else {
-                    None
-                }
+                let remaining = peer.has_pieces.difference(&self.has_pieces).count();
+                if remaining == 0 { Some(*addr) } else { None }
             })
             .collect()
     }
