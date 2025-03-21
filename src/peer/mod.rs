@@ -62,11 +62,12 @@ pub struct Peer {
 }
 
 impl Peer {
-    pub fn new(
+    pub async fn new(
         listener: TcpListener,
         torrent_info: Info,
         file_path: PathBuf,
         config: Config,
+        seeding: bool,
     ) -> (Self, Sender<PeerEvent>) {
         let peer_id = PeerId::random();
         let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
@@ -79,6 +80,20 @@ impl Peer {
         );
         let distributor = Distributor::new(&sizes);
         let joiner = Joiner::new(&sizes, torrent_info.pieces.clone());
+
+        if !seeding {
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&file_path)
+                .await
+                .unwrap();
+
+            file.set_len(torrent_info.download_type.length().bytes() as u64)
+                .await
+                .unwrap();
+        }
 
         let (tx, rx) = mpsc::channel(128);
         let peer = Self {
@@ -274,9 +289,8 @@ impl Peer {
                         Status::Invalid => self.distributor.invalidate(piece),
                         Status::Valid { offset, data } => {
                             let mut file = OpenOptions::new()
-                                .create(true)
                                 .write(true)
-                                .truncate(true)
+                                .truncate(false)
                                 .open(&self.file_path)
                                 .await?;
                             file.seek(SeekFrom::Start(offset)).await?;
@@ -335,14 +349,28 @@ mod tests {
                 .with_keep_alive_interval(Duration::from_secs(5))
                 .with_unchoking_interval(Duration::from_secs(1))
                 .with_optimistic_unchoking_cycle(2);
-            let (mut peer, _) = Peer::new(listener, torrent_info.clone(), file_path.into(), config);
+            let (mut peer, _) = Peer::new(
+                listener,
+                torrent_info.clone(),
+                file_path.into(),
+                config,
+                true,
+            )
+            .await;
             peer.temp_has_file();
             peer
         };
         let seeder_addr = seeder.address().unwrap();
         let (mut leecher, leecher_tx) = {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            Peer::new(listener, torrent_info, "/tmp/foo".into(), Config::default())
+            Peer::new(
+                listener,
+                torrent_info,
+                "/tmp/foo".into(),
+                Config::default(),
+                false,
+            )
+            .await
         };
 
         let mut set = JoinSet::new();

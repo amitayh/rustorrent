@@ -73,7 +73,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         torrent.info,
         path.into(),
         peer::config::Config::default(),
-    );
+        false,
+    )
+    .await;
 
     let len = response.peers.len();
     for (i, peer_info) in response.peers.into_iter().enumerate() {
