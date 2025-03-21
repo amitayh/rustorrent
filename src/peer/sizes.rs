@@ -1,5 +1,6 @@
 use size::Size;
 
+#[derive(Debug, Clone)]
 pub struct Sizes {
     pub piece_size: Size,
     pub total_size: Size,

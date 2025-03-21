@@ -2,7 +2,7 @@ mod blocks;
 mod choke;
 mod config;
 mod connection;
-mod event_loop;
+mod event_handler;
 mod peer_id;
 mod piece;
 mod sizes;
@@ -29,7 +29,7 @@ use crate::message::Handshake;
 use crate::message::Message;
 use crate::peer::connection::Command;
 use crate::peer::connection::Connection;
-use crate::peer::event_loop::EventLoop;
+use crate::peer::event_handler::EventHandler;
 use crate::peer::transfer_rate::TransferRate;
 use crate::torrent::Info;
 
@@ -47,7 +47,7 @@ pub struct Peer {
     torrent_info: Info,
     file_path: PathBuf,
     peers: HashMap<SocketAddr, Sender<Command>>,
-    event_loop: EventLoop,
+    event_handler: EventHandler,
     tx: Sender<PeerEvent>,
     rx: Receiver<PeerEvent>,
     handshake: Handshake,
@@ -70,7 +70,7 @@ impl Peer {
         } else {
             BitSet::with_capacity(total_pieces)
         };
-        let event_loop = EventLoop::new(torrent_info.clone(), config.clone(), has_pieces);
+        let event_handler = EventHandler::new(torrent_info.clone(), config.clone(), has_pieces);
 
         if !seeding {
             let file = OpenOptions::new()
@@ -92,7 +92,7 @@ impl Peer {
             torrent_info,
             file_path,
             peers: HashMap::new(),
-            event_loop,
+            event_handler,
             tx: tx.clone(),
             rx,
             handshake,
@@ -112,12 +112,12 @@ impl Peer {
         loop {
             let event = tokio::select! {
                 // TODO: disconnect idle peers
-                _ = keep_alive.tick() => event_loop::Event::KeepAliveTick,
-                _ = choke.tick() => event_loop::Event::ChokeTick,
+                _ = keep_alive.tick() => event_handler::Event::KeepAliveTick,
+                _ = choke.tick() => event_handler::Event::ChokeTick,
                 Some(PeerEvent(addr, event)) = self.rx.recv() => {
                     match event {
                         Event::Message(message, _transfer_rate) => {
-                            event_loop::Event::Message(addr, message)
+                            event_handler::Event::Message(addr, message)
                         }
                         Event::Connect => {
                             info!("connecting to {}", addr);
@@ -125,34 +125,34 @@ impl Peer {
                                 Ok(socket) => self.new_peer(addr, socket, true).await?,
                                 Err(err) => warn!("error connecting to {}: {}", addr, err),
                             }
-                            event_loop::Event::Connect(addr)
+                            event_handler::Event::Connect(addr)
                         }
-                        Event::Disconnected => event_loop::Event::Disconnect(addr),
+                        Event::Disconnected => event_handler::Event::Disconnect(addr),
                     }
                 }
                 Ok((socket, addr)) = self.listener.accept() => {
                     info!("got new connection from {}", &addr);
                     self.new_peer(addr, socket, false).await?;
-                    event_loop::Event::Connect(addr)
+                    event_handler::Event::Connect(addr)
                 }
             };
 
-            for action in self.event_loop.handle(event).0 {
+            for action in self.event_handler.handle(event) {
                 match action {
-                    event_loop::Action::Send(addr, message) => {
+                    event_handler::Action::Send(addr, message) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
                         peer.send(Command::Send(message)).await?;
                     }
-                    event_loop::Action::Broadcast(message) => {
+                    event_handler::Action::Broadcast(message) => {
                         for peer in self.peers.values() {
                             peer.send(Command::Send(message.clone())).await?;
                         }
                     }
-                    event_loop::Action::Upload(addr, block) => {
+                    event_handler::Action::Upload(addr, block) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
                         peer.send(Command::Upload(block)).await?;
                     }
-                    event_loop::Action::IntegratePiece { offset, data } => {
+                    event_handler::Action::IntegratePiece { offset, data } => {
                         // TODO: run this in a blocking task
                         let mut file = OpenOptions::new()
                             .write(true)

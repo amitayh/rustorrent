@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{collections::HashSet, net::SocketAddr};
 
 use bit_set::BitSet;
@@ -16,22 +14,21 @@ use crate::peer::{
 };
 use crate::torrent::Info;
 
-pub struct EventLoop {
+pub struct EventHandler {
     choker: Choker,
     distributor: Distributor,
     joiner: Joiner,
     am_interested: HashSet<SocketAddr>,
 }
 
-impl EventLoop {
+impl EventHandler {
     pub fn new(torrent_info: Info, config: Config, has_pieces: BitSet) -> Self {
         let sizes = Sizes::new(
             torrent_info.piece_length,
             torrent_info.download_type.length(),
             config.block_size,
         );
-        let mut distributor = Distributor::new(&sizes);
-        distributor.client_has_pieces(&has_pieces);
+        let distributor = Distributor::new(sizes.clone(), has_pieces);
         Self {
             choker: Choker::new(config.optimistic_choking_cycle),
             distributor,
@@ -40,9 +37,9 @@ impl EventLoop {
         }
     }
 
-    pub fn handle(&mut self, event: Event) -> Actions {
+    pub fn handle(&mut self, event: Event) -> Vec<Action> {
         match event {
-            Event::KeepAliveTick => Action::Broadcast(Message::KeepAlive).into(),
+            Event::KeepAliveTick => vec![Action::Broadcast(Message::KeepAlive)],
             Event::ChokeTick => {
                 let decision = self.choker.run();
                 let choke = decision
@@ -53,43 +50,43 @@ impl EventLoop {
                     .peers_to_unchoke
                     .into_iter()
                     .map(|addr| Action::Send(addr, Message::Unchoke));
-                Actions(choke.chain(unchoke).collect())
+                choke.chain(unchoke).collect()
             }
             Event::Message(addr, message) => self.handle_message(addr, message),
             Event::Connect(addr) => {
                 let pieces = self.distributor.has_pieces.clone();
-                Action::Send(addr, Message::Bitfield(pieces)).into()
+                vec![Action::Send(addr, Message::Bitfield(pieces))]
             }
             Event::Disconnect(addr) => {
                 self.choker.peer_disconnected(&addr);
                 self.distributor.peer_disconnected(&addr);
-                Actions::none()
+                Vec::new()
             }
         }
     }
 
-    fn handle_message(&mut self, addr: SocketAddr, message: Message) -> Actions {
+    fn handle_message(&mut self, addr: SocketAddr, message: Message) -> Vec<Action> {
         match message {
-            Message::KeepAlive => Actions::none(),
+            Message::KeepAlive => Vec::new(),
 
             Message::Choke => {
                 self.distributor.peer_choked(addr);
-                Actions::none()
+                Vec::new()
             }
 
             Message::Unchoke => match self.distributor.peer_unchoked(addr) {
-                Some(block) => Action::Send(addr, Message::Request(block)).into(),
-                None => Actions::none(),
+                Some(block) => vec![Action::Send(addr, Message::Request(block))],
+                None => Vec::new(),
             },
 
             Message::Interested => {
                 self.choker.peer_interested(addr);
-                Actions::none()
+                Vec::new()
             }
 
             Message::NotInterested => {
                 self.choker.peer_not_interested(&addr);
-                Actions::none()
+                Vec::new()
             }
 
             Message::Have { piece } => {
@@ -106,19 +103,19 @@ impl EventLoop {
                 if let Some(block) = self.distributor.peer_has_pieces(addr, &pieces) {
                     actions.push(Action::Send(addr, Message::Request(block)));
                 }
-                Actions(actions)
+                actions
             }
 
             Message::Request(block) => {
                 if !self.choker.is_unchoked(&addr) {
                     warn!("{} requested block while being choked", addr);
-                    return Actions::none();
+                    return Vec::new();
                 }
                 if !self.distributor.is_available(block.piece) {
                     warn!("{} requested block which is not available", addr);
-                    return Actions::none();
+                    return Vec::new();
                 }
-                Action::Upload(addr, block).into()
+                vec![Action::Upload(addr, block)]
             }
 
             Message::Piece {
@@ -126,8 +123,13 @@ impl EventLoop {
                 offset: block_offset,
                 data: block_data,
             } => {
-                let mut actions = Vec::new();
+                // TODO: verify block was requested
                 let block = Block::new(piece, block_offset, block_data.len());
+                if !self.distributor.block_in_flight(&addr, &block) {
+                    warn!("{} sent block {:?} which was not requested", &addr, &block);
+                    return Vec::new();
+                }
+                let mut actions = Vec::new();
                 if let Some(next_block) = self.distributor.block_downloaded(&addr, &block) {
                     actions.push(Action::Send(addr, Message::Request(next_block)));
                 }
@@ -136,6 +138,7 @@ impl EventLoop {
                     Status::Invalid => {
                         warn!("piece {} sha1 mismatch", piece);
                         self.distributor.invalidate(piece);
+                        return Vec::new();
                     }
                     Status::Complete {
                         offset: piece_offset,
@@ -151,12 +154,12 @@ impl EventLoop {
                         });
                     }
                 }
-                Actions(actions)
+                actions
             }
 
             _ => {
                 warn!("unhandled message: {:?}", message);
-                Actions::none()
+                Vec::new()
             }
         }
     }
@@ -179,21 +182,6 @@ pub enum Action {
     IntegratePiece { offset: u64, data: Vec<u8> },
 }
 
-#[derive(Debug, PartialEq)]
-pub struct Actions(pub Vec<Action>);
-
-impl Actions {
-    fn none() -> Self {
-        Self(vec![])
-    }
-}
-
-impl From<Action> for Actions {
-    fn from(action: Action) -> Self {
-        Self(vec![action])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use log::info;
@@ -208,11 +196,11 @@ mod tests {
 
     #[test]
     fn keep_alive() {
-        let mut event_loop = create_event_loop();
+        let mut event_handler = create_event_handler();
 
         assert_eq!(
-            event_loop.handle(Event::KeepAliveTick),
-            Actions(vec![Action::Broadcast(Message::KeepAlive)])
+            event_handler.handle(Event::KeepAliveTick),
+            vec![Action::Broadcast(Message::KeepAlive)]
         );
     }
 
@@ -220,34 +208,53 @@ mod tests {
     fn sequence() {
         env_logger::init();
 
-        let mut event_loop = create_event_loop();
+        let mut event_handler = create_event_handler();
 
         let addr = "127.0.0.1:6881".parse().unwrap();
 
         run(
-            &mut event_loop,
-            Event::Message(addr, Message::Have { piece: 0 }),
-        );
-        run(&mut event_loop, Event::Message(addr, Message::Unchoke));
-        run(
-            &mut event_loop,
-            Event::Message(
-                addr,
-                Message::Piece {
-                    piece: 0,
-                    offset: 0,
-                    data: vec![0; 16384],
-                },
-            ),
+            &mut event_handler,
+            vec![
+                Event::Message(addr, Message::Have { piece: 0 }),
+                Event::Message(addr, Message::Unchoke),
+                Event::Message(
+                    addr,
+                    Message::Piece {
+                        piece: 0,
+                        offset: 0,
+                        data: vec![0; 16384],
+                    },
+                ),
+                Event::Message(
+                    addr,
+                    Message::Piece {
+                        piece: 0,
+                        offset: 0,
+                        data: vec![0; 16384],
+                    },
+                ),
+                Event::Message(
+                    addr,
+                    Message::Piece {
+                        piece: 0,
+                        offset: 16384,
+                        data: vec![0; 16384],
+                    },
+                ),
+            ],
         );
     }
 
-    fn run(event_loop: &mut EventLoop, event: Event) {
-        info!("<<< {:?}", &event);
-        info!(">>> {:?}", event_loop.handle(event));
+    fn run(event_handler: &mut EventHandler, events: Vec<Event>) {
+        for event in events {
+            info!(target: "<<<", "{:?}", &event);
+            for action in event_handler.handle(event) {
+                info!(target: ">>>", "{:?}", &action);
+            }
+        }
     }
 
-    fn create_event_loop() -> EventLoop {
+    fn create_event_handler() -> EventHandler {
         let torrent = Info {
             info_hash: Sha1::from_hex("e90cf5ec83e174d7dcb94821560dac201ae1f663").unwrap(),
             piece_length: Size::from_kibibytes(32),
@@ -266,6 +273,6 @@ mod tests {
             },
         };
 
-        EventLoop::new(torrent, Config::default(), BitSet::new())
+        EventHandler::new(torrent, Config::default(), BitSet::new())
     }
 }
