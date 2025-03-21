@@ -7,11 +7,14 @@ use log::warn;
 
 use crate::message::{Block, Message};
 
+use crate::peer::Config;
 use crate::peer::piece::Status;
+use crate::peer::sizes::Sizes;
 use crate::peer::{
     choke::Choker,
     piece::{Distributor, Joiner},
 };
+use crate::torrent::Info;
 
 struct EventLoop {
     choker: Choker,
@@ -21,8 +24,22 @@ struct EventLoop {
 }
 
 impl EventLoop {
-    fn keep_alive(&self) -> Action {
-        Action::Broadcast(Message::KeepAlive)
+    fn new(torrent_info: Info, config: Config) -> Self {
+        let sizes = Sizes::new(
+            torrent_info.piece_length,
+            torrent_info.download_type.length(),
+            config.block_size,
+        );
+        Self {
+            choker: Choker::new(config.optimistic_choking_cycle),
+            distributor: Distributor::new(&sizes),
+            joiner: Joiner::new(&sizes, torrent_info.pieces.clone()),
+            am_interested: HashSet::new(),
+        }
+    }
+
+    fn keep_alive(&self) -> Actions {
+        Action::Broadcast(Message::KeepAlive).into()
     }
 
     fn run_chokig_algorithm(&mut self) -> Actions {
@@ -41,26 +58,32 @@ impl EventLoop {
     fn handle(&mut self, addr: SocketAddr, message: Message) -> Actions {
         match message {
             Message::KeepAlive => Actions::none(),
+
             Message::Choke => {
                 self.distributor.peer_choked(addr);
                 Actions::none()
             }
+
             Message::Unchoke => match self.distributor.peer_unchoked(addr) {
                 Some(block) => Action::Send(addr, Message::Request(block)).into(),
                 None => Actions::none(),
             },
+
             Message::Interested => {
                 self.choker.peer_interested(addr);
                 Actions::none()
             }
+
             Message::NotInterested => {
                 self.choker.peer_not_interested(&addr);
                 Actions::none()
             }
+
             Message::Have { piece } => {
                 let pieces = BitSet::from_iter([piece]);
                 self.handle(addr, Message::Bitfield(pieces))
             }
+
             Message::Bitfield(pieces) => {
                 let mut actions = Vec::new();
                 if self.am_interested.insert(addr) {
@@ -72,6 +95,7 @@ impl EventLoop {
                 }
                 Actions(actions)
             }
+
             Message::Request(block) => {
                 if !self.choker.is_unchoked(&addr) {
                     warn!("{} requested block while being choked", addr);
@@ -83,6 +107,7 @@ impl EventLoop {
                 }
                 Action::Upload(addr, block).into()
             }
+
             Message::Piece {
                 piece,
                 offset: block_offset,
@@ -110,6 +135,7 @@ impl EventLoop {
                 }
                 Actions(actions)
             }
+
             _ => {
                 warn!("unhandled message: {:?}", message);
                 Actions::none()
@@ -129,6 +155,7 @@ impl EventLoop {
     }
 }
 
+#[derive(Debug, PartialEq)]
 enum Action {
     Broadcast(Message),
     Send(SocketAddr, Message),
@@ -136,6 +163,7 @@ enum Action {
     IntegratePiece { offset: u64, data: Vec<u8> },
 }
 
+#[derive(Debug, PartialEq)]
 struct Actions(Vec<Action>);
 
 impl Actions {
@@ -147,5 +175,49 @@ impl Actions {
 impl From<Action> for Actions {
     fn from(action: Action) -> Self {
         Self(vec![action])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use size::Size;
+
+    use crate::{
+        crypto::{Md5, Sha1},
+        torrent::DownloadType,
+    };
+
+    use super::*;
+
+    #[test]
+    fn keep_alive() {
+        let event_loop = create_event_loop();
+
+        assert_eq!(
+            event_loop.keep_alive(),
+            Actions(vec![Action::Broadcast(Message::KeepAlive)])
+        );
+    }
+
+    fn create_event_loop() -> EventLoop {
+        let torrent = Info {
+            info_hash: Sha1::from_hex("e90cf5ec83e174d7dcb94821560dac201ae1f663").unwrap(),
+            piece_length: Size::from_kibibytes(32),
+            pieces: vec![
+                Sha1::from_hex("8fdfb566405fc084761b1fe0b6b7f8c6a37234ed").unwrap(),
+                Sha1::from_hex("2494039151d7db3e56b3ec021d233742e3de55a6").unwrap(),
+                Sha1::from_hex("af99be061f2c5eee12374055cf1a81909d276db5").unwrap(),
+                Sha1::from_hex("3c12e1fcba504fedc13ee17ea76b62901dc8c9f7").unwrap(),
+                Sha1::from_hex("d5facb89cbdc2e3ed1a1cd1050e217ec534f1fad").unwrap(),
+                Sha1::from_hex("d5d2b296f52ab11791aad35a7d493833d39c6786").unwrap(),
+            ],
+            download_type: DownloadType::SingleFile {
+                name: "alice_in_wonderland.txt".to_string(),
+                length: Size::from_bytes(174357),
+                md5sum: Some(Md5::from_hex("9a930de3cfc64468c05715237a6b4061").unwrap()),
+            },
+        };
+
+        EventLoop::new(torrent, Config::default())
     }
 }
