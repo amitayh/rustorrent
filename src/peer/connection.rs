@@ -15,15 +15,15 @@ use tokio::time::Instant;
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
 use crate::message::Block;
 use crate::message::{Handshake, Message};
+use crate::peer::Event;
 use crate::peer::transfer_rate::TransferRate;
-use crate::peer::{Event, PeerEvent};
 
 pub struct Connection {
     addr: SocketAddr,
     socket: TcpStream,
     file_path: PathBuf,
     piece_size: Size,
-    tx: Sender<PeerEvent>,
+    tx: Sender<Event>,
     rx: Receiver<Command>,
 }
 
@@ -33,7 +33,7 @@ impl Connection {
         socket: TcpStream,
         file_path: PathBuf,
         piece_size: Size,
-        tx: Sender<PeerEvent>,
+        tx: Sender<Event>,
         rx: Receiver<Command>,
     ) -> Self {
         Self {
@@ -62,6 +62,9 @@ impl Connection {
         loop {
             tokio::select! {
                 Some(command) = self.rx.recv() => match command {
+                    Command::Handshake => {
+                        //
+                    }
                     Command::Send(message) => {
                         // TODO: measure upload speed
                         self.send(&message).await?;
@@ -91,8 +94,7 @@ impl Connection {
                     match message {
                         Ok((message, transfer_rate)) => {
                             info!("< got message: {:?} ({})", &message, &transfer_rate);
-                            self.tx.send(PeerEvent(
-                                self.addr, Event::Message(message, transfer_rate))).await?;
+                            self.tx.send(Event::Message(self.addr, message)).await?;
                         }
                         Err(err) => {
                             warn!("failed to decode message: {}", err);
@@ -120,4 +122,5 @@ async fn decode_message(socket: &mut TcpStream) -> std::io::Result<(Message, Tra
 pub enum Command {
     Send(Message),
     Upload(Block),
+    Handshake,
 }

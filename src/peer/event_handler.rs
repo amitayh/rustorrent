@@ -3,9 +3,10 @@ use std::{collections::HashSet, net::SocketAddr};
 use bit_set::BitSet;
 use log::warn;
 
-use crate::message::{Block, Message};
+use crate::message::{Block, Handshake, Message};
 
 use crate::peer::Config;
+use crate::peer::event::Event;
 use crate::peer::piece::Status;
 use crate::peer::sizes::Sizes;
 use crate::peer::{
@@ -55,7 +56,18 @@ impl EventHandler {
             Event::Message(addr, message) => self.handle_message(addr, message),
             Event::Connect(addr) => {
                 let pieces = self.distributor.has_pieces.clone();
-                vec![Action::Send(addr, Message::Bitfield(pieces))]
+                vec![
+                    Action::Connect(addr),
+                    Action::Handshake(addr, HandshakeOrder::ClientToPeer),
+                    Action::Send(addr, Message::Bitfield(pieces)),
+                ]
+            }
+            Event::AcceptConnection(addr) => {
+                let pieces = self.distributor.has_pieces.clone();
+                vec![
+                    Action::Handshake(addr, HandshakeOrder::PeerToClient),
+                    Action::Send(addr, Message::Bitfield(pieces)),
+                ]
             }
             Event::Disconnect(addr) => {
                 self.choker.peer_disconnected(&addr);
@@ -146,6 +158,7 @@ impl EventHandler {
                     } => {
                         actions.push(Action::Broadcast(Message::Have { piece }));
                         for not_interesting in self.distributor.client_has_piece(piece) {
+                            self.am_interested.remove(&addr);
                             actions.push(Action::Send(not_interesting, Message::NotInterested));
                         }
                         actions.push(Action::IntegratePiece {
@@ -166,20 +179,19 @@ impl EventHandler {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum Event {
-    KeepAliveTick,
-    ChokeTick,
-    Message(SocketAddr, Message),
-    Connect(SocketAddr),
-    Disconnect(SocketAddr),
-}
-
-#[derive(Debug, PartialEq)]
 pub enum Action {
+    Connect(SocketAddr),
+    Handshake(SocketAddr, HandshakeOrder),
     Send(SocketAddr, Message),
     Broadcast(Message),
     Upload(SocketAddr, Block),
     IntegratePiece { offset: u64, data: Vec<u8> },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum HandshakeOrder {
+    ClientToPeer,
+    PeerToClient,
 }
 
 #[cfg(test)]

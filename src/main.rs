@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use bencoding::Value;
 use log::info;
-use peer::{Peer, PeerEvent};
+use peer::Peer;
 use tokio::{fs::File, net::TcpListener};
 use tracker::Event;
 
@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (i, peer_info) in response.peers.into_iter().enumerate() {
         let addr = peer_info.address;
         info!("connecting to peer {}/{}: {}...", i + 1, len, addr);
-        tx.send(PeerEvent(addr, peer::Event::Connect)).await?;
+        tx.send(peer::Event::Connect(addr)).await?;
     }
     client.start().await?;
 

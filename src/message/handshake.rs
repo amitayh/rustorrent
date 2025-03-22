@@ -8,7 +8,7 @@ use crate::peer::PeerId;
 
 const PROTOCOL: &str = "BitTorrent protocol";
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Handshake {
     pub protocol: String,
     pub info_hash: Sha1,

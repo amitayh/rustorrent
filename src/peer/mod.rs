@@ -2,6 +2,7 @@ mod blocks;
 mod choke;
 mod config;
 mod connection;
+mod event;
 mod event_handler;
 mod peer_id;
 mod piece;
@@ -9,6 +10,7 @@ mod sizes;
 mod transfer_rate;
 
 pub use config::*;
+use event_handler::HandshakeOrder;
 pub use peer_id::*;
 
 use std::collections::HashMap;
@@ -18,7 +20,7 @@ use std::time::Duration;
 use std::{io::Result, net::SocketAddr};
 
 use bit_set::BitSet;
-use log::{info, warn};
+use log::info;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -26,21 +28,12 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time::{self, Instant, Interval};
 
 use crate::message::Handshake;
-use crate::message::Message;
 use crate::peer::connection::Command;
 use crate::peer::connection::Connection;
+pub use crate::peer::event::Event;
+use crate::peer::event_handler::Action;
 use crate::peer::event_handler::EventHandler;
-use crate::peer::transfer_rate::TransferRate;
 use crate::torrent::Info;
-
-pub struct PeerEvent(pub SocketAddr, pub Event);
-
-pub enum Event {
-    Connect,
-    Disconnected,
-    Message(Message, TransferRate),
-    //Uploaded(Block, TransferRate),
-}
 
 pub struct Peer {
     listener: TcpListener,
@@ -48,8 +41,8 @@ pub struct Peer {
     file_path: PathBuf,
     peers: HashMap<SocketAddr, Sender<Command>>,
     event_handler: EventHandler,
-    tx: Sender<PeerEvent>,
-    rx: Receiver<PeerEvent>,
+    tx: Sender<Event>,
+    rx: Receiver<Event>,
     handshake: Handshake,
     config: Config,
 }
@@ -61,7 +54,7 @@ impl Peer {
         file_path: PathBuf,
         config: Config,
         seeding: bool,
-    ) -> (Self, Sender<PeerEvent>) {
+    ) -> (Self, Sender<Event>) {
         let peer_id = PeerId::random();
         let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
         let total_pieces = torrent_info.pieces.len();
@@ -112,47 +105,39 @@ impl Peer {
         loop {
             let event = tokio::select! {
                 // TODO: disconnect idle peers
-                _ = keep_alive.tick() => event_handler::Event::KeepAliveTick,
-                _ = choke.tick() => event_handler::Event::ChokeTick,
-                Some(PeerEvent(addr, event)) = self.rx.recv() => {
-                    match event {
-                        Event::Message(message, _transfer_rate) => {
-                            event_handler::Event::Message(addr, message)
-                        }
-                        Event::Connect => {
-                            info!("connecting to {}", addr);
-                            match TcpStream::connect(addr).await {
-                                Ok(socket) => self.new_peer(addr, socket, true).await?,
-                                Err(err) => warn!("error connecting to {}: {}", addr, err),
-                            }
-                            event_handler::Event::Connect(addr)
-                        }
-                        Event::Disconnected => event_handler::Event::Disconnect(addr),
-                    }
-                }
+                _ = keep_alive.tick() => Event::KeepAliveTick,
+                _ = choke.tick() => Event::ChokeTick,
+                Some(event) = self.rx.recv() => event,
                 Ok((socket, addr)) = self.listener.accept() => {
                     info!("got new connection from {}", &addr);
-                    self.new_peer(addr, socket, false).await?;
-                    event_handler::Event::Connect(addr)
+                    self.accept_connection(addr, socket).await?;
+                    Event::AcceptConnection(addr)
                 }
             };
 
             for action in self.event_handler.handle(event) {
                 match action {
-                    event_handler::Action::Send(addr, message) => {
+                    Action::Connect(addr) => {
+                        self.connect(addr).await?;
+                    }
+                    Action::Handshake(addr, order) => {
+                        //let peer = self.peers.get(&addr).expect("invalid peer");
+                        //peer.send(Command::Handshake).await?;
+                    }
+                    Action::Send(addr, message) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
                         peer.send(Command::Send(message)).await?;
                     }
-                    event_handler::Action::Broadcast(message) => {
+                    Action::Broadcast(message) => {
                         for peer in self.peers.values() {
                             peer.send(Command::Send(message.clone())).await?;
                         }
                     }
-                    event_handler::Action::Upload(addr, block) => {
+                    Action::Upload(addr, block) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
                         peer.send(Command::Upload(block)).await?;
                     }
-                    event_handler::Action::IntegratePiece { offset, data } => {
+                    Action::IntegratePiece { offset, data } => {
                         // TODO: run this in a blocking task
                         let mut file = OpenOptions::new()
                             .write(true)
@@ -167,12 +152,28 @@ impl Peer {
         }
     }
 
-    async fn new_peer(
-        &mut self,
-        addr: SocketAddr,
-        socket: TcpStream,
-        send_handshake_first: bool,
-    ) -> Result<()> {
+    async fn connect(&mut self, addr: SocketAddr) -> Result<()> {
+        let (rx, tx) = mpsc::channel(16);
+        self.peers.insert(addr, rx);
+        let handshake = self.handshake.clone();
+        let tx2 = self.tx.clone();
+        let file_path = self.file_path.clone();
+        let piece_length = self.torrent_info.piece_length;
+        tokio::spawn(async move {
+            let socket = TcpStream::connect(addr).await?;
+            let mut connection =
+                Connection::new(addr, socket, file_path, piece_length, tx2.clone(), tx);
+            connection.send(&handshake).await?;
+            connection.wait_for_handshake().await?;
+            connection.start().await?;
+            info!("peer {} disconnected", addr);
+            tx2.send(Event::Disconnect(addr)).await?;
+            Ok::<(), anyhow::Error>(())
+        });
+        Ok(())
+    }
+
+    async fn accept_connection(&mut self, addr: SocketAddr, socket: TcpStream) -> Result<()> {
         let (rx, tx) = mpsc::channel(16);
         let mut connection = Connection::new(
             addr,
@@ -182,19 +183,15 @@ impl Peer {
             self.tx.clone(),
             tx,
         );
-        if send_handshake_first {
-            connection.send(&self.handshake).await?;
-            connection.wait_for_handshake().await?;
-        } else {
-            connection.wait_for_handshake().await?;
-            connection.send(&self.handshake).await?;
-        }
         self.peers.insert(addr, rx);
+        let handshake = self.handshake.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
+            connection.wait_for_handshake().await?;
+            connection.send(&handshake).await?;
             connection.start().await?;
             info!("peer {} disconnected", addr);
-            tx.send(PeerEvent(addr, Event::Disconnected)).await?;
+            tx.send(Event::Disconnect(addr)).await?;
             Ok::<(), anyhow::Error>(())
         });
         Ok(())
@@ -254,11 +251,7 @@ mod tests {
         let mut set = JoinSet::new();
         set.spawn(async move { seeder.start().await });
         set.spawn(async move {
-            leecher_tx
-                .send(PeerEvent(seeder_addr, Event::Connect))
-                .await
-                .unwrap();
-
+            leecher_tx.send(Event::Connect(seeder_addr)).await.unwrap();
             leecher.start().await
         });
 
