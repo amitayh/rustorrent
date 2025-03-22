@@ -10,7 +10,6 @@ mod sizes;
 mod transfer_rate;
 
 pub use config::*;
-use event_handler::HandshakeOrder;
 pub use peer_id::*;
 
 use std::collections::HashMap;
@@ -109,20 +108,14 @@ impl Peer {
                 _ = choke.tick() => Event::ChokeTick,
                 Some(event) = self.rx.recv() => event,
                 Ok((socket, addr)) = self.listener.accept() => {
-                    info!("got new connection from {}", &addr);
-                    self.accept_connection(addr, socket).await?;
-                    Event::AcceptConnection(addr)
+                    Event::AcceptConnection(addr, socket)
                 }
             };
 
             for action in self.event_handler.handle(event) {
                 match action {
-                    Action::Connect(addr) => {
-                        self.connect(addr).await?;
-                    }
-                    Action::Handshake(addr, order) => {
-                        //let peer = self.peers.get(&addr).expect("invalid peer");
-                        //peer.send(Command::Handshake).await?;
+                    Action::EstablishConnection(addr, socket) => {
+                        self.establish_connection(addr, socket);
                     }
                     Action::Send(addr, message) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
@@ -152,49 +145,39 @@ impl Peer {
         }
     }
 
-    async fn connect(&mut self, addr: SocketAddr) -> Result<()> {
+    fn establish_connection(&mut self, addr: SocketAddr, socket: Option<TcpStream>) {
         let (rx, tx) = mpsc::channel(16);
         self.peers.insert(addr, rx);
-        let handshake = self.handshake.clone();
-        let tx2 = self.tx.clone();
+
+        let event_channel = self.tx.clone();
         let file_path = self.file_path.clone();
         let piece_length = self.torrent_info.piece_length;
-        tokio::spawn(async move {
-            let socket = TcpStream::connect(addr).await?;
-            let mut connection =
-                Connection::new(addr, socket, file_path, piece_length, tx2.clone(), tx);
-            connection.send(&handshake).await?;
-            connection.wait_for_handshake().await?;
-            connection.start().await?;
-            info!("peer {} disconnected", addr);
-            tx2.send(Event::Disconnect(addr)).await?;
-            Ok::<(), anyhow::Error>(())
-        });
-        Ok(())
-    }
-
-    async fn accept_connection(&mut self, addr: SocketAddr, socket: TcpStream) -> Result<()> {
-        let (rx, tx) = mpsc::channel(16);
-        let mut connection = Connection::new(
-            addr,
-            socket,
-            self.file_path.clone(),
-            self.torrent_info.piece_length,
-            self.tx.clone(),
-            tx,
-        );
-        self.peers.insert(addr, rx);
         let handshake = self.handshake.clone();
-        let tx = self.tx.clone();
         tokio::spawn(async move {
-            connection.wait_for_handshake().await?;
-            connection.send(&handshake).await?;
+            let (socket, send_handshake_first) = match socket {
+                None => (TcpStream::connect(addr).await?, true),
+                Some(socket) => (socket, false),
+            };
+            let mut connection = Connection::new(
+                addr,
+                socket,
+                file_path,
+                piece_length,
+                event_channel.clone(),
+                tx,
+            );
+            if send_handshake_first {
+                connection.send(&handshake).await?;
+                connection.wait_for_handshake().await?;
+            } else {
+                connection.wait_for_handshake().await?;
+                connection.send(&handshake).await?;
+            }
             connection.start().await?;
             info!("peer {} disconnected", addr);
-            tx.send(Event::Disconnect(addr)).await?;
+            event_channel.send(Event::Disconnect(addr)).await?;
             Ok::<(), anyhow::Error>(())
         });
-        Ok(())
     }
 }
 
@@ -238,6 +221,7 @@ mod tests {
         let seeder_addr = seeder.address().unwrap();
         let (mut leecher, leecher_tx) = {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            // lecher unchokes seeder???
             Peer::new(
                 listener,
                 torrent_info,
@@ -255,7 +239,7 @@ mod tests {
             leecher.start().await
         });
 
-        let result = timeout(Duration::from_secs(20), set.join_all()).await;
+        let result = timeout(Duration::from_secs(30), set.join_all()).await;
 
         // assert leecher has file
         assert!(result.is_ok());

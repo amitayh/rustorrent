@@ -11,9 +11,9 @@ use crate::peer::sizes::Sizes;
 #[derive(Debug)]
 pub struct Distributor {
     sizes: Sizes,
-    pub has_pieces: BitSet,
     peers: HashMap<SocketAddr, PeerState>,
     pieces: Vec<PieceState>,
+    pub has_pieces: BitSet,
 }
 
 impl Distributor {
@@ -26,9 +26,9 @@ impl Distributor {
 
         Self {
             sizes,
-            has_pieces,
             peers: HashMap::new(),
             pieces,
+            has_pieces,
         }
     }
 
@@ -40,22 +40,26 @@ impl Distributor {
     pub fn client_has_piece(&mut self, piece: usize) -> HashSet<SocketAddr> {
         self.has_pieces.insert(piece);
         self.peers
-            .iter()
+            .iter_mut()
             .filter_map(|(addr, peer)| {
-                let remaining = peer.has_pieces.difference(&self.has_pieces).count();
-                if remaining == 0 { Some(*addr) } else { None }
+                if peer.update_interest(&self.has_pieces) {
+                    Some(*addr)
+                } else {
+                    None
+                }
             })
             .collect()
     }
 
-    pub fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) -> Option<Block> {
+    pub fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) -> (bool, Option<Block>) {
         let peer = self.peers.entry(addr).or_default();
         peer.has_pieces.union_with(pieces);
+        let became_interesting = peer.update_interest(&self.has_pieces);
         for piece in pieces {
             let piece = self.pieces.get_mut(piece).expect("invalid piece");
             piece.peer_has_piece();
         }
-        self.assign(&addr)
+        (became_interesting, self.assign(&addr))
     }
 
     /// Returns a block to request form peer who unchoked if possible
@@ -132,9 +136,26 @@ impl Distributor {
 
 #[derive(Debug)]
 struct PeerState {
+    /// If the peer is choking the clinet
     choking: bool,
+    /// Available pieces peer has
     has_pieces: BitSet,
+    /// Blocks assigned to be downloaded from the peer
     assigned_blocks: HashSet<Block>,
+    /// If the peer is interesting to the client (has pieces the client doesn't)
+    interesting: bool,
+}
+
+impl PeerState {
+    /// Returns whether there was a change in interest. i.e:
+    /// changed from interesting -> to not interesting, or
+    /// change from not interesting -> to interesting.
+    fn update_interest(&mut self, client_pieces: &BitSet) -> bool {
+        let mut remaining_pieces = self.has_pieces.difference(client_pieces);
+        let was_interesting = self.interesting;
+        self.interesting = remaining_pieces.next().is_some();
+        was_interesting ^ self.interesting
+    }
 }
 
 impl Default for PeerState {
@@ -143,6 +164,7 @@ impl Default for PeerState {
             choking: true,
             has_pieces: BitSet::new(),
             assigned_blocks: HashSet::new(),
+            interesting: false,
         }
     }
 }
@@ -150,7 +172,9 @@ impl Default for PeerState {
 #[derive(Debug)]
 struct PieceState {
     unassigned_blocks: VecDeque<Block>,
+    /// Number of blocks assigned from this piece
     assigned_blocks: usize,
+    /// Number of peers that have this piece
     peers_with_piece: usize,
 }
 
@@ -226,7 +250,7 @@ mod tests {
         let mut distributor = Distributor::new(sizes(), pieces.clone());
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert!(distributor.peer_has_pieces(addr, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr, &pieces).1.is_none());
         assert!(distributor.peer_unchoked(addr).is_none());
     }
 
@@ -236,7 +260,7 @@ mod tests {
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
 
-        assert!(distributor.peer_has_pieces(addr, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr, &pieces).1.is_none());
         assert_eq!(distributor.peer_unchoked(addr), Some(Block::new(0, 0, 8)));
     }
 
@@ -248,7 +272,7 @@ mod tests {
 
         assert!(distributor.peer_unchoked(addr).is_none());
         assert_eq!(
-            distributor.peer_has_pieces(addr, &pieces),
+            distributor.peer_has_pieces(addr, &pieces).1,
             Some(Block::new(0, 0, 8))
         );
     }
@@ -259,10 +283,10 @@ mod tests {
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(distributor.peer_has_pieces(addr1, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        assert!(distributor.peer_has_pieces(addr2, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
 
         // Both peers have piece #0. Distribute its blocks among them.
         assert_eq!(distributor.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
@@ -275,11 +299,11 @@ mod tests {
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(distributor.peer_has_pieces(addr1, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0, 1]);
-        assert!(distributor.peer_has_pieces(addr2, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
 
         // Peer 2 has both piece #0 and #1. Since piece #1 is rarer, select it first.
         assert_eq!(distributor.peer_unchoked(addr2), Some(Block::new(1, 0, 8)));
@@ -294,11 +318,11 @@ mod tests {
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(distributor.peer_has_pieces(addr1, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0, 1]);
-        assert!(distributor.peer_has_pieces(addr2, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
 
         // Peer 1 only has piece #0, select it.
         assert_eq!(distributor.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
@@ -317,7 +341,7 @@ mod tests {
         let block1 = Block::new(0, 0, 8);
         let block2 = Block::new(0, 8, 8);
 
-        assert!(distributor.peer_has_pieces(addr, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr, &pieces).1.is_none());
         assert_eq!(distributor.peer_unchoked(addr), Some(block1));
 
         // Continue with next block once previous one completes
@@ -331,7 +355,7 @@ mod tests {
         let pieces = BitSet::from_iter([0]);
         let block = Block::new(0, 0, 8);
 
-        assert!(distributor.peer_has_pieces(addr, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr, &pieces).1.is_none());
         assert_eq!(distributor.peer_unchoked(addr), Some(block));
 
         // Block abandoned, mark it as unassigned
@@ -349,14 +373,14 @@ mod tests {
         let block = Block::new(0, 0, 8);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert!(distributor.peer_has_pieces(addr1, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
         assert_eq!(distributor.peer_unchoked(addr1), Some(block));
 
         // Peer 1 choked before completing the block, assign to peer 2
         distributor.peer_choked(addr1);
 
         let addr2 = "127.0.0.1:6881".parse().unwrap();
-        assert!(distributor.peer_has_pieces(addr2, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
         assert_eq!(distributor.peer_unchoked(addr2), Some(block));
     }
 
@@ -369,7 +393,7 @@ mod tests {
         let block2 = Block::new(0, 8, 8);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert!(distributor.peer_has_pieces(addr1, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
         assert_eq!(distributor.peer_unchoked(addr1), Some(block1));
 
         // Peer 1 completed downloading block #1 and choked. Assign next block to peer 2
@@ -377,7 +401,7 @@ mod tests {
         distributor.peer_choked(addr1);
 
         let addr2 = "127.0.0.1:6881".parse().unwrap();
-        assert!(distributor.peer_has_pieces(addr2, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
         assert_eq!(distributor.peer_unchoked(addr2), Some(block2));
     }
 
@@ -388,12 +412,12 @@ mod tests {
         // Peer 1 has pieces #0 and #1
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0, 1]);
-        assert!(distributor.peer_has_pieces(addr1, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
 
         // Peer 2 has only piece #0
         let addr2 = "127.0.0.2:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(distributor.peer_has_pieces(addr2, &pieces).is_none());
+        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
 
         // Once piece #0 is downloaded, we're no longer interested in peer 2
         let not_interesting = distributor.client_has_piece(0);

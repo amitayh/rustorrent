@@ -2,6 +2,7 @@ use std::{collections::HashSet, net::SocketAddr};
 
 use bit_set::BitSet;
 use log::warn;
+use tokio::net::TcpStream;
 
 use crate::message::{Block, Handshake, Message};
 
@@ -19,7 +20,6 @@ pub struct EventHandler {
     choker: Choker,
     distributor: Distributor,
     joiner: Joiner,
-    am_interested: HashSet<SocketAddr>,
 }
 
 impl EventHandler {
@@ -34,7 +34,6 @@ impl EventHandler {
             choker: Choker::new(config.optimistic_choking_cycle),
             distributor,
             joiner: Joiner::new(&sizes, torrent_info.pieces.clone()),
-            am_interested: HashSet::new(),
         }
     }
 
@@ -57,15 +56,14 @@ impl EventHandler {
             Event::Connect(addr) => {
                 let pieces = self.distributor.has_pieces.clone();
                 vec![
-                    Action::Connect(addr),
-                    Action::Handshake(addr, HandshakeOrder::ClientToPeer),
+                    Action::EstablishConnection(addr, None),
                     Action::Send(addr, Message::Bitfield(pieces)),
                 ]
             }
-            Event::AcceptConnection(addr) => {
+            Event::AcceptConnection(addr, socket) => {
                 let pieces = self.distributor.has_pieces.clone();
                 vec![
-                    Action::Handshake(addr, HandshakeOrder::PeerToClient),
+                    Action::EstablishConnection(addr, Some(socket)),
                     Action::Send(addr, Message::Bitfield(pieces)),
                 ]
             }
@@ -108,11 +106,12 @@ impl EventHandler {
 
             Message::Bitfield(pieces) => {
                 let mut actions = Vec::new();
-                if self.am_interested.insert(addr) {
-                    // TODO: check if peer has a piece we actually need
+                let (became_interesting, next_block) =
+                    self.distributor.peer_has_pieces(addr, &pieces);
+                if became_interesting {
                     actions.push(Action::Send(addr, Message::Interested));
                 }
-                if let Some(block) = self.distributor.peer_has_pieces(addr, &pieces) {
+                if let Some(block) = next_block {
                     actions.push(Action::Send(addr, Message::Request(block)));
                 }
                 actions
@@ -158,7 +157,6 @@ impl EventHandler {
                     } => {
                         actions.push(Action::Broadcast(Message::Have { piece }));
                         for not_interesting in self.distributor.client_has_piece(piece) {
-                            self.am_interested.remove(&addr);
                             actions.push(Action::Send(not_interesting, Message::NotInterested));
                         }
                         actions.push(Action::IntegratePiece {
@@ -178,20 +176,32 @@ impl EventHandler {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum Action {
-    Connect(SocketAddr),
-    Handshake(SocketAddr, HandshakeOrder),
+    EstablishConnection(SocketAddr, Option<TcpStream>),
     Send(SocketAddr, Message),
     Broadcast(Message),
     Upload(SocketAddr, Block),
     IntegratePiece { offset: u64, data: Vec<u8> },
 }
 
-#[derive(Debug, PartialEq)]
-pub enum HandshakeOrder {
-    ClientToPeer,
-    PeerToClient,
+impl PartialEq for Action {
+    fn eq(&self, other: &Self) -> bool {
+        false
+        //match (self, other) {
+        //    (
+        //        Action::EstablishConnection(addr1, _),
+        //        Action::EstablishConnection(addr2, _),
+        //    ) => addr1 == addr2
+        //    (Action::Send(socket_addr, message), Action::Send(socket_addr, message)) => todo!(),
+        //    (Action::Broadcast(message), Action::Broadcast(message)) => todo!(),
+        //    (Action::Upload(socket_addr, block), Action::Upload(socket_addr, block)) => todo!(),
+        //    (Action::IntegratePiece { offset, data }, Action::IntegratePiece { offset, data }) => {
+        //        todo!()
+        //    }
+        //    _ => false,
+        //}
+    }
 }
 
 #[cfg(test)]

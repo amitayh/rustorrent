@@ -1,13 +1,15 @@
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
+
+use tokio::net::TcpStream;
 
 use crate::message::Message;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum Event {
     KeepAliveTick,
     ChokeTick,
     Message(SocketAddr, Message),
     Connect(SocketAddr),
-    AcceptConnection(SocketAddr),
+    AcceptConnection(SocketAddr, TcpStream),
     Disconnect(SocketAddr),
 }

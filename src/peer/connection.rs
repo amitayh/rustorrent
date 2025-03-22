@@ -47,6 +47,7 @@ impl Connection {
     }
 
     pub async fn wait_for_handshake(&mut self) -> Result<()> {
+        // TODO: verify protocol
         let handshake = Handshake::decode(&mut self.socket).await?;
         info!("< got handshake {:?}", handshake);
         Ok(())

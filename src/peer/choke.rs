@@ -65,10 +65,10 @@ impl Choker {
         if self.tick % self.optimistic_choking_cycle == 0 {
             // Optimistic run: randomly unchaoke one remaining peer
             if let Some(peer) = self.random_interested_peer() {
-                if !peers_to_choke.remove(peer) {
-                    peers_to_unchoke.insert(*peer);
+                self.unchoked_peers.insert(peer);
+                if !peers_to_choke.remove(&peer) {
+                    peers_to_unchoke.insert(peer);
                 }
-                self.unchoked_peers.insert(*peer);
             }
         }
 
@@ -99,9 +99,9 @@ impl Choker {
             .map(|Reverse(PeerByTransferRate(peer, _))| peer)
     }
 
-    fn random_interested_peer(&self) -> Option<&SocketAddr> {
+    fn random_interested_peer(&self) -> Option<SocketAddr> {
         let remaining = self.interested_peers.difference(&self.unchoked_peers);
-        remaining.choose(&mut rand::rng())
+        remaining.choose(&mut rand::rng()).copied()
     }
 }
 
