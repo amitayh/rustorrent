@@ -2,8 +2,11 @@ use std::time::Duration;
 
 use size::Size;
 
+use crate::peer::PeerId;
+
 #[derive(Clone)]
 pub struct Config {
+    pub clinet_id: PeerId,
     pub keep_alive_interval: Duration,
     pub choking_interval: Duration,
     pub optimistic_choking_cycle: usize,
@@ -33,6 +36,7 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            clinet_id: PeerId::random(),
             keep_alive_interval: Duration::from_secs(120),
             choking_interval: Duration::from_secs(10),
             optimistic_choking_cycle: 3,

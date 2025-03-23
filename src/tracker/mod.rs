@@ -9,14 +9,20 @@ use url::form_urlencoded::byte_serialize;
 
 use crate::bencoding::Value;
 use crate::codec::AsyncDecoder;
+use crate::peer::PeerId;
+use crate::torrent::Torrent;
 use crate::tracker::response::TrackerResponse;
-use crate::{Config, torrent::Torrent};
 
 mod request;
 mod response;
 
 fn url_encode(bytes: &[u8]) -> String {
     String::from_iter(byte_serialize(bytes))
+}
+
+pub struct Config {
+    pub clinet_id: PeerId,
+    pub port: u16,
 }
 
 pub enum Event {
@@ -38,7 +44,7 @@ impl From<&Event> for &str {
 fn request_url(torrent: &Torrent, config: &Config, event: Option<Event>) -> Url {
     let mut url = torrent.announce.clone();
     let mut query = format!(
-        "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}",
+        "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1",
         url_encode(&torrent.info.info_hash.0),
         url_encode(&config.clinet_id.0),
         config.port,

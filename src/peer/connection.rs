@@ -59,9 +59,16 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn send<T: AsyncEncoder + Debug>(&mut self, message: &T) -> Result<()> {
+    pub async fn send<T: AsyncEncoder + TransportMessage + Debug>(
+        &mut self,
+        message: &T,
+    ) -> Result<()> {
         info!("> sending message: {:?}", message);
+        let transfer_begin = Instant::now();
         message.encode(&mut self.socket).await?;
+        let duration = Instant::now() - transfer_begin;
+        let size = Size::from_bytes(message.transport_bytes());
+        let transfer_rate = TransferRate(size, duration);
         Ok(())
     }
 

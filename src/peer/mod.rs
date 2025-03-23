@@ -34,11 +34,12 @@ use crate::peer::connection::Command;
 use crate::peer::connection::Connection;
 use crate::peer::event_handler::Action;
 use crate::peer::event_handler::EventHandler;
-use crate::torrent::Info;
+use crate::torrent::Torrent;
+use crate::tracker;
 
 pub struct Peer {
     listener: TcpListener,
-    torrent_info: Info,
+    torrent: Torrent,
     file_path: PathBuf,
     peers: HashMap<SocketAddr, PeerHandle>,
     block_timeouts: HashMap<(SocketAddr, Block), JoinHandle<Result<()>>>,
@@ -52,11 +53,12 @@ pub struct Peer {
 impl Peer {
     pub async fn new(
         listener: TcpListener,
-        torrent_info: Info,
+        torrent: Torrent,
         file_path: PathBuf,
         config: Config,
         seeding: bool,
-    ) -> (Self, Sender<Event>) {
+    ) -> Self {
+        let torrent_info = &torrent.info;
         let peer_id = PeerId::random();
         let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
         let total_pieces = torrent_info.pieces.len();
@@ -82,9 +84,9 @@ impl Peer {
         }
 
         let (tx, rx) = mpsc::channel(128);
-        let peer = Self {
+        Self {
             listener,
-            torrent_info,
+            torrent,
             file_path,
             peers: HashMap::new(),
             block_timeouts: HashMap::new(),
@@ -93,18 +95,25 @@ impl Peer {
             rx,
             handshake,
             config,
-        };
-        (peer, tx)
-    }
-
-    #[allow(dead_code)]
-    fn address(&self) -> std::io::Result<SocketAddr> {
-        self.listener.local_addr()
+        }
     }
 
     pub async fn start(&mut self) -> Result<()> {
         let mut keep_alive = interval_with_delay(self.config.keep_alive_interval);
         let mut choke = interval_with_delay(self.config.choking_interval);
+
+        let self_addr = self.listener.local_addr()?;
+        let config = tracker::Config {
+            clinet_id: self.config.clinet_id.clone(),
+            port: self_addr.port(),
+        };
+        let response = tracker::request(&self.torrent, &config, None).await?;
+        for peer in response.peers {
+            if peer.address != self_addr {
+                self.tx.send(Event::Connect(peer.address)).await?;
+            }
+        }
+
         loop {
             let event = tokio::select! {
                 // TODO: disconnect idle peers
@@ -117,31 +126,15 @@ impl Peer {
                 }
             };
 
-            if let Event::Message(addr, Message::Piece(block_data)) = &event {
-                let key = (*addr, block_data.into());
-                if let Some(timeout) = self.block_timeouts.remove(&key) {
-                    timeout.abort();
-                }
-            }
-
+            self.abort_block_timeout(&event);
             for action in self.event_handler.handle(event) {
                 match action {
                     Action::EstablishConnection(addr, socket) => {
                         self.establish_connection(addr, socket);
                     }
                     Action::Send(addr, message) => {
+                        self.start_block_timeout(addr, &message);
                         let peer = self.peers.get(&addr).expect("invalid peer");
-                        if let Message::Request(block) = &message {
-                            let timeout = self.config.block_timeout;
-                            let tx = self.tx.clone();
-                            let block = *block;
-                            let join_handle = tokio::spawn(async move {
-                                tokio::time::sleep(timeout).await;
-                                tx.send(Event::BlockTimeout(addr, block)).await?;
-                                Ok(())
-                            });
-                            self.block_timeouts.insert((addr, block), join_handle);
-                        }
                         peer.send(Command::Send(message)).await;
                     }
                     Action::Broadcast(message) => {
@@ -186,7 +179,7 @@ impl Peer {
 
         let event_channel = self.tx.clone();
         let file_path = self.file_path.clone();
-        let piece_length = self.torrent_info.piece_length;
+        let piece_length = self.torrent.info.piece_length;
         let handshake = self.handshake.clone();
         let join_handle = tokio::spawn(async move {
             let (socket, send_handshake_first) = match socket {
@@ -221,6 +214,29 @@ impl Peer {
             Ok(())
         });
         self.peers.insert(addr, PeerHandle { rx, join_handle });
+    }
+
+    fn start_block_timeout(&mut self, addr: SocketAddr, message: &Message) {
+        if let Message::Request(block) = message {
+            let timeout = self.config.block_timeout;
+            let tx = self.tx.clone();
+            let block = *block;
+            let join_handle = tokio::spawn(async move {
+                tokio::time::sleep(timeout).await;
+                tx.send(Event::BlockTimeout(addr, block)).await?;
+                Ok(())
+            });
+            self.block_timeouts.insert((addr, block), join_handle);
+        }
+    }
+
+    fn abort_block_timeout(&mut self, event: &Event) {
+        if let Event::Message(addr, Message::Piece(block)) = event {
+            let key = (*addr, block.into());
+            if let Some(timeout) = self.block_timeouts.remove(&key) {
+                timeout.abort();
+            }
+        }
     }
 
     async fn shutdown(&mut self) -> Result<()> {
@@ -260,75 +276,109 @@ mod tests {
 
     use std::time::Duration;
 
+    use size::Size;
     use tokio::{task::JoinSet, time::timeout};
+    use url::Url;
+    use wiremock::{
+        Mock, MockServer, Request, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    use crate::{
+        bencoding::Value,
+        codec::Encoder,
+        crypto::{Md5, Sha1},
+        torrent::{DownloadType, Info, Torrent},
+    };
 
     use super::*;
+
+    fn test_config() -> Config {
+        Config::default()
+            .with_keep_alive_interval(Duration::from_secs(5))
+            .with_unchoking_interval(Duration::from_secs(1))
+            .with_optimistic_unchoking_cycle(2)
+    }
+
+    fn test_torrent(announce_url: Url) -> Torrent {
+        Torrent {
+            announce: announce_url,
+            info: Info {
+                info_hash: Sha1::from_hex("e90cf5ec83e174d7dcb94821560dac201ae1f663").unwrap(),
+                piece_length: Size::from_kibibytes(32),
+                pieces: vec![
+                    Sha1::from_hex("8fdfb566405fc084761b1fe0b6b7f8c6a37234ed").unwrap(),
+                    Sha1::from_hex("2494039151d7db3e56b3ec021d233742e3de55a6").unwrap(),
+                    Sha1::from_hex("af99be061f2c5eee12374055cf1a81909d276db5").unwrap(),
+                    Sha1::from_hex("3c12e1fcba504fedc13ee17ea76b62901dc8c9f7").unwrap(),
+                    Sha1::from_hex("d5facb89cbdc2e3ed1a1cd1050e217ec534f1fad").unwrap(),
+                    Sha1::from_hex("d5d2b296f52ab11791aad35a7d493833d39c6786").unwrap(),
+                ],
+                download_type: DownloadType::SingleFile {
+                    name: "alice_in_wonderland.txt".to_string(),
+                    length: Size::from_bytes(174357),
+                    md5sum: Some(Md5::from_hex("9a930de3cfc64468c05715237a6b4061").unwrap()),
+                },
+            },
+        }
+    }
 
     #[tokio::test]
     async fn one_seeder_one_leecher() {
         env_logger::init();
 
-        let file_path = "assets/alice_in_wonderland.txt";
-        let torrent_info = Info::load(&file_path).await.unwrap();
+        let seeder_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let leecher_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 
-        let mut seeder = {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let config = Config::default()
-                .with_keep_alive_interval(Duration::from_secs(5))
-                .with_unchoking_interval(Duration::from_secs(1))
-                .with_optimistic_unchoking_cycle(2);
-            let (peer, _) = Peer::new(
-                listener,
-                torrent_info.clone(),
-                file_path.into(),
-                config,
-                true,
-            )
+        let seeder_addr = seeder_listener.local_addr().unwrap();
+        let mock_tracker = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/announce"))
+            .respond_with(move |_: &Request| {
+                let response = Value::dictionary()
+                    .with_entry("complete", Value::Integer(1))
+                    .with_entry("incomplete", Value::Integer(1))
+                    .with_entry("interval", Value::Integer(10))
+                    .with_entry(
+                        "peers",
+                        Value::list().with_value({
+                            Value::dictionary()
+                                .with_entry("ip", Value::string(&seeder_addr.ip().to_string()))
+                                .with_entry("port", Value::Integer(seeder_addr.port().into()))
+                        }),
+                    );
+
+                let mut responses_bytes = Vec::new();
+                response.encode(&mut responses_bytes).unwrap();
+
+                ResponseTemplate::new(200).set_body_bytes(responses_bytes)
+            })
+            .mount(&mock_tracker)
             .await;
-            peer
-        };
-        let seeder_addr = seeder.address().unwrap();
-        let (mut leecher, leecher_tx) = {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            // lecher unchokes seeder???
-            Peer::new(
-                listener,
-                torrent_info.clone(),
-                "/tmp/foo".into(),
-                Config::default(),
-                false,
-            )
-            .await
-        };
 
-        //let leecher_addr = leecher.address().unwrap();
-        //let (mut leecher2, leecher_tx2) = {
-        //    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        //    // lecher unchokes seeder???
-        //    Peer::new(
-        //        listener,
-        //        torrent_info,
-        //        "/tmp/bar".into(),
-        //        Config::default(),
-        //        false,
-        //    )
-        //    .await
-        //};
+        let announce_url = Url::parse(&format!("{}/announce", mock_tracker.uri())).unwrap();
+
+        let mut seeder = Peer::new(
+            seeder_listener,
+            test_torrent(announce_url.clone()),
+            "assets/alice_in_wonderland.txt".into(),
+            test_config(),
+            true,
+        )
+        .await;
+
+        let mut leecher = Peer::new(
+            leecher_listener,
+            test_torrent(announce_url),
+            "/tmp/foo".into(),
+            test_config(),
+            false,
+        )
+        .await;
 
         let mut set = JoinSet::new();
         set.spawn(async move { seeder.start().await });
-        set.spawn(async move {
-            leecher_tx.send(Event::Connect(seeder_addr)).await.unwrap();
-            leecher.start().await
-        });
-        //set.spawn(async move {
-        //    leecher_tx2.send(Event::Connect(seeder_addr)).await.unwrap();
-        //    leecher_tx2
-        //        .send(Event::Connect(leecher_addr))
-        //        .await
-        //        .unwrap();
-        //    leecher2.start().await
-        //});
+        set.spawn(async move { leecher.start().await });
 
         let result = timeout(Duration::from_secs(60), set.join_all()).await;
 

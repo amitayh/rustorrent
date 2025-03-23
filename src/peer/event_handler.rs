@@ -61,11 +61,13 @@ impl EventHandler {
                 }
             }
             Event::Connect(addr) => {
-                let pieces = self.distributor.has_pieces.clone();
-                vec![
-                    Action::EstablishConnection(addr, None),
-                    Action::Send(addr, Message::Bitfield(pieces)),
-                ]
+                let mut actions = Vec::with_capacity(2);
+                actions.push(Action::EstablishConnection(addr, None));
+                if !self.distributor.has_pieces.is_empty() {
+                    let pieces = self.distributor.has_pieces.clone();
+                    actions.push(Action::Send(addr, Message::Bitfield(pieces)));
+                }
+                actions
             }
             Event::AcceptConnection(addr, socket) => {
                 let pieces = self.distributor.has_pieces.clone();
@@ -112,7 +114,7 @@ impl EventHandler {
             }
 
             Message::Bitfield(pieces) => {
-                let mut actions = Vec::new();
+                let mut actions = Vec::with_capacity(2);
                 let (became_interesting, next_block) =
                     self.distributor.peer_has_pieces(addr, &pieces);
                 if became_interesting {
@@ -142,7 +144,7 @@ impl EventHandler {
                     warn!("{} sent block {:?} which was not requested", &addr, &block);
                     return Vec::new();
                 }
-                let mut actions = Vec::new();
+                let mut actions = Vec::with_capacity(4);
                 if let Some(next_block) = self.distributor.block_downloaded(&addr, &block) {
                     actions.push(Action::Send(addr, Message::Request(next_block)));
                 }
