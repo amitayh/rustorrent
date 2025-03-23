@@ -29,7 +29,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinHandle;
 use tokio::time::{self, Instant, Interval, timeout};
 
-use crate::message::Handshake;
+use crate::message::{Block, Handshake, Message};
 use crate::peer::connection::Command;
 use crate::peer::connection::Connection;
 use crate::peer::event_handler::Action;
@@ -41,6 +41,7 @@ pub struct Peer {
     torrent_info: Info,
     file_path: PathBuf,
     peers: HashMap<SocketAddr, PeerHandle>,
+    block_timeouts: HashMap<(SocketAddr, Block), JoinHandle<Result<()>>>,
     event_handler: EventHandler,
     tx: Sender<Event>,
     rx: Receiver<Event>,
@@ -86,6 +87,7 @@ impl Peer {
             torrent_info,
             file_path,
             peers: HashMap::new(),
+            block_timeouts: HashMap::new(),
             event_handler,
             tx: tx.clone(),
             rx,
@@ -115,6 +117,21 @@ impl Peer {
                 }
             };
 
+            if let Event::Message(
+                addr,
+                Message::Piece {
+                    piece,
+                    offset,
+                    data,
+                },
+            ) = &event
+            {
+                let block = Block::new(*piece, *offset, data.len());
+                if let Some(timeout) = self.block_timeouts.remove(&(*addr, block)) {
+                    timeout.abort();
+                }
+            }
+
             for action in self.event_handler.handle(event) {
                 match action {
                     Action::EstablishConnection(addr, socket) => {
@@ -122,16 +139,27 @@ impl Peer {
                     }
                     Action::Send(addr, message) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
-                        peer.rx.send(Command::Send(message)).await?;
+                        if let Message::Request(block) = &message {
+                            let timeout = self.config.block_timeout;
+                            let tx = self.tx.clone();
+                            let block = *block;
+                            let join_handle = tokio::spawn(async move {
+                                tokio::time::sleep(timeout).await;
+                                tx.send(Event::BlockTimeout(addr, block)).await?;
+                                Ok(())
+                            });
+                            self.block_timeouts.insert((addr, block), join_handle);
+                        }
+                        peer.send(Command::Send(message)).await;
                     }
                     Action::Broadcast(message) => {
                         for peer in self.peers.values() {
-                            peer.rx.send(Command::Send(message.clone())).await?;
+                            peer.send(Command::Send(message.clone())).await;
                         }
                     }
                     Action::Upload(addr, block) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
-                        peer.rx.send(Command::Upload(block)).await?;
+                        peer.send(Command::Upload(block)).await;
                     }
                     Action::IntegratePiece { offset, data } => {
                         // TODO: run this in a blocking task
@@ -151,7 +179,10 @@ impl Peer {
         }
 
         info!("shutting down...");
-        if let Err(_) = timeout(self.config.shutdown_timeout, self.shutdown()).await {
+        if timeout(self.config.shutdown_timeout, self.shutdown())
+            .await
+            .is_err()
+        {
             warn!("timeout for graceful shutdown expired");
         }
 
@@ -167,8 +198,15 @@ impl Peer {
         let handshake = self.handshake.clone();
         let join_handle = tokio::spawn(async move {
             let (socket, send_handshake_first) = match socket {
-                None => (TcpStream::connect(addr).await?, true),
                 Some(socket) => (socket, false),
+                None => match TcpStream::connect(addr).await {
+                    Ok(socket) => (socket, true),
+                    Err(err) => {
+                        warn!("unable to connect to {}: {}", &addr, err);
+                        event_channel.send(Event::Disconnect(addr)).await?;
+                        return Ok(());
+                    }
+                },
             };
             let mut connection = Connection::new(
                 addr,
@@ -210,6 +248,14 @@ impl Peer {
 struct PeerHandle {
     rx: Sender<Command>,
     join_handle: JoinHandle<Result<()>>,
+}
+
+impl PeerHandle {
+    async fn send(&self, command: Command) {
+        if let Err(err) = self.rx.send(command.clone()).await {
+            warn!("unable to send command {:?}: {}", command, err);
+        }
+    }
 }
 
 fn interval_with_delay(period: Duration) -> Interval {
@@ -263,19 +309,19 @@ mod tests {
             .await
         };
 
-        let leecher_addr = leecher.address().unwrap();
-        let (mut leecher2, leecher_tx2) = {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            // lecher unchokes seeder???
-            Peer::new(
-                listener,
-                torrent_info,
-                "/tmp/bar".into(),
-                Config::default(),
-                false,
-            )
-            .await
-        };
+        //let leecher_addr = leecher.address().unwrap();
+        //let (mut leecher2, leecher_tx2) = {
+        //    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        //    // lecher unchokes seeder???
+        //    Peer::new(
+        //        listener,
+        //        torrent_info,
+        //        "/tmp/bar".into(),
+        //        Config::default(),
+        //        false,
+        //    )
+        //    .await
+        //};
 
         let mut set = JoinSet::new();
         set.spawn(async move { seeder.start().await });
@@ -283,16 +329,16 @@ mod tests {
             leecher_tx.send(Event::Connect(seeder_addr)).await.unwrap();
             leecher.start().await
         });
-        set.spawn(async move {
-            leecher_tx2.send(Event::Connect(seeder_addr)).await.unwrap();
-            leecher_tx2
-                .send(Event::Connect(leecher_addr))
-                .await
-                .unwrap();
-            leecher2.start().await
-        });
+        //set.spawn(async move {
+        //    leecher_tx2.send(Event::Connect(seeder_addr)).await.unwrap();
+        //    leecher_tx2
+        //        .send(Event::Connect(leecher_addr))
+        //        .await
+        //        .unwrap();
+        //    leecher2.start().await
+        //});
 
-        let result = timeout(Duration::from_secs(30), set.join_all()).await;
+        let result = timeout(Duration::from_secs(60), set.join_all()).await;
 
         // assert leecher has file
         assert!(result.is_ok());

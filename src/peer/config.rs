@@ -37,7 +37,7 @@ impl Default for Config {
             choking_interval: Duration::from_secs(10),
             optimistic_choking_cycle: 3,
             block_size: Size::from_kibibytes(16),
-            block_timeout: Duration::from_secs(5),
+            block_timeout: Duration::from_secs(10),
             shutdown_timeout: Duration::from_secs(10),
         }
     }

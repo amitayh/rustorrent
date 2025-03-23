@@ -116,7 +116,7 @@ impl AsyncDecoder for Message {
             }
             _ => Err(Error::new(
                 ErrorKind::InvalidData,
-                format!("invlid message id {}", id),
+                format!("invalid message id {} with length {}", id, length),
             )),
         }
     }

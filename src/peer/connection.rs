@@ -3,7 +3,6 @@ use std::io::ErrorKind;
 use std::io::{Result, SeekFrom};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::anyhow;
 use log::{info, warn};
@@ -127,6 +126,7 @@ async fn decode_message(socket: &mut TcpStream) -> std::io::Result<(Message, Tra
     Ok((message, transfer_rate))
 }
 
+#[derive(Clone, Debug)]
 pub enum Command {
     Send(Message),
     Upload(Block),

@@ -78,6 +78,14 @@ impl Distributor {
         }
     }
 
+    pub fn release(&mut self, addr: &SocketAddr, block: Block) -> Option<Block> {
+        let peer = self.peers.get_mut(addr).expect("invalid peer");
+        let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
+        peer.assigned_blocks.remove(&block);
+        piece.release(block);
+        self.assign(addr)
+    }
+
     // TODO: test
     pub fn block_in_flight(&self, addr: &SocketAddr, block: &Block) -> bool {
         let peer = self.peers.get(addr).expect("invalid peer");
@@ -90,13 +98,6 @@ impl Distributor {
         peer.assigned_blocks.remove(block);
         piece.block_downloaded();
         self.assign(addr)
-    }
-
-    pub fn release(&mut self, addr: &SocketAddr, block: Block) {
-        let peer = self.peers.get_mut(addr).expect("invalid peer");
-        let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-        peer.assigned_blocks.remove(&block);
-        piece.release(block);
     }
 
     // TODO: test

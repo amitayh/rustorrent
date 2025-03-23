@@ -53,6 +53,13 @@ impl EventHandler {
                 choke.chain(unchoke).collect()
             }
             Event::Message(addr, message) => self.handle_message(addr, message),
+            Event::BlockTimeout(addr, block) => {
+                warn!("block requet timed out: {} - {:?}", &addr, &block);
+                match self.distributor.release(&addr, block) {
+                    Some(next_block) => vec![Action::Send(addr, Message::Request(next_block))],
+                    None => Vec::new(),
+                }
+            }
             Event::Connect(addr) => {
                 let pieces = self.distributor.has_pieces.clone();
                 vec![
@@ -134,7 +141,6 @@ impl EventHandler {
                 offset: block_offset,
                 data: block_data,
             } => {
-                // TODO: verify block was requested
                 let block = Block::new(piece, block_offset, block_data.len());
                 if !self.distributor.block_in_flight(&addr, &block) {
                     warn!("{} sent block {:?} which was not requested", &addr, &block);
