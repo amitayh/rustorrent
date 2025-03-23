@@ -9,6 +9,7 @@ pub struct Config {
     pub optimistic_choking_cycle: usize,
     pub block_size: Size,
     pub block_timeout: Duration,
+    pub shutdown_timeout: Duration,
 }
 
 #[allow(dead_code)]
@@ -37,6 +38,7 @@ impl Default for Config {
             optimistic_choking_cycle: 3,
             block_size: Size::from_kibibytes(16),
             block_timeout: Duration::from_secs(5),
+            shutdown_timeout: Duration::from_secs(10),
         }
     }
 }

@@ -23,6 +23,10 @@ impl Handshake {
             peer_id,
         }
     }
+
+    pub fn is_standard_protocol(&self) -> bool {
+        self.protocol == PROTOCOL
+    }
 }
 
 impl AsyncDecoder for Handshake {

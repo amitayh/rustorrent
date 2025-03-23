@@ -3,7 +3,9 @@ use std::io::ErrorKind;
 use std::io::{Result, SeekFrom};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
+use anyhow::anyhow;
 use log::{info, warn};
 use size::Size;
 use tokio::fs::File;
@@ -46,10 +48,15 @@ impl Connection {
         }
     }
 
-    pub async fn wait_for_handshake(&mut self) -> Result<()> {
-        // TODO: verify protocol
+    pub async fn wait_for_handshake(&mut self) -> anyhow::Result<()> {
         let handshake = Handshake::decode(&mut self.socket).await?;
         info!("< got handshake {:?}", handshake);
+        if !handshake.is_standard_protocol() {
+            return Err(anyhow!(
+                "invalid handshake protocol: {}",
+                handshake.protocol
+            ));
+        }
         Ok(())
     }
 
@@ -63,9 +70,6 @@ impl Connection {
         loop {
             tokio::select! {
                 Some(command) = self.rx.recv() => match command {
-                    Command::Handshake => {
-                        //
-                    }
                     Command::Send(message) => {
                         // TODO: measure upload speed
                         self.send(&message).await?;
@@ -88,6 +92,9 @@ impl Connection {
                         //let transfer_rate = TransferRate(size, duration);
                         //self.tx.send(PeerEvent(
                         //    self.addr, Event::Uploaded(block, transfer_rate))).await?;
+                    }
+                    Command::Shutdown => {
+                        break;
                     }
                 },
                 // TODO: measure download speed
@@ -123,5 +130,5 @@ async fn decode_message(socket: &mut TcpStream) -> std::io::Result<(Message, Tra
 pub enum Command {
     Send(Message),
     Upload(Block),
-    Handshake,
+    Shutdown,
 }

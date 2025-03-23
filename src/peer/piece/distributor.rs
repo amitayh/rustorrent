@@ -250,7 +250,7 @@ mod tests {
         let mut distributor = Distributor::new(sizes(), pieces.clone());
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert!(distributor.peer_has_pieces(addr, &pieces).1.is_none());
+        assert_eq!(distributor.peer_has_pieces(addr, &pieces), (false, None));
         assert!(distributor.peer_unchoked(addr).is_none());
     }
 
@@ -260,7 +260,7 @@ mod tests {
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
 
-        assert!(distributor.peer_has_pieces(addr, &pieces).1.is_none());
+        assert_eq!(distributor.peer_has_pieces(addr, &pieces), (true, None));
         assert_eq!(distributor.peer_unchoked(addr), Some(Block::new(0, 0, 8)));
     }
 
@@ -272,8 +272,8 @@ mod tests {
 
         assert!(distributor.peer_unchoked(addr).is_none());
         assert_eq!(
-            distributor.peer_has_pieces(addr, &pieces).1,
-            Some(Block::new(0, 0, 8))
+            distributor.peer_has_pieces(addr, &pieces),
+            (true, Some(Block::new(0, 0, 8)))
         );
     }
 

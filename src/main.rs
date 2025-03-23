@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut client, tx) = Peer::new(
         listener,
         torrent.info,
-        path.into(),
+        "/tmp/foo".into(),
         peer::Config::default(),
         false,
     )
@@ -84,8 +84,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tx.send(peer::Event::Connect(addr)).await?;
     }
     client.start().await?;
-
-    tokio::signal::ctrl_c().await?;
 
     Ok(())
 }
