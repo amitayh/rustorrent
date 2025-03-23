@@ -46,3 +46,16 @@ impl AsyncEncoder for Block {
         Ok(())
     }
 }
+
+#[derive(PartialEq, Clone)]
+pub struct BlockData {
+    pub piece: usize,
+    pub offset: usize,
+    pub data: Vec<u8>,
+}
+
+impl From<&BlockData> for Block {
+    fn from(value: &BlockData) -> Self {
+        Self::new(value.piece, value.offset, value.data.len())
+    }
+}

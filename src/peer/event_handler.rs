@@ -106,7 +106,7 @@ impl EventHandler {
                 Vec::new()
             }
 
-            Message::Have { piece } => {
+            Message::Have(piece) => {
                 let pieces = BitSet::from_iter([piece]);
                 self.handle_message(addr, Message::Bitfield(pieces))
             }
@@ -136,12 +136,8 @@ impl EventHandler {
                 vec![Action::Upload(addr, block)]
             }
 
-            Message::Piece {
-                piece,
-                offset: block_offset,
-                data: block_data,
-            } => {
-                let block = Block::new(piece, block_offset, block_data.len());
+            Message::Piece(block_data) => {
+                let block = (&block_data).into();
                 if !self.distributor.block_in_flight(&addr, &block) {
                     warn!("{} sent block {:?} which was not requested", &addr, &block);
                     return Vec::new();
@@ -150,7 +146,8 @@ impl EventHandler {
                 if let Some(next_block) = self.distributor.block_downloaded(&addr, &block) {
                     actions.push(Action::Send(addr, Message::Request(next_block)));
                 }
-                match self.joiner.add(piece, block_offset, block_data) {
+                let piece = block_data.piece;
+                match self.joiner.add(piece, block_data.offset, block_data.data) {
                     Status::Incomplete => (), // Noting to do, wait for next block
                     Status::Invalid => {
                         warn!("piece {} sha1 mismatch", piece);
@@ -161,7 +158,7 @@ impl EventHandler {
                         offset: piece_offset,
                         data: piece_data,
                     } => {
-                        actions.push(Action::Broadcast(Message::Have { piece }));
+                        actions.push(Action::Broadcast(Message::Have(piece)));
                         for not_interesting in self.distributor.client_has_piece(piece) {
                             actions.push(Action::Send(not_interesting, Message::NotInterested));
                         }
@@ -199,6 +196,7 @@ mod tests {
 
     use crate::{
         crypto::{Md5, Sha1},
+        message::BlockData,
         torrent::DownloadType,
     };
 
@@ -225,23 +223,23 @@ mod tests {
         run(
             &mut event_handler,
             vec![
-                Event::Message(addr, Message::Have { piece: 0 }),
+                Event::Message(addr, Message::Have(0)),
                 Event::Message(addr, Message::Unchoke),
                 Event::Message(
                     addr,
-                    Message::Piece {
+                    Message::Piece(BlockData {
                         piece: 0,
                         offset: 0,
                         data: vec![0; 16384],
-                    },
+                    }),
                 ),
                 Event::Message(
                     addr,
-                    Message::Piece {
+                    Message::Piece(BlockData {
                         piece: 0,
                         offset: 16384,
                         data: vec![1; 16384],
-                    },
+                    }),
                 ),
             ],
         );

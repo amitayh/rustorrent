@@ -14,7 +14,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
 
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
-use crate::message::Block;
+use crate::message::{Block, BlockData};
 use crate::message::{Handshake, Message};
 use crate::peer::Event;
 use crate::peer::transfer_rate::TransferRate;
@@ -80,11 +80,11 @@ impl Connection {
                         file.seek(SeekFrom::Start(offset as u64)).await?;
                         file.read_exact(&mut data).await?;
                         //let transfer_begin = Instant::now();
-                        let message = Message::Piece {
+                        let message = Message::Piece(BlockData {
                             piece: block.piece,
                             offset: block.offset,
                             data,
-                        };
+                        });
                         self.send(&message).await?;
                         //let duration = Instant::now() - transfer_begin;
                         //let size = Size::from_bytes(message.transport_bytes());

@@ -7,6 +7,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
 use crate::message::Block;
 
+use super::BlockData;
+
 const ID_CHOKE: u8 = 0;
 const ID_UNCHOKE: u8 = 1;
 const ID_INTERESTED: u8 = 2;
@@ -25,16 +27,10 @@ pub enum Message {
     Unchoke,
     Interested,
     NotInterested,
-    Have {
-        piece: usize,
-    },
+    Have(usize),
     Bitfield(BitSet),
     Request(Block),
-    Piece {
-        piece: usize,
-        offset: usize,
-        data: Vec<u8>,
-    },
+    Piece(BlockData),
     Cancel(Block),
     Port(u16),
 }
@@ -47,20 +43,16 @@ impl std::fmt::Debug for Message {
             Message::Unchoke => write!(f, "Unchoke"),
             Message::Interested => write!(f, "Interested"),
             Message::NotInterested => write!(f, "NotInterested"),
-            Message::Have { piece } => write!(f, "Have {{ piece: {} }}", piece),
+            Message::Have(piece) => write!(f, "Have {{ piece: {} }}", piece),
             Message::Bitfield(bitset) => write!(f, "Bitfield({:?})", bitset),
             Message::Request(block) => write!(f, "Request({:?})", block),
-            Message::Piece {
-                piece,
-                offset,
-                data,
-            } => {
+            Message::Piece(block_data) => {
                 write!(
                     f,
                     "Piece {{ piece: {}, offset: {}, data: <{} bytes> }}",
-                    piece,
-                    offset,
-                    data.len()
+                    block_data.piece,
+                    block_data.offset,
+                    block_data.data.len()
                 )
             }
             Message::Cancel(block) => write!(f, "Cancel({:?})", block),
@@ -83,7 +75,7 @@ impl AsyncDecoder for Message {
             (ID_NOT_INTERESTED, 1) => Ok(Self::NotInterested),
             (ID_HAVE, 5) => {
                 let piece = stream.read_u32().await? as usize;
-                Ok(Self::Have { piece })
+                Ok(Self::Have(piece))
             }
             (ID_BITFIELD, 1..) => {
                 let mut buf = vec![0; length - 1];
@@ -100,11 +92,11 @@ impl AsyncDecoder for Message {
                 let offset = stream.read_u32().await? as usize;
                 let mut data = vec![0; length - 9];
                 stream.read_exact(&mut data).await?;
-                Ok(Self::Piece {
+                Ok(Self::Piece(BlockData {
                     piece,
                     offset,
                     data,
-                })
+                }))
             }
             (ID_CANCEL, 13) => {
                 let block = Block::decode(stream).await?;
@@ -142,7 +134,7 @@ impl AsyncEncoder for Message {
                 stream.write_u32(1).await?;
                 stream.write_u8(ID_NOT_INTERESTED).await?;
             }
-            Self::Have { piece } => {
+            Self::Have(piece) => {
                 stream.write_u32(5).await?;
                 stream.write_u8(ID_HAVE).await?;
                 stream.write_u32(*piece as u32).await?;
@@ -158,11 +150,11 @@ impl AsyncEncoder for Message {
                 stream.write_u8(ID_REQUEST).await?;
                 block.encode(stream).await?;
             }
-            Self::Piece {
+            Self::Piece(BlockData {
                 piece,
                 offset,
                 data,
-            } => {
+            }) => {
                 let length = 9 + data.len();
                 stream.write_u32(length as u32).await?;
                 stream.write_u8(ID_PIECE).await?;
@@ -194,14 +186,14 @@ impl TransportMessage for Message {
             Self::Unchoke => 1,
             Self::Interested => 1,
             Self::NotInterested => 1,
-            Self::Have { piece: _ } => 5,
+            Self::Have(_) => 5,
             Self::Bitfield(bitset) => 1 + bitset.get_ref().to_bytes().len(),
             Self::Request(_) => 13,
-            Self::Piece {
+            Self::Piece(BlockData {
                 piece: _,
                 offset: _,
                 data,
-            } => 9 + data.len(),
+            }) => 9 + data.len(),
             Self::Cancel(_) => 13,
             Self::Port(_) => 3,
         };

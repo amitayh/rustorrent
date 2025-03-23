@@ -66,7 +66,7 @@ mod tests {
 
     #[tokio::test]
     async fn have() {
-        verify_encode_decode(Message::Have { piece: 1234 }).await;
+        verify_encode_decode(Message::Have(1234)).await;
     }
 
     #[tokio::test]
@@ -81,11 +81,11 @@ mod tests {
 
     #[tokio::test]
     async fn piece() {
-        verify_encode_decode(Message::Piece {
+        verify_encode_decode(Message::Piece(BlockData {
             piece: 1,
             offset: 2,
             data: vec![1, 2, 3],
-        })
+        }))
         .await;
     }
 

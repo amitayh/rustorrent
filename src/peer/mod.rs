@@ -117,17 +117,9 @@ impl Peer {
                 }
             };
 
-            if let Event::Message(
-                addr,
-                Message::Piece {
-                    piece,
-                    offset,
-                    data,
-                },
-            ) = &event
-            {
-                let block = Block::new(*piece, *offset, data.len());
-                if let Some(timeout) = self.block_timeouts.remove(&(*addr, block)) {
+            if let Event::Message(addr, Message::Piece(block_data)) = &event {
+                let key = (*addr, block_data.into());
+                if let Some(timeout) = self.block_timeouts.remove(&key) {
                     timeout.abort();
                 }
             }
