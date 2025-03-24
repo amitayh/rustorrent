@@ -65,6 +65,9 @@ impl Distributor {
     /// Returns a block to request form peer who unchoked if possible
     pub fn peer_unchoked(&mut self, addr: SocketAddr) -> Option<Block> {
         let peer = self.peers.entry(addr).or_default();
+        if !peer.choking {
+            return None;
+        }
         peer.choking = false;
         self.assign(&addr)
     }
@@ -74,16 +77,19 @@ impl Distributor {
         peer.choking = true;
         for block in peer.assigned_blocks.drain() {
             let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-            piece.release(block);
+            piece.release(&block);
         }
     }
 
     pub fn release(&mut self, addr: &SocketAddr, block: Block) -> Option<Block> {
-        let peer = self.peers.get_mut(addr).expect("invalid peer");
         let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-        peer.assigned_blocks.remove(&block);
-        piece.release(block);
-        self.assign(addr)
+        piece.release(&block);
+        if let Some(peer) = self.peers.get_mut(addr) {
+            if peer.assigned_blocks.remove(&block) {
+                return self.assign(addr);
+            }
+        }
+        None
     }
 
     // TODO: test
@@ -93,17 +99,19 @@ impl Distributor {
     }
 
     pub fn block_downloaded(&mut self, addr: &SocketAddr, block: &Block) -> Option<Block> {
-        let peer = self.peers.get_mut(addr).expect("invalid peer");
         let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-        peer.assigned_blocks.remove(block);
-        piece.block_downloaded();
-        self.assign(addr)
+        let peer = self.peers.get_mut(addr).expect("invalid peer");
+        if peer.assigned_blocks.remove(block) {
+            piece.block_downloaded(block);
+            return self.assign(addr);
+        }
+        None
     }
 
     // TODO: test
     pub fn invalidate(&mut self, piece: usize) {
         let state = self.pieces.get_mut(piece).expect("invalid piece");
-        assert_eq!(state.assigned_blocks, 0);
+        assert!(state.assigned_blocks.is_empty());
         let blocks = Blocks::new(&self.sizes, piece);
         state.unassigned_blocks = blocks.collect();
     }
@@ -112,7 +120,7 @@ impl Distributor {
         if let Some(mut peer) = self.peers.remove(addr) {
             for block in peer.assigned_blocks.drain() {
                 let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-                piece.release(block);
+                piece.release(&block);
             }
         }
     }
@@ -174,16 +182,18 @@ impl Default for PeerState {
 struct PieceState {
     unassigned_blocks: VecDeque<Block>,
     /// Number of blocks assigned from this piece
-    assigned_blocks: usize,
+    assigned_blocks: HashSet<Block>,
     /// Number of peers that have this piece
     peers_with_piece: usize,
 }
 
 impl PieceState {
     fn new(blocks: Blocks) -> Self {
+        let unassigned_blocks: VecDeque<_> = blocks.collect();
+        let assigned_blocks = HashSet::with_capacity(unassigned_blocks.len());
         Self {
-            unassigned_blocks: blocks.collect(),
-            assigned_blocks: 0,
+            unassigned_blocks,
+            assigned_blocks,
             peers_with_piece: 0,
         }
     }
@@ -194,20 +204,21 @@ impl PieceState {
 
     fn select_block(&mut self) -> Option<Block> {
         let block = self.unassigned_blocks.pop_front()?;
-        self.assigned_blocks += 1;
+        self.assigned_blocks.insert(block);
         Some(block)
     }
 
-    fn release(&mut self, block: Block) {
+    fn release(&mut self, block: &Block) {
         // TODO: assert block belongs to piece?
-        self.unassigned_blocks.push_front(block);
-        self.assigned_blocks -= 1;
+        if let Some(block) = self.assigned_blocks.take(block) {
+            self.unassigned_blocks.push_front(block);
+        }
     }
 
     fn priority(&self) -> (bool, Reverse<usize>) {
         (
             // Favor pieces which are already in flight in order to reduce fragmentation
-            self.assigned_blocks > 0,
+            !self.assigned_blocks.is_empty(),
             // Otherwise, favor rarest piece first
             Reverse(self.peers_with_piece),
         )
@@ -218,8 +229,8 @@ impl PieceState {
         !self.unassigned_blocks.is_empty()
     }
 
-    fn block_downloaded(&mut self) {
-        self.assigned_blocks -= 1;
+    fn block_downloaded(&mut self, block: &Block) {
+        self.assigned_blocks.remove(block);
     }
 }
 
@@ -359,11 +370,36 @@ mod tests {
         assert!(distributor.peer_has_pieces(addr, &pieces).1.is_none());
         assert_eq!(distributor.peer_unchoked(addr), Some(block));
 
-        // Block abandoned, mark it as unassigned
-        distributor.release(&addr, block);
+        // Block abandoned, mark it as unassigned and re-assigns the same abandoned block
+        assert_eq!(distributor.release(&addr, block), Some(block));
+    }
 
-        // Next unchoke re-assigns the same abandoned block
-        assert_eq!(distributor.peer_unchoked(addr), Some(block));
+    #[test]
+    fn release_block_after_peer_disconnected() {
+        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let block = Block::new(0, 0, 8);
+
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let pieces = BitSet::from_iter([0]);
+        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert_eq!(distributor.peer_unchoked(addr1), Some(block));
+
+        distributor.peer_disconnected(&addr1);
+        assert!(distributor.release(&addr1, block).is_none());
+
+        let addr2 = "127.0.0.1:6881".parse().unwrap();
+        let pieces = BitSet::from_iter([0]);
+        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert_eq!(distributor.peer_unchoked(addr2), Some(block));
+        //// Peer 2 has only piece #0
+        //let addr2 = "127.0.0.2:6881".parse().unwrap();
+        //let pieces = BitSet::from_iter([0]);
+        //assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
+
+        //// Once piece #0 is downloaded, we're no longer interested in peer 2
+        //let not_interesting = distributor.client_has_piece(0);
+        //assert_eq!(not_interesting.len(), 1);
+        //assert!(not_interesting.contains(&addr2));
     }
 
     #[test]

@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let config = tracker::Config {
-        clinet_id: PeerId::random(),
+        client_id: PeerId::random(),
         port: 6881,
     };
     let path = std::env::args().nth(1).expect("file must be provided");

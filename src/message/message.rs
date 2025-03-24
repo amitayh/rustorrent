@@ -44,7 +44,7 @@ impl std::fmt::Debug for Message {
             Message::Interested => write!(f, "Interested"),
             Message::NotInterested => write!(f, "NotInterested"),
             Message::Have(piece) => write!(f, "Have {{ piece: {} }}", piece),
-            Message::Bitfield(bitset) => write!(f, "Bitfield({:?})", bitset),
+            Message::Bitfield(bitset) => write!(f, "Bitfield(<{} pieces>)", bitset.len()),
             Message::Request(block) => write!(f, "Request({:?})", block),
             Message::Piece(block_data) => {
                 write!(

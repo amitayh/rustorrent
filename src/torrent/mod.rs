@@ -11,7 +11,7 @@ use crate::bencoding::Value;
 
 // https://wiki.theory.org/BitTorrentSpecification#Byte_Strings
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Torrent {
     pub announce: Url,
     pub info: Info,

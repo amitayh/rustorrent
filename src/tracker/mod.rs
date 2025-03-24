@@ -21,7 +21,7 @@ fn url_encode(bytes: &[u8]) -> String {
 }
 
 pub struct Config {
-    pub clinet_id: PeerId,
+    pub client_id: PeerId,
     pub port: u16,
 }
 
@@ -46,7 +46,7 @@ fn request_url(torrent: &Torrent, config: &Config, event: Option<Event>) -> Url 
     let mut query = format!(
         "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1",
         url_encode(&torrent.info.info_hash.0),
-        url_encode(&config.clinet_id.0),
+        url_encode(&config.client_id.0),
         config.port,
         0,
         0,
@@ -105,7 +105,7 @@ mod tests {
     const PEER_ID: [u8; 20] = [0x2d; 20];
     const PORT: u16 = 6881;
     const CONFIG: Config = Config {
-        clinet_id: PeerId(PEER_ID),
+        client_id: PeerId(PEER_ID),
         port: PORT,
     };
 
