@@ -7,7 +7,7 @@ use std::{
 
 use size::Size;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub struct TransferRate(pub Size, pub Duration);
 
 impl Display for TransferRate {

@@ -7,6 +7,7 @@ mod event_handler;
 mod peer_id;
 mod piece;
 mod sizes;
+mod stats;
 mod transfer_rate;
 
 pub use config::*;

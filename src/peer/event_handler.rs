@@ -10,6 +10,7 @@ use crate::peer::Config;
 use crate::peer::event::Event;
 use crate::peer::piece::Status;
 use crate::peer::sizes::Sizes;
+use crate::peer::stats::Stats;
 use crate::peer::{
     choke::Choker,
     piece::{Distributor, Joiner},
@@ -20,6 +21,7 @@ pub struct EventHandler {
     choker: Choker,
     distributor: Distributor,
     joiner: Joiner,
+    stats: Stats,
 }
 
 impl EventHandler {
@@ -34,6 +36,7 @@ impl EventHandler {
             choker: Choker::new(config.optimistic_choking_cycle),
             distributor,
             joiner: Joiner::new(&sizes, torrent_info.pieces.clone()),
+            stats: Stats::default(),
         }
     }
 
@@ -53,6 +56,11 @@ impl EventHandler {
                 choke.chain(unchoke).collect()
             }
             Event::Message(addr, message) => self.handle_message(addr, message),
+            Event::Stats(addr, stats) => {
+                self.choker.update_peer_transfer_rate(addr, stats.download);
+                self.stats += stats;
+                Vec::new()
+            }
             Event::BlockTimeout(addr, block) => {
                 warn!("block requet timed out: {} - {:?}", &addr, &block);
                 match self.distributor.release(&addr, block) {

@@ -2,6 +2,7 @@ use std::fmt::Debug;
 use std::io::ErrorKind;
 use std::io::{Result, SeekFrom};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::anyhow;
 use log::{info, warn};
@@ -16,6 +17,7 @@ use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
 use crate::message::{Block, BlockData};
 use crate::message::{Handshake, Message};
 use crate::peer::Event;
+use crate::peer::stats::Stats;
 use crate::peer::transfer_rate::TransferRate;
 
 pub struct Connection {
@@ -24,6 +26,7 @@ pub struct Connection {
     piece_size: Size,
     tx: Sender<Event>,
     rx: Receiver<Command>,
+    stats: Stats,
 }
 
 impl Connection {
@@ -40,6 +43,7 @@ impl Connection {
             piece_size,
             tx,
             rx,
+            stats: Stats::default(),
         }
     }
 
@@ -69,13 +73,18 @@ impl Connection {
         message.encode(&mut self.socket).await?;
         let duration = Instant::now() - transfer_begin;
         let size = Size::from_bytes(message.transport_bytes());
-        let transfer_rate = TransferRate(size, duration);
+        self.stats.upload += TransferRate(size, duration);
         Ok(())
     }
 
     pub async fn start(&mut self) -> anyhow::Result<()> {
+        let mut update_stats = tokio::time::interval(Duration::from_secs(1));
         loop {
+            let addr = self.socket.peer_addr()?;
             tokio::select! {
+                _ = update_stats.tick() => {
+                    self.tx.send(Event::Stats(addr, self.stats.clone())).await?;
+                },
                 Some(command) = self.rx.recv() => match command {
                     Command::Send(message) => {
                         // TODO: measure upload speed
@@ -107,11 +116,10 @@ impl Connection {
                 // TODO: measure download speed
                 message = decode_message(&mut self.socket) =>  match message {
                     Ok((message, transfer_rate)) => {
+                        self.stats.download += transfer_rate;
                         if !matches!(message, Message::KeepAlive) {
-                            info!(target: &self.log_target()?,
-                                "got message: {:?} ({})", &message, &transfer_rate);
+                            info!(target: &self.log_target()?, "got message: {:?}", &message);
                         }
-                        let addr = self.socket.peer_addr()?;
                         self.tx.send(Event::Message(addr, message)).await?;
                     }
                     Err(err) => {
