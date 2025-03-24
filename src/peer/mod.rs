@@ -102,16 +102,36 @@ impl Peer {
         let mut keep_alive = interval_with_delay(self.config.keep_alive_interval);
         let mut choke = interval_with_delay(self.config.choking_interval);
 
-        let self_addr = self.listener.local_addr()?;
-        let config = tracker::Config {
-            clinet_id: self.config.clinet_id.clone(),
-            port: self_addr.port(),
-        };
-        let response = tracker::request(&self.torrent, &config, None).await?;
-        for peer in response.peers {
-            if peer.address != self_addr {
-                self.tx.send(Event::Connect(peer.address)).await?;
-            }
+        {
+            let self_addr = self.listener.local_addr()?;
+            let client_id = self.config.clinet_id.clone();
+            let torrent = self.torrent.clone();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let config = tracker::Config {
+                    client_id,
+                    port: self_addr.port(),
+                };
+
+                let mut event = Some(tracker::Event::Started);
+                loop {
+                    info!("refreshing list of peers...");
+                    let response = tracker::request(&torrent, &config, event).await?;
+                    info!("got {} peers from tracker", response.peers.len());
+                    for peer in response.peers {
+                        if peer.address != self_addr {
+                            tx.send(Event::Connect(peer.address)).await?;
+                        }
+                    }
+                    event = None;
+                    info!("waiting {:?} until next announce", &response.interval);
+                    tokio::select! {
+                        _ = tokio::time::sleep(response.interval) => (),
+                        _ = tokio::signal::ctrl_c() => break,
+                    }
+                }
+                tracker::request(&torrent, &config, Some(tracker::Event::Stopped)).await
+            });
         }
 
         loop {
@@ -175,8 +195,12 @@ impl Peer {
     }
 
     fn establish_connection(&mut self, addr: SocketAddr, socket: Option<TcpStream>) {
-        let (rx, tx) = mpsc::channel(16);
+        if self.peers.contains_key(&addr) {
+            // TODO: prevent sending bitfield again
+            return;
+        }
 
+        let (rx, tx) = mpsc::channel(16);
         let event_channel = self.tx.clone();
         let file_path = self.file_path.clone();
         let piece_length = self.torrent.info.piece_length;
@@ -193,14 +217,8 @@ impl Peer {
                     }
                 },
             };
-            let mut connection = Connection::new(
-                addr,
-                socket,
-                file_path,
-                piece_length,
-                event_channel.clone(),
-                tx,
-            );
+            let mut connection =
+                Connection::new(socket, file_path, piece_length, event_channel.clone(), tx);
             if send_handshake_first {
                 connection.send(&handshake).await?;
                 connection.wait_for_handshake().await?;
@@ -323,14 +341,23 @@ mod tests {
         }
     }
 
+    fn peer_entry(addr: &SocketAddr) -> Value {
+        Value::dictionary()
+            .with_entry("ip", Value::string(&addr.ip().to_string()))
+            .with_entry("port", Value::Integer(addr.port().into()))
+    }
+
     #[tokio::test]
     async fn one_seeder_one_leecher() {
         env_logger::init();
 
         let seeder_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let leecher_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let leecher2_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 
         let seeder_addr = seeder_listener.local_addr().unwrap();
+        let leecher1_addr = seeder_listener.local_addr().unwrap();
+        let leecher2_addr = seeder_listener.local_addr().unwrap();
         let mock_tracker = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/announce"))
@@ -341,11 +368,10 @@ mod tests {
                     .with_entry("interval", Value::Integer(10))
                     .with_entry(
                         "peers",
-                        Value::list().with_value({
-                            Value::dictionary()
-                                .with_entry("ip", Value::string(&seeder_addr.ip().to_string()))
-                                .with_entry("port", Value::Integer(seeder_addr.port().into()))
-                        }),
+                        Value::list()
+                            .with_value(peer_entry(&seeder_addr))
+                            .with_value(peer_entry(&leecher1_addr))
+                            .with_value(peer_entry(&leecher2_addr)),
                     );
 
                 let mut responses_bytes = Vec::new();
@@ -369,6 +395,15 @@ mod tests {
 
         let mut leecher = Peer::new(
             leecher_listener,
+            test_torrent(announce_url.clone()),
+            "/tmp/foo".into(),
+            test_config(),
+            false,
+        )
+        .await;
+
+        let mut leecher2 = Peer::new(
+            leecher2_listener,
             test_torrent(announce_url),
             "/tmp/foo".into(),
             test_config(),
@@ -379,8 +414,9 @@ mod tests {
         let mut set = JoinSet::new();
         set.spawn(async move { seeder.start().await });
         set.spawn(async move { leecher.start().await });
+        set.spawn(async move { leecher2.start().await });
 
-        let result = timeout(Duration::from_secs(60), set.join_all()).await;
+        let result = timeout(Duration::from_secs(120), set.join_all()).await;
 
         // assert leecher has file
         assert!(result.is_ok());

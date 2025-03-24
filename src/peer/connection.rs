@@ -1,7 +1,6 @@
 use std::fmt::Debug;
 use std::io::ErrorKind;
 use std::io::{Result, SeekFrom};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::anyhow;
@@ -20,7 +19,6 @@ use crate::peer::Event;
 use crate::peer::transfer_rate::TransferRate;
 
 pub struct Connection {
-    addr: SocketAddr,
     socket: TcpStream,
     file_path: PathBuf,
     piece_size: Size,
@@ -30,7 +28,6 @@ pub struct Connection {
 
 impl Connection {
     pub fn new(
-        addr: SocketAddr,
         socket: TcpStream,
         file_path: PathBuf,
         piece_size: Size,
@@ -38,7 +35,6 @@ impl Connection {
         rx: Receiver<Command>,
     ) -> Self {
         Self {
-            addr,
             socket,
             file_path,
             piece_size,
@@ -63,7 +59,12 @@ impl Connection {
         &mut self,
         message: &T,
     ) -> Result<()> {
-        info!("> sending message: {:?}", message);
+        let direction = format!(
+            "{} -> {}",
+            self.socket.local_addr()?,
+            self.socket.peer_addr()?,
+        );
+        info!(target: &direction, "sending message: {:?}", message);
         let transfer_begin = Instant::now();
         message.encode(&mut self.socket).await?;
         let duration = Instant::now() - transfer_begin;
@@ -104,23 +105,31 @@ impl Connection {
                     }
                 },
                 // TODO: measure download speed
-                message = decode_message(&mut self.socket) => {
-                    match message {
-                        Ok((message, transfer_rate)) => {
-                            info!("< got message: {:?} ({})", &message, &transfer_rate);
-                            self.tx.send(Event::Message(self.addr, message)).await?;
+                message = decode_message(&mut self.socket) =>  match message {
+                    Ok((message, transfer_rate)) => {
+                        if !matches!(message, Message::KeepAlive) {
+                            info!(target: &self.log_target()?,
+                                "got message: {:?} ({})", &message, &transfer_rate);
                         }
-                        Err(err) => {
-                            warn!("failed to decode message: {}", err);
-                            if err.kind() == ErrorKind::UnexpectedEof {
-                                break;
-                            }
+                        let addr = self.socket.peer_addr()?;
+                        self.tx.send(Event::Message(addr, message)).await?;
+                    }
+                    Err(err) => {
+                        warn!(target: &self.log_target()?, "failed to decode message: {}", err);
+                        if err.kind() == ErrorKind::UnexpectedEof {
+                            break;
                         }
                     }
                 }
             }
         }
         Ok(())
+    }
+
+    fn log_target(&self) -> std::io::Result<String> {
+        let local_addr = self.socket.local_addr()?;
+        let peer_addr = self.socket.peer_addr()?;
+        Ok(format!("{} <- {}", local_addr, peer_addr))
     }
 }
 
