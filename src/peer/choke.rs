@@ -36,11 +36,7 @@ impl Choker {
     }
 
     pub fn update_peer_transfer_rate(&mut self, addr: SocketAddr, transfer_rate: TransferRate) {
-        let entry = self
-            .transfer_rates
-            .entry(addr)
-            .or_insert(TransferRate::EMPTY);
-
+        let entry = self.transfer_rates.entry(addr).or_default();
         *entry += transfer_rate;
     }
 
