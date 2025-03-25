@@ -1,5 +1,5 @@
-mod distributor;
+mod allocator;
 mod joiner;
 
-pub use distributor::Distributor;
+pub use allocator::Allocator;
 pub use joiner::{Joiner, Status};

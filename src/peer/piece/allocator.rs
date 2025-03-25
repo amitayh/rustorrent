@@ -9,14 +9,14 @@ use crate::peer::blocks::Blocks;
 use crate::peer::sizes::Sizes;
 
 #[derive(Debug)]
-pub struct Distributor {
+pub struct Allocator {
     sizes: Sizes,
     peers: HashMap<SocketAddr, PeerState>,
     pieces: Vec<PieceState>,
     pub has_pieces: BitSet,
 }
 
-impl Distributor {
+impl Allocator {
     pub fn new(sizes: Sizes, has_pieces: BitSet) -> Self {
         let mut pieces = Vec::with_capacity(sizes.total_pieces);
         for piece in 0..sizes.total_pieces {
@@ -250,214 +250,214 @@ mod tests {
 
     #[test]
     fn peer_unchoked_but_has_no_pieces() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert!(distributor.peer_unchoked(addr).is_none());
+        assert!(allocator.peer_unchoked(addr).is_none());
     }
 
     #[test]
     fn peer_unchoked_but_client_already_has_that_piece() {
         let pieces = BitSet::from_iter([0]);
-        let mut distributor = Distributor::new(sizes(), pieces.clone());
+        let mut allocator = Allocator::new(sizes(), pieces.clone());
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert_eq!(distributor.peer_has_pieces(addr, &pieces), (false, None));
-        assert!(distributor.peer_unchoked(addr).is_none());
+        assert_eq!(allocator.peer_has_pieces(addr, &pieces), (false, None));
+        assert!(allocator.peer_unchoked(addr).is_none());
     }
 
     #[test]
     fn assign_a_block_to_request_from_peer() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
 
-        assert_eq!(distributor.peer_has_pieces(addr, &pieces), (true, None));
-        assert_eq!(distributor.peer_unchoked(addr), Some(Block::new(0, 0, 8)));
+        assert_eq!(allocator.peer_has_pieces(addr, &pieces), (true, None));
+        assert_eq!(allocator.peer_unchoked(addr), Some(Block::new(0, 0, 8)));
     }
 
     #[test]
     fn peer_unchoked_before_notifying_on_completed_piece() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
 
-        assert!(distributor.peer_unchoked(addr).is_none());
+        assert!(allocator.peer_unchoked(addr).is_none());
         assert_eq!(
-            distributor.peer_has_pieces(addr, &pieces),
+            allocator.peer_has_pieces(addr, &pieces),
             (true, Some(Block::new(0, 0, 8)))
         );
     }
 
     #[test]
     fn distribute_same_piece_between_two_peers() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
 
         // Both peers have piece #0. Distribute its blocks among them.
-        assert_eq!(distributor.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
-        assert_eq!(distributor.peer_unchoked(addr2), Some(Block::new(0, 8, 8)));
+        assert_eq!(allocator.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
+        assert_eq!(allocator.peer_unchoked(addr2), Some(Block::new(0, 8, 8)));
     }
 
     #[test]
     fn select_rarest_pieces_first() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0, 1]);
-        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
 
         // Peer 2 has both piece #0 and #1. Since piece #1 is rarer, select it first.
-        assert_eq!(distributor.peer_unchoked(addr2), Some(Block::new(1, 0, 8)));
+        assert_eq!(allocator.peer_unchoked(addr2), Some(Block::new(1, 0, 8)));
 
         // Peer 1 only has piece #0, select it.
-        assert_eq!(distributor.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
+        assert_eq!(allocator.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
     }
 
     #[test]
     fn prioritize_pieces_that_already_started_downloading() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0, 1]);
-        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
 
         // Peer 1 only has piece #0, select it.
-        assert_eq!(distributor.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
+        assert_eq!(allocator.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
 
         // Peer 2 has both piece #0 and #1. Piece #1 is rarer, but peer 1 already started
         // downloading piece #0, so prioritize it first.
-        assert_eq!(distributor.peer_unchoked(addr2), Some(Block::new(0, 8, 8)));
+        assert_eq!(allocator.peer_unchoked(addr2), Some(Block::new(0, 8, 8)));
     }
 
     #[test]
     fn continue_to_next_block_after_previous_block_completed_downloading() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
         let block1 = Block::new(0, 0, 8);
         let block2 = Block::new(0, 8, 8);
 
-        assert!(distributor.peer_has_pieces(addr, &pieces).1.is_none());
-        assert_eq!(distributor.peer_unchoked(addr), Some(block1));
+        assert!(allocator.peer_has_pieces(addr, &pieces).1.is_none());
+        assert_eq!(allocator.peer_unchoked(addr), Some(block1));
 
         // Continue with next block once previous one completes
-        assert_eq!(distributor.block_downloaded(&addr, &block1), Some(block2));
+        assert_eq!(allocator.block_downloaded(&addr, &block1), Some(block2));
     }
 
     #[test]
     fn release_abandoned_block() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
         let block = Block::new(0, 0, 8);
 
-        assert!(distributor.peer_has_pieces(addr, &pieces).1.is_none());
-        assert_eq!(distributor.peer_unchoked(addr), Some(block));
+        assert!(allocator.peer_has_pieces(addr, &pieces).1.is_none());
+        assert_eq!(allocator.peer_unchoked(addr), Some(block));
 
         // Block abandoned, mark it as unassigned and re-assigns the same abandoned block
-        assert_eq!(distributor.release(&addr, block), Some(block));
+        assert_eq!(allocator.release(&addr, block), Some(block));
     }
 
     #[test]
     fn release_block_after_peer_disconnected() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
         let block = Block::new(0, 0, 8);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
-        assert_eq!(distributor.peer_unchoked(addr1), Some(block));
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert_eq!(allocator.peer_unchoked(addr1), Some(block));
 
-        distributor.peer_disconnected(&addr1);
-        assert!(distributor.release(&addr1, block).is_none());
+        allocator.peer_disconnected(&addr1);
+        assert!(allocator.release(&addr1, block).is_none());
 
         let addr2 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
-        assert_eq!(distributor.peer_unchoked(addr2), Some(block));
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert_eq!(allocator.peer_unchoked(addr2), Some(block));
         //// Peer 2 has only piece #0
         //let addr2 = "127.0.0.2:6881".parse().unwrap();
         //let pieces = BitSet::from_iter([0]);
-        //assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
+        //assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
 
         //// Once piece #0 is downloaded, we're no longer interested in peer 2
-        //let not_interesting = distributor.client_has_piece(0);
+        //let not_interesting = allocator.client_has_piece(0);
         //assert_eq!(not_interesting.len(), 1);
         //assert!(not_interesting.contains(&addr2));
     }
 
     #[test]
     fn assign_abandoned_block_to_other_peer_if_needed() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
 
         let pieces = BitSet::from_iter([0]);
         let block = Block::new(0, 0, 8);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
-        assert_eq!(distributor.peer_unchoked(addr1), Some(block));
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert_eq!(allocator.peer_unchoked(addr1), Some(block));
 
         // Peer 1 choked before completing the block, assign to peer 2
-        distributor.peer_choked(addr1);
+        allocator.peer_choked(addr1);
 
         let addr2 = "127.0.0.1:6881".parse().unwrap();
-        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
-        assert_eq!(distributor.peer_unchoked(addr2), Some(block));
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert_eq!(allocator.peer_unchoked(addr2), Some(block));
     }
 
     #[test]
     fn do_not_reassign_downloaded_block() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
 
         let pieces = BitSet::from_iter([0]);
         let block1 = Block::new(0, 0, 8);
         let block2 = Block::new(0, 8, 8);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
-        assert_eq!(distributor.peer_unchoked(addr1), Some(block1));
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert_eq!(allocator.peer_unchoked(addr1), Some(block1));
 
         // Peer 1 completed downloading block #1 and choked. Assign next block to peer 2
-        assert_eq!(distributor.block_downloaded(&addr1, &block1), Some(block2));
-        distributor.peer_choked(addr1);
+        assert_eq!(allocator.block_downloaded(&addr1, &block1), Some(block2));
+        allocator.peer_choked(addr1);
 
         let addr2 = "127.0.0.1:6881".parse().unwrap();
-        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
-        assert_eq!(distributor.peer_unchoked(addr2), Some(block2));
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert_eq!(allocator.peer_unchoked(addr2), Some(block2));
     }
 
     #[test]
     fn find_all_peers_that_are_no_longer_interesting() {
-        let mut distributor = Distributor::new(sizes(), BitSet::new());
+        let mut allocator = Allocator::new(sizes(), BitSet::new());
 
         // Peer 1 has pieces #0 and #1
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0, 1]);
-        assert!(distributor.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
 
         // Peer 2 has only piece #0
         let addr2 = "127.0.0.2:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(distributor.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
 
         // Once piece #0 is downloaded, we're no longer interested in peer 2
-        let not_interesting = distributor.client_has_piece(0);
+        let not_interesting = allocator.client_has_piece(0);
         assert_eq!(not_interesting.len(), 1);
         assert!(not_interesting.contains(&addr2));
     }

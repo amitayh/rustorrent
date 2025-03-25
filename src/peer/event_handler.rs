@@ -13,13 +13,13 @@ use crate::peer::sizes::Sizes;
 use crate::peer::stats::Stats;
 use crate::peer::{
     choke::Choker,
-    piece::{Distributor, Joiner},
+    piece::{Allocator, Joiner},
 };
 use crate::torrent::Info;
 
 pub struct EventHandler {
     choker: Choker,
-    distributor: Distributor,
+    allocator: Allocator,
     joiner: Joiner,
     stats: Stats,
 }
@@ -31,10 +31,10 @@ impl EventHandler {
             torrent_info.download_type.length(),
             config.block_size,
         );
-        let distributor = Distributor::new(sizes.clone(), has_pieces);
+        let allocator = Allocator::new(sizes.clone(), has_pieces);
         Self {
             choker: Choker::new(config.optimistic_choking_cycle),
-            distributor,
+            allocator,
             joiner: Joiner::new(&sizes, torrent_info.pieces.clone()),
             stats: Stats::default(),
         }
@@ -63,7 +63,7 @@ impl EventHandler {
             }
             Event::BlockTimeout(addr, block) => {
                 warn!("block requet timed out: {} - {:?}", &addr, &block);
-                match self.distributor.release(&addr, block) {
+                match self.allocator.release(&addr, block) {
                     Some(next_block) => vec![Action::Send(addr, Message::Request(next_block))],
                     None => Vec::new(),
                 }
@@ -71,14 +71,14 @@ impl EventHandler {
             Event::Connect(addr) => {
                 let mut actions = Vec::with_capacity(2);
                 actions.push(Action::EstablishConnection(addr, None));
-                if !self.distributor.has_pieces.is_empty() {
-                    let pieces = self.distributor.has_pieces.clone();
+                if !self.allocator.has_pieces.is_empty() {
+                    let pieces = self.allocator.has_pieces.clone();
                     actions.push(Action::Send(addr, Message::Bitfield(pieces)));
                 }
                 actions
             }
             Event::AcceptConnection(addr, socket) => {
-                let pieces = self.distributor.has_pieces.clone();
+                let pieces = self.allocator.has_pieces.clone();
                 vec![
                     Action::EstablishConnection(addr, Some(socket)),
                     Action::Send(addr, Message::Bitfield(pieces)),
@@ -86,7 +86,7 @@ impl EventHandler {
             }
             Event::Disconnect(addr) => {
                 self.choker.peer_disconnected(&addr);
-                self.distributor.peer_disconnected(&addr);
+                self.allocator.peer_disconnected(&addr);
                 vec![Action::RemovePeer(addr)]
             }
         }
@@ -97,11 +97,11 @@ impl EventHandler {
             Message::KeepAlive => Vec::new(),
 
             Message::Choke => {
-                self.distributor.peer_choked(addr);
+                self.allocator.peer_choked(addr);
                 Vec::new()
             }
 
-            Message::Unchoke => match self.distributor.peer_unchoked(addr) {
+            Message::Unchoke => match self.allocator.peer_unchoked(addr) {
                 Some(block) => vec![Action::Send(addr, Message::Request(block))],
                 None => Vec::new(),
             },
@@ -124,7 +124,7 @@ impl EventHandler {
             Message::Bitfield(pieces) => {
                 let mut actions = Vec::with_capacity(2);
                 let (became_interesting, next_block) =
-                    self.distributor.peer_has_pieces(addr, &pieces);
+                    self.allocator.peer_has_pieces(addr, &pieces);
                 if became_interesting {
                     actions.push(Action::Send(addr, Message::Interested));
                 }
@@ -139,7 +139,7 @@ impl EventHandler {
                     warn!("{} requested block while being choked", addr);
                     return Vec::new();
                 }
-                if !self.distributor.is_available(block.piece) {
+                if !self.allocator.is_available(block.piece) {
                     warn!("{} requested block which is not available", addr);
                     return Vec::new();
                 }
@@ -148,12 +148,12 @@ impl EventHandler {
 
             Message::Piece(block_data) => {
                 let block = (&block_data).into();
-                if !self.distributor.block_in_flight(&addr, &block) {
+                if !self.allocator.block_in_flight(&addr, &block) {
                     warn!("{} sent block {:?} which was not requested", &addr, &block);
                     return Vec::new();
                 }
                 let mut actions = Vec::with_capacity(4);
-                if let Some(next_block) = self.distributor.block_downloaded(&addr, &block) {
+                if let Some(next_block) = self.allocator.block_downloaded(&addr, &block) {
                     actions.push(Action::Send(addr, Message::Request(next_block)));
                 }
                 let piece = block_data.piece;
@@ -161,7 +161,7 @@ impl EventHandler {
                     Status::Incomplete => (), // Noting to do, wait for next block
                     Status::Invalid => {
                         warn!("piece {} sha1 mismatch", piece);
-                        self.distributor.invalidate(piece);
+                        self.allocator.invalidate(piece);
                         return Vec::new();
                     }
                     Status::Complete {
@@ -169,7 +169,7 @@ impl EventHandler {
                         data: piece_data,
                     } => {
                         actions.push(Action::Broadcast(Message::Have(piece)));
-                        for not_interesting in self.distributor.client_has_piece(piece) {
+                        for not_interesting in self.allocator.client_has_piece(piece) {
                             actions.push(Action::Send(not_interesting, Message::NotInterested));
                         }
                         actions.push(Action::IntegratePiece {
@@ -259,7 +259,7 @@ mod tests {
         for event in events {
             info!(target: "<<<", "{:?}", &event);
             for action in event_handler.handle(event) {
-                info!(target: ">>>", "{:?}", &action);
+                //info!(target: ">>>", "{:?}", &action);
             }
         }
     }
