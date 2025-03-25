@@ -8,6 +8,8 @@ use crate::message::Block;
 use crate::peer::blocks::Blocks;
 use crate::peer::sizes::Sizes;
 
+/// Allocates blocks to request from peers. Optimizes rarest piece first while trying to ditribute
+/// the blocks between peers who have them.
 #[derive(Debug)]
 pub struct Allocator {
     sizes: Sizes,
@@ -100,9 +102,9 @@ impl Allocator {
 
     pub fn block_downloaded(&mut self, addr: &SocketAddr, block: &Block) -> Option<Block> {
         let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-        let peer = self.peers.get_mut(addr).expect("invalid peer");
+        piece.block_downloaded(block);
+        let peer = self.peers.get_mut(addr)?;
         if peer.assigned_blocks.remove(block) {
-            piece.block_downloaded(block);
             return self.assign(addr);
         }
         None

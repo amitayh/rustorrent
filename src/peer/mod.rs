@@ -4,6 +4,7 @@ mod config;
 mod connection;
 mod event;
 mod event_handler;
+mod fs;
 mod peer_id;
 mod piece;
 mod sizes;
@@ -12,22 +13,24 @@ mod transfer_rate;
 
 pub use config::*;
 pub use event::Event;
+use fs::FileReaderWriter;
 pub use peer_id::*;
+use sizes::Sizes;
+use tokio::sync::Mutex;
 
 use std::collections::HashMap;
-use std::io::SeekFrom;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use bit_set::BitSet;
 use log::{info, warn};
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{self, Instant, Interval, timeout};
 
 use crate::message::{Block, Handshake, Message};
@@ -41,10 +44,10 @@ use crate::tracker;
 pub struct Peer {
     listener: TcpListener,
     torrent: Torrent,
-    file_path: PathBuf,
     peers: HashMap<SocketAddr, PeerHandle>,
     block_timeouts: HashMap<(SocketAddr, Block), JoinHandle<Result<()>>>,
     event_handler: EventHandler,
+    file_reader_writer: Arc<Mutex<FileReaderWriter>>,
     tx: Sender<Event>,
     rx: Receiver<Event>,
     handshake: Handshake,
@@ -69,6 +72,18 @@ impl Peer {
             BitSet::with_capacity(total_pieces)
         };
         let event_handler = EventHandler::new(torrent_info.clone(), config.clone(), has_pieces);
+        let file_reader_writer = {
+            let sizes = Sizes::new(
+                torrent_info.piece_length,
+                torrent_info.download_type.length(),
+                config.block_size,
+            );
+            Arc::new(Mutex::new(FileReaderWriter::new(
+                file_path.clone(),
+                &sizes,
+                torrent_info.clone(),
+            )))
+        };
 
         if !seeding {
             let file = OpenOptions::new()
@@ -84,14 +99,14 @@ impl Peer {
                 .unwrap();
         }
 
-        let (tx, rx) = mpsc::channel(128);
+        let (tx, rx) = mpsc::channel(1024);
         Self {
             listener,
             torrent,
-            file_path,
             peers: HashMap::new(),
             block_timeouts: HashMap::new(),
             event_handler,
+            file_reader_writer,
             tx: tx.clone(),
             rx,
             handshake,
@@ -165,17 +180,18 @@ impl Peer {
                     }
                     Action::Upload(addr, block) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
-                        peer.send(Command::Upload(block)).await;
+                        let file_reader_writer = Arc::clone(&self.file_reader_writer);
+                        let tx = peer.tx.clone();
+                        tokio::spawn(async move {
+                            file_reader_writer.lock().await.read(block, tx).await
+                        });
                     }
-                    Action::IntegratePiece { offset, data } => {
-                        // TODO: run this in a blocking task
-                        let mut file = OpenOptions::new()
-                            .write(true)
-                            .truncate(false)
-                            .open(&self.file_path)
-                            .await?;
-                        file.seek(SeekFrom::Start(offset)).await?;
-                        file.write_all(&data).await?;
+                    Action::IntegrateBlock(block_data) => {
+                        let file_reader_writer = Arc::clone(&self.file_reader_writer);
+                        let rx = self.tx.clone();
+                        tokio::task::spawn(async move {
+                            file_reader_writer.lock().await.write(block_data, rx).await
+                        });
                     }
                     Action::RemovePeer(addr) => {
                         self.peers.remove(&addr);
@@ -201,10 +217,8 @@ impl Peer {
             return;
         }
 
-        let (rx, tx) = mpsc::channel(16);
+        let (rx, tx) = mpsc::channel(1024);
         let event_channel = self.tx.clone();
-        let file_path = self.file_path.clone();
-        let piece_length = self.torrent.info.piece_length;
         let handshake = self.handshake.clone();
         let join_handle = tokio::spawn(async move {
             let (socket, send_handshake_first) = match socket {
@@ -218,8 +232,7 @@ impl Peer {
                     }
                 },
             };
-            let mut connection =
-                Connection::new(socket, file_path, piece_length, event_channel.clone(), tx);
+            let mut connection = Connection::new(socket, event_channel.clone(), tx);
             if send_handshake_first {
                 connection.send(&handshake).await?;
                 connection.wait_for_handshake().await?;
@@ -232,7 +245,13 @@ impl Peer {
             event_channel.send(Event::Disconnect(addr)).await?;
             Ok(())
         });
-        self.peers.insert(addr, PeerHandle { rx, join_handle });
+        self.peers.insert(
+            addr,
+            PeerHandle {
+                tx: rx,
+                join_handle,
+            },
+        );
     }
 
     fn start_block_timeout(&mut self, addr: SocketAddr, message: &Message) {
@@ -259,29 +278,31 @@ impl Peer {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        for peer in self.peers.values() {
-            let rx = peer.rx.clone();
-            tokio::spawn(async move { rx.send(Command::Shutdown).await });
+        let mut join_set = JoinSet::new();
+        for (_, peer) in self.peers.drain() {
+            join_set.spawn(async move { peer.shutdown() });
         }
-        for (addr, peer) in self.peers.drain() {
-            if let Err(err) = peer.join_handle.await? {
-                warn!("peer {} existed with error: {}", addr, err);
-            }
-        }
+        join_set.join_all().await;
         Ok(())
     }
 }
 
 struct PeerHandle {
-    rx: Sender<Command>,
+    tx: Sender<Command>,
     join_handle: JoinHandle<Result<()>>,
 }
 
 impl PeerHandle {
     async fn send(&self, command: Command) {
-        if let Err(err) = self.rx.send(command.clone()).await {
+        if let Err(err) = self.tx.send(command.clone()).await {
             warn!("unable to send command {:?}: {}", command, err);
         }
+    }
+
+    async fn shutdown(self) -> anyhow::Result<()> {
+        let _ = self.tx.send(Command::Shutdown).await;
+        self.join_handle.await??;
+        Ok(())
     }
 }
 
@@ -365,8 +386,8 @@ mod tests {
             .respond_with(move |_: &Request| {
                 let response = Value::dictionary()
                     .with_entry("complete", Value::Integer(1))
-                    .with_entry("incomplete", Value::Integer(1))
-                    .with_entry("interval", Value::Integer(10))
+                    .with_entry("incomplete", Value::Integer(2))
+                    .with_entry("interval", Value::Integer(600))
                     .with_entry(
                         "peers",
                         Value::list()
@@ -389,7 +410,7 @@ mod tests {
             seeder_listener,
             test_torrent(announce_url.clone()),
             "assets/alice_in_wonderland.txt".into(),
-            test_config(),
+            test_config().with_unchoking_interval(Duration::from_secs(2)),
             true,
         )
         .await;
@@ -418,6 +439,8 @@ mod tests {
         set.spawn(async move { leecher2.start().await });
 
         let result = timeout(Duration::from_secs(120), set.join_all()).await;
+
+        dbg!(&result);
 
         // assert leecher has file
         assert!(result.is_ok());

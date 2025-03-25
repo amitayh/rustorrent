@@ -13,6 +13,8 @@ pub enum Event {
     Message(SocketAddr, Message),
     Stats(SocketAddr, Stats),
     BlockTimeout(SocketAddr, Block),
+    PieceCompleted(usize),
+    PieceInvalid(usize),
     Connect(SocketAddr),
     AcceptConnection(SocketAddr, TcpStream),
     Disconnect(SocketAddr),

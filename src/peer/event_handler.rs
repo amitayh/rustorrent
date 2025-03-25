@@ -4,23 +4,18 @@ use bit_set::BitSet;
 use log::warn;
 use tokio::net::TcpStream;
 
-use crate::message::{Block, Message};
+use crate::message::{Block, BlockData, Message};
 
 use crate::peer::Config;
 use crate::peer::event::Event;
-use crate::peer::piece::Status;
 use crate::peer::sizes::Sizes;
 use crate::peer::stats::Stats;
-use crate::peer::{
-    choke::Choker,
-    piece::{Allocator, Joiner},
-};
+use crate::peer::{choke::Choker, piece::Allocator};
 use crate::torrent::Info;
 
 pub struct EventHandler {
     choker: Choker,
     allocator: Allocator,
-    joiner: Joiner,
     stats: Stats,
 }
 
@@ -35,7 +30,6 @@ impl EventHandler {
         Self {
             choker: Choker::new(config.optimistic_choking_cycle),
             allocator,
-            joiner: Joiner::new(&sizes, torrent_info.pieces.clone()),
             stats: Stats::default(),
         }
     }
@@ -59,6 +53,17 @@ impl EventHandler {
             Event::Stats(addr, stats) => {
                 self.choker.update_peer_transfer_rate(addr, stats.download);
                 self.stats += stats;
+                Vec::new()
+            }
+            Event::PieceCompleted(piece) => {
+                let mut actions = vec![Action::Broadcast(Message::Have(piece))];
+                for not_interesting in self.allocator.client_has_piece(piece) {
+                    actions.push(Action::Send(not_interesting, Message::NotInterested));
+                }
+                actions
+            }
+            Event::PieceInvalid(piece) => {
+                self.allocator.invalidate(piece);
                 Vec::new()
             }
             Event::BlockTimeout(addr, block) => {
@@ -147,36 +152,14 @@ impl EventHandler {
             }
 
             Message::Piece(block_data) => {
-                let block = (&block_data).into();
+                let block = Block::from(&block_data);
                 if !self.allocator.block_in_flight(&addr, &block) {
                     warn!("{} sent block {:?} which was not requested", &addr, &block);
                     return Vec::new();
                 }
-                let mut actions = Vec::with_capacity(4);
+                let mut actions = vec![Action::IntegrateBlock(block_data)];
                 if let Some(next_block) = self.allocator.block_downloaded(&addr, &block) {
                     actions.push(Action::Send(addr, Message::Request(next_block)));
-                }
-                let piece = block_data.piece;
-                match self.joiner.add(piece, block_data.offset, block_data.data) {
-                    Status::Incomplete => (), // Noting to do, wait for next block
-                    Status::Invalid => {
-                        warn!("piece {} sha1 mismatch", piece);
-                        self.allocator.invalidate(piece);
-                        return Vec::new();
-                    }
-                    Status::Complete {
-                        offset: piece_offset,
-                        data: piece_data,
-                    } => {
-                        actions.push(Action::Broadcast(Message::Have(piece)));
-                        for not_interesting in self.allocator.client_has_piece(piece) {
-                            actions.push(Action::Send(not_interesting, Message::NotInterested));
-                        }
-                        actions.push(Action::IntegratePiece {
-                            offset: piece_offset,
-                            data: piece_data,
-                        });
-                    }
                 }
                 actions
             }
@@ -195,7 +178,7 @@ pub enum Action {
     Send(SocketAddr, Message),
     Broadcast(Message),
     Upload(SocketAddr, Block),
-    IntegratePiece { offset: u64, data: Vec<u8> },
+    IntegrateBlock(BlockData),
     RemovePeer(SocketAddr),
 }
 

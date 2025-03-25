@@ -47,7 +47,7 @@ impl AsyncEncoder for Block {
     }
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct BlockData {
     pub piece: usize,
     pub offset: usize,
