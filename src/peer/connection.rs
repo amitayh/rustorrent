@@ -79,12 +79,7 @@ impl Connection {
                 },
                 Some(command) = self.rx.recv() => match command {
                     Command::Send(message) => {
-                    let direction = format!(
-                        "{} -> {}",
-                        self.messages.get_ref().local_addr()?,
-                        self.messages.get_ref().peer_addr()?,
-                    );
-                    info!(target: &direction, "sending message: {:?}", &message);
+                        info!(target: &self.log_target()?, "sending message: {:?}", &message);
                         self.messages.send(message).await?;
                         self.messages.flush().await?;
                     }
@@ -92,27 +87,19 @@ impl Connection {
                         break;
                     }
                 },
-                message = self.messages.next() => {
-                    info!(target: &self.log_target()?, "got {:?}", message);
-                    if let Some(Ok(message)) = message {
+                Some(message) = self.messages.next() => match message {
+                    Ok(message) => {
+                        info!(target: &self.log_target()?, "got {:?}", message);
                         self.tx.send(Event::Message(addr, message)).await.expect("unable to send");
                     }
+                    Err(err) => {
+                        warn!(target: &self.log_target()?, "failed to decode message: {}", err);
+                        if err.kind() == ErrorKind::UnexpectedEof {
+                            break;
+                        }
+                    }
+
                 }
-                //message = decode_message(&mut self.socket) =>  match message {
-                //    Ok((message, transfer_rate)) => {
-                //        self.stats.download += transfer_rate;
-                //        if !matches!(message, Message::KeepAlive) {
-                //            info!(target: &self.log_target()?, "got message: {:?}", &message);
-                //        }
-                //        self.tx.send(Event::Message(addr, message)).await?;
-                //    }
-                //    Err(err) => {
-                //        warn!(target: &self.log_target()?, "failed to decode message: {}", err);
-                //        if err.kind() == ErrorKind::UnexpectedEof {
-                //            break;
-                //        }
-                //    }
-                //}
             }
         }
         Ok(())

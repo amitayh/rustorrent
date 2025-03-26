@@ -154,7 +154,7 @@ impl Peer {
             let event = tokio::select! {
                 // TODO: disconnect idle peers
                 _ = tokio::signal::ctrl_c() => break,
-                //_ = keep_alive.tick() => Event::KeepAliveTick,
+                _ = keep_alive.tick() => Event::KeepAliveTick,
                 _ = choke.tick() => Event::ChokeTick,
                 Some(event) = self.rx.recv() => event,
                 Ok((socket, addr)) = self.listener.accept() => {
@@ -233,13 +233,13 @@ impl Peer {
                 },
             };
             let mut connection = Connection::new(socket, event_channel.clone(), tx);
-            //if send_handshake_first {
-            //    connection.send(&handshake).await?;
-            //    connection.wait_for_handshake().await?;
-            //} else {
-            //    connection.wait_for_handshake().await?;
-            //    connection.send(&handshake).await?;
-            //}
+            if send_handshake_first {
+                connection.send(&handshake).await?;
+                connection.wait_for_handshake().await?;
+            } else {
+                connection.wait_for_handshake().await?;
+                connection.send(&handshake).await?;
+            }
             connection.start().await?;
             info!("peer {} disconnected", addr);
             event_channel.send(Event::Disconnect(addr)).await?;
@@ -392,7 +392,7 @@ mod tests {
                         "peers",
                         Value::list()
                             .with_value(peer_entry(&seeder_addr))
-                            //.with_value(peer_entry(&leecher1_addr))
+                            .with_value(peer_entry(&leecher1_addr))
                             .with_value(peer_entry(&leecher2_addr)),
                     );
 
@@ -435,7 +435,7 @@ mod tests {
 
         let mut set = JoinSet::new();
         set.spawn(async move { seeder.start().await });
-        //set.spawn(async move { leecher.start().await });
+        set.spawn(async move { leecher.start().await });
         set.spawn(async move { leecher2.start().await });
 
         let result = timeout(Duration::from_secs(120), set.join_all()).await;

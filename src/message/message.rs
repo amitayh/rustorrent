@@ -1,12 +1,11 @@
 use std::fmt::Formatter;
-use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::io::{Error, ErrorKind, Result};
 
 use bit_set::BitSet;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::bytes::{Buf, BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
+use crate::codec::TransportMessage;
 use crate::message::Block;
 use crate::message::BlockData;
 
@@ -41,11 +40,7 @@ pub struct MessageCodec;
 impl Encoder<Message> for MessageCodec {
     type Error = std::io::Error;
 
-    fn encode(
-        &mut self,
-        item: Message,
-        dst: &mut BytesMut,
-    ) -> std::result::Result<(), Self::Error> {
+    fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<()> {
         dst.reserve(item.transport_bytes());
         match item {
             Message::KeepAlive => dst.put_u32(0),
@@ -118,10 +113,7 @@ impl Decoder for MessageCodec {
     type Error = std::io::Error;
     type Item = Message;
 
-    fn decode(
-        &mut self,
-        src: &mut BytesMut,
-    ) -> std::result::Result<Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
         if src.len() < 4 {
             // Not enough data to read length marker.
             return Ok(None);
@@ -130,9 +122,12 @@ impl Decoder for MessageCodec {
         let mut length_bytes = [0; 4];
         length_bytes.copy_from_slice(&src[..4]);
         let length = u32::from_be_bytes(length_bytes) as usize;
+
         if length == 0 {
+            src.advance(4);
             return Ok(Some(Message::KeepAlive));
         }
+
         if src.len() < 4 + length {
             src.reserve(4 + length - src.len());
             return Ok(None);
@@ -217,125 +212,6 @@ impl std::fmt::Debug for Message {
         }
     }
 }
-
-/*
-impl AsyncDecoder for Message {
-    async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
-        let length = stream.read_u32().await? as usize;
-        if length == 0 {
-            return Ok(Self::KeepAlive);
-        }
-        let id = stream.read_u8().await?;
-        match (id, length) {
-            (ID_CHOKE, 1) => Ok(Self::Choke),
-            (ID_UNCHOKE, 1) => Ok(Self::Unchoke),
-            (ID_INTERESTED, 1) => Ok(Self::Interested),
-            (ID_NOT_INTERESTED, 1) => Ok(Self::NotInterested),
-            (ID_HAVE, 5) => {
-                let piece = stream.read_u32().await? as usize;
-                Ok(Self::Have(piece))
-            }
-            (ID_BITFIELD, 1..) => {
-                let mut buf = vec![0; length - 1];
-                stream.read_exact(&mut buf).await?;
-                let bitset = BitSet::from_bytes(&buf);
-                Ok(Self::Bitfield(bitset))
-            }
-            (ID_REQUEST, 13) => {
-                let block = Block::decode(stream).await?;
-                Ok(Self::Request(block))
-            }
-            (ID_PIECE, 9..) => {
-                let piece = stream.read_u32().await? as usize;
-                let offset = stream.read_u32().await? as usize;
-                let mut data = vec![0; length - 9];
-                stream.read_exact(&mut data).await?;
-                Ok(Self::Piece(BlockData {
-                    piece,
-                    offset,
-                    data,
-                }))
-            }
-            (ID_CANCEL, 13) => {
-                let block = Block::decode(stream).await?;
-                Ok(Self::Cancel(block))
-            }
-            (ID_PORT, 3) => {
-                let port = stream.read_u16().await?;
-                Ok(Self::Port(port))
-            }
-            _ => Err(Error::new(
-                ErrorKind::InvalidData,
-                format!("invalid message id {} with length {}", id, length),
-            )),
-        }
-    }
-}
-
-impl AsyncEncoder for Message {
-    async fn encode<S: AsyncWrite + Unpin>(&self, stream: &mut S) -> Result<()> {
-        match self {
-            Self::KeepAlive => stream.write_u32(0).await?,
-            Self::Choke => {
-                stream.write_u32(1).await?;
-                stream.write_u8(ID_CHOKE).await?;
-            }
-            Self::Unchoke => {
-                stream.write_u32(1).await?;
-                stream.write_u8(ID_UNCHOKE).await?;
-            }
-            Self::Interested => {
-                stream.write_u32(1).await?;
-                stream.write_u8(ID_INTERESTED).await?;
-            }
-            Self::NotInterested => {
-                stream.write_u32(1).await?;
-                stream.write_u8(ID_NOT_INTERESTED).await?;
-            }
-            Self::Have(piece) => {
-                stream.write_u32(5).await?;
-                stream.write_u8(ID_HAVE).await?;
-                stream.write_u32(*piece as u32).await?;
-            }
-            Self::Bitfield(bitset) => {
-                let bytes = bitset.get_ref().to_bytes();
-                stream.write_u32(1 + (bytes.len() as u32)).await?;
-                stream.write_u8(ID_BITFIELD).await?;
-                stream.write_all(&bytes).await?;
-            }
-            Self::Request(block) => {
-                stream.write_u32(13).await?;
-                stream.write_u8(ID_REQUEST).await?;
-                block.encode(stream).await?;
-            }
-            Self::Piece(BlockData {
-                piece,
-                offset,
-                data,
-            }) => {
-                let length = 9 + data.len();
-                stream.write_u32(length as u32).await?;
-                stream.write_u8(ID_PIECE).await?;
-                stream.write_u32(*piece as u32).await?;
-                stream.write_u32(*offset as u32).await?;
-                stream.write_all(data).await?;
-            }
-            Self::Cancel(block) => {
-                stream.write_u32(13).await?;
-                stream.write_u8(ID_CANCEL).await?;
-                block.encode(stream).await?;
-            }
-            Self::Port(port) => {
-                stream.write_u32(3).await?;
-                stream.write_u8(ID_PORT).await?;
-                stream.write_u16(*port).await?;
-            }
-        }
-        stream.flush().await?;
-        Ok(())
-    }
-}
-*/
 
 impl TransportMessage for Message {
     fn transport_bytes(&self) -> usize {
