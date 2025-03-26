@@ -26,7 +26,7 @@ impl EventHandler {
             torrent_info.download_type.length(),
             config.block_size,
         );
-        let allocator = Allocator::new(sizes.clone(), has_pieces);
+        let allocator = Allocator::new(sizes, has_pieces);
         Self {
             choker: Choker::new(config.optimistic_choking_cycle),
             allocator,
@@ -60,6 +60,7 @@ impl EventHandler {
                 for not_interesting in self.allocator.client_has_piece(piece) {
                     actions.push(Action::Send(not_interesting, Message::NotInterested));
                 }
+                // TODO: remove this
                 if self.allocator.is_complete() {
                     actions.push(Action::Shutdown);
                 }

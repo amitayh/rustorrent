@@ -150,8 +150,8 @@ impl Peer {
             });
         }
 
-        let mut shutdown = false;
-        while !shutdown {
+        let mut running = true;
+        while running {
             let event = tokio::select! {
                 // TODO: disconnect idle peers
                 _ = tokio::signal::ctrl_c() => break,
@@ -172,11 +172,15 @@ impl Peer {
                     Action::Send(addr, message) => {
                         self.start_block_timeout(addr, &message);
                         let peer = self.peers.get(&addr).expect("invalid peer");
-                        peer.send(Command::Send(message)).await;
+                        if let Err(_) = peer.tx.send(Command::Send(message)).await {
+                            self.tx.send(Event::Disconnect(addr)).await?;
+                        }
                     }
                     Action::Broadcast(message) => {
-                        for peer in self.peers.values() {
-                            peer.send(Command::Send(message.clone())).await;
+                        for (addr, peer) in &self.peers {
+                            if let Err(_) = peer.tx.send(Command::Send(message.clone())).await {
+                                self.tx.send(Event::Disconnect(*addr)).await?;
+                            }
                         }
                     }
                     Action::Upload(addr, block) => {
@@ -198,7 +202,7 @@ impl Peer {
                         self.peers.remove(&addr);
                     }
                     Action::Shutdown => {
-                        shutdown = true;
+                        running = false;
                     }
                 }
             }
@@ -297,12 +301,6 @@ struct PeerHandle {
 }
 
 impl PeerHandle {
-    async fn send(&self, command: Command) {
-        if let Err(err) = self.tx.send(command.clone()).await {
-            warn!("unable to send command {:?}: {}", command, err);
-        }
-    }
-
     async fn shutdown(self) -> anyhow::Result<()> {
         let _ = self.tx.send(Command::Shutdown).await;
         self.join_handle.await??;
