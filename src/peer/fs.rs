@@ -3,14 +3,14 @@ use std::{io::SeekFrom, path::PathBuf};
 use log::warn;
 use size::Size;
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Join};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::{fs::File, sync::mpsc::Sender};
 
 use crate::message::{BlockData, Message};
 use crate::peer::connection::Command;
 use crate::peer::piece::Joiner;
 use crate::peer::sizes::Sizes;
-use crate::torrent::{Info, Torrent};
+use crate::torrent::Info;
 use crate::{message::Block, peer::Event};
 
 use super::piece::Status;

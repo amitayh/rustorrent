@@ -1255,6 +1255,7 @@ dependencies = [
  "anyhow",
  "bit-set",
  "env_logger",
+ "futures",
  "hex",
  "log",
  "md5",

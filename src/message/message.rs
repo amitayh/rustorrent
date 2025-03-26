@@ -1,13 +1,14 @@
 use std::fmt::Formatter;
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, ErrorKind, Read, Result, Write};
 
 use bit_set::BitSet;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio_util::bytes::{Buf, BufMut, BytesMut};
+use tokio_util::codec::{Decoder, Encoder};
 
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
 use crate::message::Block;
-
-use super::BlockData;
+use crate::message::BlockData;
 
 const ID_CHOKE: u8 = 0;
 const ID_UNCHOKE: u8 = 1;
@@ -33,6 +34,162 @@ pub enum Message {
     Piece(BlockData),
     Cancel(Block),
     Port(u16),
+}
+
+pub struct MessageCodec;
+
+impl Encoder<Message> for MessageCodec {
+    type Error = std::io::Error;
+
+    fn encode(
+        &mut self,
+        item: Message,
+        dst: &mut BytesMut,
+    ) -> std::result::Result<(), Self::Error> {
+        dst.reserve(item.transport_bytes());
+        match item {
+            Message::KeepAlive => dst.put_u32(0),
+            Message::Choke => {
+                dst.put_u32(1);
+                dst.put_u8(ID_CHOKE);
+            }
+            Message::Unchoke => {
+                dst.put_u32(1);
+                dst.put_u8(ID_UNCHOKE);
+            }
+            Message::Interested => {
+                dst.put_u32(1);
+                dst.put_u8(ID_INTERESTED);
+            }
+            Message::NotInterested => {
+                dst.put_u32(1);
+                dst.put_u8(ID_NOT_INTERESTED);
+            }
+            Message::Have(piece) => {
+                dst.put_u32(5);
+                dst.put_u8(ID_HAVE);
+                dst.put_u32(piece as u32);
+            }
+            Message::Bitfield(bitset) => {
+                let bytes = bitset.get_ref().to_bytes();
+                dst.put_u32(1 + (bytes.len() as u32));
+                dst.put_u8(ID_BITFIELD);
+                dst.extend_from_slice(&bytes);
+            }
+            Message::Request(block) => {
+                dst.put_u32(13);
+                dst.put_u8(ID_REQUEST);
+                encode_block(block, dst);
+            }
+            Message::Piece(BlockData {
+                piece,
+                offset,
+                data,
+            }) => {
+                let length = 9 + data.len();
+                dst.put_u32(length as u32);
+                dst.put_u8(ID_PIECE);
+                dst.put_u32(piece as u32);
+                dst.put_u32(offset as u32);
+                dst.extend_from_slice(&data);
+            }
+            Message::Cancel(block) => {
+                dst.put_u32(13);
+                dst.put_u8(ID_CANCEL);
+                encode_block(block, dst);
+            }
+            Message::Port(port) => {
+                dst.put_u32(3);
+                dst.put_u8(ID_PORT);
+                dst.put_u16(port);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn encode_block(block: Block, dst: &mut BytesMut) {
+    dst.put_u32(block.piece as u32);
+    dst.put_u32(block.offset as u32);
+    dst.put_u32(block.length as u32);
+}
+
+impl Decoder for MessageCodec {
+    type Error = std::io::Error;
+    type Item = Message;
+
+    fn decode(
+        &mut self,
+        src: &mut BytesMut,
+    ) -> std::result::Result<Option<Self::Item>, Self::Error> {
+        if src.len() < 4 {
+            // Not enough data to read length marker.
+            return Ok(None);
+        }
+
+        let mut length_bytes = [0; 4];
+        length_bytes.copy_from_slice(&src[..4]);
+        let length = u32::from_be_bytes(length_bytes) as usize;
+        if length == 0 {
+            return Ok(Some(Message::KeepAlive));
+        }
+        if src.len() < 4 + length {
+            src.reserve(4 + length - src.len());
+            return Ok(None);
+        }
+
+        src.advance(4);
+        let id = src.get_u8();
+        match (id, length) {
+            (ID_CHOKE, 1) => Ok(Some(Message::Choke)),
+            (ID_UNCHOKE, 1) => Ok(Some(Message::Unchoke)),
+            (ID_INTERESTED, 1) => Ok(Some(Message::Interested)),
+            (ID_NOT_INTERESTED, 1) => Ok(Some(Message::NotInterested)),
+            (ID_HAVE, 5) => {
+                let piece = src.get_u32() as usize;
+                Ok(Some(Message::Have(piece)))
+            }
+            (ID_BITFIELD, 1..) => {
+                let bitset = BitSet::from_bytes(&src[..(length - 1)]);
+                src.advance(length - 1);
+                Ok(Some(Message::Bitfield(bitset)))
+            }
+            (ID_REQUEST, 13) => {
+                let block = decode_block(src);
+                Ok(Some(Message::Request(block)))
+            }
+            (ID_PIECE, 9..) => {
+                let piece = src.get_u32() as usize;
+                let offset = src.get_u32() as usize;
+                let data = src[..(length - 9)].to_vec();
+                src.advance(length - 9);
+                Ok(Some(Message::Piece(BlockData {
+                    piece,
+                    offset,
+                    data,
+                })))
+            }
+            (ID_CANCEL, 13) => {
+                let block = decode_block(src);
+                Ok(Some(Message::Cancel(block)))
+            }
+            (ID_PORT, 3) => {
+                let port = src.get_u16();
+                Ok(Some(Message::Port(port)))
+            }
+            _ => Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("invalid message id {} with length {}", id, length),
+            )),
+        }
+    }
+}
+
+fn decode_block(src: &mut BytesMut) -> Block {
+    let piece = src.get_u32() as usize;
+    let offset = src.get_u32() as usize;
+    let length = src.get_u32() as usize;
+    Block::new(piece, offset, length)
 }
 
 impl std::fmt::Debug for Message {
@@ -61,6 +218,7 @@ impl std::fmt::Debug for Message {
     }
 }
 
+/*
 impl AsyncDecoder for Message {
     async fn decode<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Self> {
         let length = stream.read_u32().await? as usize;
@@ -177,6 +335,7 @@ impl AsyncEncoder for Message {
         Ok(())
     }
 }
+*/
 
 impl TransportMessage for Message {
     fn transport_bytes(&self) -> usize {

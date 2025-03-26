@@ -4,21 +4,25 @@ use std::io::Result;
 use std::time::Duration;
 
 use anyhow::anyhow;
+use futures::SinkExt;
 use log::{info, warn};
 use size::Size;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
+use tokio_stream::StreamExt;
+use tokio_util::codec::Framed;
 
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
+use crate::message::MessageCodec;
 use crate::message::{Handshake, Message};
 use crate::peer::Event;
 use crate::peer::stats::Stats;
 use crate::peer::transfer_rate::TransferRate;
 
 pub struct Connection {
-    socket: TcpStream,
+    messages: Framed<TcpStream, MessageCodec>,
     tx: Sender<Event>,
     rx: Receiver<Command>,
     stats: Stats,
@@ -27,7 +31,7 @@ pub struct Connection {
 impl Connection {
     pub fn new(socket: TcpStream, tx: Sender<Event>, rx: Receiver<Command>) -> Self {
         Self {
-            socket,
+            messages: Framed::new(socket, MessageCodec),
             tx,
             rx,
             stats: Stats::default(),
@@ -35,7 +39,7 @@ impl Connection {
     }
 
     pub async fn wait_for_handshake(&mut self) -> anyhow::Result<()> {
-        let handshake = Handshake::decode(&mut self.socket).await?;
+        let handshake = Handshake::decode(self.messages.get_mut()).await?;
         info!("< got handshake {:?}", handshake);
         if !handshake.is_standard_protocol() {
             return Err(anyhow!(
@@ -52,13 +56,13 @@ impl Connection {
     ) -> Result<()> {
         let direction = format!(
             "{} -> {}",
-            self.socket.local_addr()?,
-            self.socket.peer_addr()?,
+            self.messages.get_ref().local_addr()?,
+            self.messages.get_ref().peer_addr()?,
         );
         info!(target: &direction, "sending message: {:?}", message);
         let transfer_begin = Instant::now();
-        message.encode(&mut self.socket).await?;
-        self.socket.flush().await?;
+        message.encode(self.messages.get_mut()).await?;
+        self.messages.get_mut().flush().await?;
         let duration = Instant::now() - transfer_begin;
         let size = Size::from_bytes(message.transport_bytes());
         self.stats.upload += TransferRate(size, duration);
@@ -68,22 +72,29 @@ impl Connection {
     pub async fn start(&mut self) -> anyhow::Result<()> {
         let mut update_stats = tokio::time::interval(Duration::from_secs(1));
         loop {
-            let addr = self.socket.peer_addr()?;
+            let addr = self.messages.get_ref().peer_addr()?;
             tokio::select! {
-                //_ = update_stats.tick() => {
-                //    self.tx.send(Event::Stats(addr, self.stats.clone())).await?;
-                //},
+                _ = update_stats.tick() => {
+                    self.tx.send(Event::Stats(addr, self.stats.clone())).await?;
+                },
                 Some(command) = self.rx.recv() => match command {
                     Command::Send(message) => {
-                        self.send(&message).await?;
+                    let direction = format!(
+                        "{} -> {}",
+                        self.messages.get_ref().local_addr()?,
+                        self.messages.get_ref().peer_addr()?,
+                    );
+                    info!(target: &direction, "sending message: {:?}", &message);
+                        self.messages.send(message).await?;
+                        self.messages.flush().await?;
                     }
                     Command::Shutdown => {
                         break;
                     }
                 },
-                message = Message::decode(&mut self.socket) => {
+                message = self.messages.next() => {
                     info!(target: &self.log_target()?, "got {:?}", message);
-                    if let Ok(message) = message {
+                    if let Some(Ok(message)) = message {
                         self.tx.send(Event::Message(addr, message)).await.expect("unable to send");
                     }
                 }
@@ -108,20 +119,20 @@ impl Connection {
     }
 
     fn log_target(&self) -> std::io::Result<String> {
-        let local_addr = self.socket.local_addr()?;
-        let peer_addr = self.socket.peer_addr()?;
+        let local_addr = self.messages.get_ref().local_addr()?;
+        let peer_addr = self.messages.get_ref().peer_addr()?;
         Ok(format!("{} <- {}", local_addr, peer_addr))
     }
 }
 
-async fn decode_message(socket: &mut TcpStream) -> std::io::Result<(Message, TransferRate)> {
-    let transfer_begin = Instant::now();
-    let message = Message::decode(socket).await?;
-    let duration = Instant::now() - transfer_begin;
-    let size = Size::from_bytes(message.transport_bytes());
-    let transfer_rate = TransferRate(size, duration);
-    Ok((message, transfer_rate))
-}
+//async fn decode_message(socket: &mut TcpStream) -> std::io::Result<(Message, TransferRate)> {
+//    let transfer_begin = Instant::now();
+//    let message = Message::decode(socket).await?;
+//    let duration = Instant::now() - transfer_begin;
+//    let size = Size::from_bytes(message.transport_bytes());
+//    let transfer_rate = TransferRate(size, duration);
+//    Ok((message, transfer_rate))
+//}
 
 #[derive(Clone, Debug)]
 pub enum Command {
