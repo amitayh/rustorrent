@@ -38,6 +38,10 @@ impl Allocator {
         self.has_pieces.contains(piece)
     }
 
+    pub fn is_complete(&self) -> bool {
+        self.has_pieces.len() == self.pieces.len()
+    }
+
     /// Returns peers that are no longer interesting (don't have any piece we don't already have)
     pub fn client_has_piece(&mut self, piece: usize) -> HashSet<SocketAddr> {
         self.has_pieces.insert(piece);

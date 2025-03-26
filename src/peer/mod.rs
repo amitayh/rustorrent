@@ -150,7 +150,8 @@ impl Peer {
             });
         }
 
-        loop {
+        let mut shutdown = false;
+        while !shutdown {
             let event = tokio::select! {
                 // TODO: disconnect idle peers
                 _ = tokio::signal::ctrl_c() => break,
@@ -195,6 +196,9 @@ impl Peer {
                     }
                     Action::RemovePeer(addr) => {
                         self.peers.remove(&addr);
+                    }
+                    Action::Shutdown => {
+                        shutdown = true;
                     }
                 }
             }
@@ -280,7 +284,7 @@ impl Peer {
     async fn shutdown(&mut self) -> Result<()> {
         let mut join_set = JoinSet::new();
         for (_, peer) in self.peers.drain() {
-            join_set.spawn(async move { peer.shutdown() });
+            join_set.spawn(async move { peer.shutdown().await });
         }
         join_set.join_all().await;
         Ok(())

@@ -60,6 +60,9 @@ impl EventHandler {
                 for not_interesting in self.allocator.client_has_piece(piece) {
                     actions.push(Action::Send(not_interesting, Message::NotInterested));
                 }
+                if self.allocator.is_complete() {
+                    actions.push(Action::Shutdown);
+                }
                 actions
             }
             Event::PieceInvalid(piece) => {
@@ -180,6 +183,7 @@ pub enum Action {
     Upload(SocketAddr, Block),
     IntegrateBlock(BlockData),
     RemovePeer(SocketAddr),
+    Shutdown,
 }
 
 #[cfg(test)]
@@ -195,15 +199,14 @@ mod tests {
 
     use super::*;
 
-    //#[test]
-    //fn keep_alive() {
-    //    let mut event_handler = create_event_handler();
+    #[test]
+    fn keep_alive() {
+        let mut event_handler = create_event_handler();
 
-    //    assert_eq!(
-    //        event_handler.handle(Event::KeepAliveTick),
-    //        vec![Action::Broadcast(Message::KeepAlive)]
-    //    );
-    //}
+        let actions = event_handler.handle(Event::KeepAliveTick);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(actions[0], Action::Broadcast(Message::KeepAlive)));
+    }
 
     #[test]
     fn sequence() {
@@ -241,7 +244,7 @@ mod tests {
     fn run(event_handler: &mut EventHandler, events: Vec<Event>) {
         for event in events {
             info!(target: "<<<", "{:?}", &event);
-            for action in event_handler.handle(event) {
+            for _action in event_handler.handle(event) {
                 //info!(target: ">>>", "{:?}", &action);
             }
         }

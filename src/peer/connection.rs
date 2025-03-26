@@ -81,7 +81,6 @@ impl Connection {
                     Command::Send(message) => {
                         info!(target: &self.log_target()?, "sending message: {:?}", &message);
                         self.messages.send(message).await?;
-                        self.messages.flush().await?;
                     }
                     Command::Shutdown => {
                         break;
