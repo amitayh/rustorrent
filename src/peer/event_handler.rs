@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use bit_set::BitSet;
 use log::warn;
 use tokio::net::TcpStream;
+use tokio::time::Instant;
 
 use crate::message::{Block, BlockData, Message};
 
@@ -10,12 +11,14 @@ use crate::peer::Config;
 use crate::peer::event::Event;
 use crate::peer::sizes::Sizes;
 use crate::peer::stats::Stats;
+use crate::peer::sweeper::Sweeper;
 use crate::peer::{choke::Choker, piece::Allocator};
 use crate::torrent::Info;
 
 pub struct EventHandler {
     choker: Choker,
     allocator: Allocator,
+    sweeper: Sweeper,
     stats: Stats,
 }
 
@@ -30,6 +33,7 @@ impl EventHandler {
         Self {
             choker: Choker::new(config.optimistic_choking_cycle),
             allocator,
+            sweeper: Sweeper::new(config.idle_peer_timeout),
             stats: Stats::default(),
         }
     }
@@ -49,7 +53,21 @@ impl EventHandler {
                     .map(|addr| Action::Send(addr, Message::Unchoke));
                 choke.chain(unchoke).collect()
             }
-            Event::Message(addr, message) => self.handle_message(addr, message),
+            Event::SweepTick(instant) => {
+                let result = self.sweeper.sweep(instant);
+                let mut actions = Vec::with_capacity(result.len());
+                for addr in result {
+                    warn!("peer {} has been idle for too long", &addr);
+                    self.choker.peer_disconnected(&addr);
+                    self.allocator.peer_disconnected(&addr);
+                    actions.push(Action::RemovePeer(addr));
+                }
+                actions
+            }
+            Event::Message(addr, message) => {
+                self.sweeper.update(addr, Instant::now());
+                self.handle_message(addr, message)
+            }
             Event::Stats(addr, stats) => {
                 self.choker.update_peer_transfer_rate(addr, stats.download);
                 self.stats += stats;
@@ -96,6 +114,7 @@ impl EventHandler {
             Event::Disconnect(addr) => {
                 self.choker.peer_disconnected(&addr);
                 self.allocator.peer_disconnected(&addr);
+                self.sweeper.peer_disconnected(&addr);
                 vec![Action::RemovePeer(addr)]
             }
         }

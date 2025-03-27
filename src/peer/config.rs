@@ -9,8 +9,10 @@ pub struct Config {
     pub clinet_id: PeerId,
     pub keep_alive_interval: Duration,
     pub choking_interval: Duration,
+    pub sweep_interval: Duration,
     pub optimistic_choking_cycle: usize,
     pub block_size: Size,
+    pub idle_peer_timeout: Duration,
     pub block_timeout: Duration,
     pub shutdown_timeout: Duration,
 }
@@ -39,8 +41,10 @@ impl Default for Config {
             clinet_id: PeerId::random(),
             keep_alive_interval: Duration::from_secs(120),
             choking_interval: Duration::from_secs(10),
+            sweep_interval: Duration::from_secs(5),
             optimistic_choking_cycle: 3,
             block_size: Size::from_kibibytes(16),
+            idle_peer_timeout: Duration::from_secs(30),
             block_timeout: Duration::from_secs(10),
             shutdown_timeout: Duration::from_secs(10),
         }

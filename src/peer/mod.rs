@@ -9,6 +9,7 @@ mod peer_id;
 mod piece;
 mod sizes;
 mod stats;
+mod sweeper;
 mod transfer_rate;
 
 pub use config::*;
@@ -117,6 +118,7 @@ impl Peer {
     pub async fn start(&mut self) -> Result<()> {
         let mut keep_alive = interval_with_delay(self.config.keep_alive_interval);
         let mut choke = interval_with_delay(self.config.choking_interval);
+        let mut sweep = interval_with_delay(self.config.sweep_interval);
 
         {
             let self_addr = self.listener.local_addr()?;
@@ -153,10 +155,10 @@ impl Peer {
         let mut running = true;
         while running {
             let event = tokio::select! {
-                // TODO: disconnect idle peers
                 _ = tokio::signal::ctrl_c() => break,
                 _ = keep_alive.tick() => Event::KeepAliveTick,
                 _ = choke.tick() => Event::ChokeTick,
+                now = sweep.tick() => Event::SweepTick(now),
                 Some(event) = self.rx.recv() => event,
                 Ok((socket, addr)) = self.listener.accept() => {
                     Event::AcceptConnection(addr, socket)
@@ -172,15 +174,11 @@ impl Peer {
                     Action::Send(addr, message) => {
                         self.start_block_timeout(addr, &message);
                         let peer = self.peers.get(&addr).expect("invalid peer");
-                        if let Err(_) = peer.tx.send(message).await {
-                            self.tx.send(Event::Disconnect(addr)).await?;
-                        }
+                        self.send(&addr, peer, message).await;
                     }
                     Action::Broadcast(message) => {
                         for (addr, peer) in &self.peers {
-                            if let Err(_) = peer.tx.send(message.clone()).await {
-                                self.tx.send(Event::Disconnect(*addr)).await?;
-                            }
+                            self.send(addr, peer, message.clone()).await;
                         }
                     }
                     Action::Upload(addr, block) => {
@@ -199,7 +197,8 @@ impl Peer {
                         });
                     }
                     Action::RemovePeer(addr) => {
-                        self.peers.remove(&addr);
+                        let peer = self.peers.remove(&addr).expect("invalid peer");
+                        peer.cancellation_token.cancel();
                     }
                     Action::Shutdown => {
                         running = false;
@@ -217,6 +216,15 @@ impl Peer {
         }
 
         Ok(())
+    }
+
+    async fn send(&self, addr: &SocketAddr, peer: &PeerHandle, message: Message) {
+        if peer.tx.send(message).await.is_err() {
+            self.tx
+                .send(Event::Disconnect(*addr))
+                .await
+                .expect("channel should be open");
+        }
     }
 
     fn establish_connection(&mut self, addr: SocketAddr, socket: Option<TcpStream>) {
