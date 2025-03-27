@@ -35,7 +35,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{self, Instant, Interval, timeout};
 
-use crate::message::{Block, Handshake, Message};
+use crate::message::{Handshake, Message};
 use crate::peer::connection::Connection;
 use crate::peer::event_handler::Action;
 use crate::peer::event_handler::EventHandler;
@@ -46,7 +46,6 @@ pub struct Peer {
     listener: TcpListener,
     torrent: Torrent,
     peers: HashMap<SocketAddr, PeerHandle>,
-    block_timeouts: HashMap<(SocketAddr, Block), JoinHandle<Result<()>>>,
     event_handler: EventHandler,
     file_reader_writer: Arc<Mutex<FileReaderWriter>>,
     tx: Sender<Event>,
@@ -105,7 +104,6 @@ impl Peer {
             listener,
             torrent,
             peers: HashMap::new(),
-            block_timeouts: HashMap::new(),
             event_handler,
             file_reader_writer,
             tx: tx.clone(),
@@ -165,14 +163,12 @@ impl Peer {
                 }
             };
 
-            self.abort_block_timeout(&event);
             for action in self.event_handler.handle(event) {
                 match action {
                     Action::EstablishConnection(addr, socket) => {
                         self.establish_connection(addr, socket);
                     }
                     Action::Send(addr, message) => {
-                        self.start_block_timeout(addr, &message);
                         let peer = self.peers.get(&addr).expect("invalid peer");
                         self.send(&addr, peer, message).await;
                     }
@@ -273,29 +269,6 @@ impl Peer {
                 cancellation_token,
             },
         );
-    }
-
-    fn start_block_timeout(&mut self, addr: SocketAddr, message: &Message) {
-        if let Message::Request(block) = message {
-            let timeout = self.config.block_timeout;
-            let tx = self.tx.clone();
-            let block = *block;
-            let join_handle = tokio::spawn(async move {
-                tokio::time::sleep(timeout).await;
-                tx.send(Event::BlockTimeout(addr, block)).await?;
-                Ok(())
-            });
-            self.block_timeouts.insert((addr, block), join_handle);
-        }
-    }
-
-    fn abort_block_timeout(&mut self, event: &Event) {
-        if let Event::Message(addr, Message::Piece(block)) = event {
-            let key = (*addr, block.into());
-            if let Some(timeout) = self.block_timeouts.remove(&key) {
-                timeout.abort();
-            }
-        }
     }
 
     async fn shutdown(&mut self) -> Result<()> {

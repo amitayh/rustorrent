@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::VecDeque, net::SocketAddr, time::Duration};
+use std::{cmp::Reverse, net::SocketAddr, time::Duration};
 
 use priority_queue::PriorityQueue;
 use tokio::time::Instant;
@@ -6,15 +6,17 @@ use tokio::time::Instant;
 use crate::message::Block;
 
 pub struct Sweeper {
-    limit: Duration,
+    idle_peer_timeout: Duration,
+    block_timeout: Duration,
     peer_activity: PriorityQueue<SocketAddr, Reverse<Instant>>,
     blocks_in_flight: PriorityQueue<(SocketAddr, Block), Reverse<Instant>>,
 }
 
 impl Sweeper {
-    pub fn new(limit: Duration) -> Self {
+    pub fn new(idle_peer_timeout: Duration, block_timeout: Duration) -> Self {
         Self {
-            limit,
+            idle_peer_timeout,
+            block_timeout,
             peer_activity: PriorityQueue::new(),
             blocks_in_flight: PriorityQueue::new(),
         }
@@ -24,12 +26,11 @@ impl Sweeper {
         self.peer_activity.push_decrease(addr, Reverse(instant));
     }
 
-    fn block_requested(&mut self, addr: SocketAddr, block: Block, instant: Instant) {
-        self.blocks_in_flight
-            .push_decrease((addr, block), Reverse(instant));
+    pub fn block_requested(&mut self, addr: SocketAddr, block: Block, instant: Instant) {
+        self.blocks_in_flight.push((addr, block), Reverse(instant));
     }
 
-    fn block_downloaded(&mut self, addr: SocketAddr, block: Block) {
+    pub fn block_downloaded(&mut self, addr: SocketAddr, block: Block) {
         self.blocks_in_flight.remove(&(addr, block));
     }
 
@@ -53,13 +54,14 @@ impl Sweeper {
 
     fn pop_idle_peer(&mut self, now: Instant) -> Option<SocketAddr> {
         self.peer_activity
-            .pop_if(|_, Reverse(last_activity)| *last_activity + self.limit <= now)
+            .pop_if(|_, Reverse(last_activity)| *last_activity + self.idle_peer_timeout <= now)
             .map(|(addr, _)| addr)
     }
 
     fn pop_abandoned_block(&mut self, now: Instant) -> Option<(SocketAddr, Block)> {
+        // TODO: this should use a different config
         self.blocks_in_flight
-            .pop_if(|_, Reverse(last_activity)| *last_activity + self.limit <= now)
+            .pop_if(|_, Reverse(last_activity)| *last_activity + self.block_timeout <= now)
             .map(|(block, _)| block)
     }
 }
@@ -77,7 +79,7 @@ mod tests {
 
     #[test]
     fn no_peer_to_sweep() {
-        let mut sweeper = Sweeper::new(Duration::from_secs(2));
+        let mut sweeper = Sweeper::new(Duration::from_secs(2), Duration::ZERO);
         let now = Instant::now();
 
         let addr = "127.0.0.1:6881".parse().unwrap();
@@ -88,7 +90,7 @@ mod tests {
 
     #[test]
     fn sweep_idle_peer() {
-        let mut sweeper = Sweeper::new(Duration::from_secs(2));
+        let mut sweeper = Sweeper::new(Duration::from_secs(2), Duration::ZERO);
         let now = Instant::now();
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
@@ -108,7 +110,7 @@ mod tests {
 
     #[test]
     fn no_block_to_sweep() {
-        let mut sweeper = Sweeper::new(Duration::from_secs(2));
+        let mut sweeper = Sweeper::new(Duration::ZERO, Duration::from_secs(2));
         let now = Instant::now();
 
         let addr = "127.0.0.1:6881".parse().unwrap();
@@ -120,7 +122,7 @@ mod tests {
 
     #[test]
     fn sweep_blocks_that_are_in_flight_for_too_long() {
-        let mut sweeper = Sweeper::new(Duration::from_secs(2));
+        let mut sweeper = Sweeper::new(Duration::ZERO, Duration::from_secs(2));
         let now = Instant::now();
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
@@ -139,7 +141,7 @@ mod tests {
 
     #[test]
     fn mark_downloaded_blocks() {
-        let mut sweeper = Sweeper::new(Duration::from_secs(2));
+        let mut sweeper = Sweeper::new(Duration::ZERO, Duration::from_secs(2));
         let now = Instant::now();
 
         let addr = "127.0.0.1:6881".parse().unwrap();

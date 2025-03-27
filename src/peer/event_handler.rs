@@ -33,13 +33,14 @@ impl EventHandler {
         Self {
             choker: Choker::new(config.optimistic_choking_cycle),
             allocator,
-            sweeper: Sweeper::new(config.idle_peer_timeout),
+            sweeper: Sweeper::new(config.idle_peer_timeout, config.block_timeout),
             stats: Stats::default(),
         }
     }
 
     pub fn handle(&mut self, event: Event) -> Vec<Action> {
-        match event {
+        let now = Instant::now();
+        let actions = match event {
             Event::KeepAliveTick => vec![Action::Broadcast(Message::KeepAlive)],
             Event::ChokeTick => {
                 let decision = self.choker.run();
@@ -62,10 +63,16 @@ impl EventHandler {
                     self.allocator.peer_disconnected(&addr);
                     actions.push(Action::RemovePeer(addr));
                 }
+                for (addr, block) in result.blocks {
+                    warn!("block requet timed out: {} - {:?}", &addr, &block);
+                    if let Some(next_block) = self.allocator.release(&addr, block) {
+                        actions.push(Action::Send(addr, Message::Request(next_block)));
+                    }
+                }
                 actions
             }
             Event::Message(addr, message) => {
-                self.sweeper.update(addr, Instant::now());
+                self.sweeper.update(addr, now);
                 self.handle_message(addr, message)
             }
             Event::Stats(addr, stats) => {
@@ -87,13 +94,6 @@ impl EventHandler {
             Event::PieceInvalid(piece) => {
                 self.allocator.invalidate(piece);
                 Vec::new()
-            }
-            Event::BlockTimeout(addr, block) => {
-                warn!("block requet timed out: {} - {:?}", &addr, &block);
-                match self.allocator.release(&addr, block) {
-                    Some(next_block) => vec![Action::Send(addr, Message::Request(next_block))],
-                    None => Vec::new(),
-                }
             }
             Event::Connect(addr) => {
                 let mut actions = Vec::with_capacity(2);
@@ -117,7 +117,13 @@ impl EventHandler {
                 self.sweeper.peer_disconnected(&addr);
                 vec![Action::RemovePeer(addr)]
             }
+        };
+        for action in &actions {
+            if let Action::Send(addr, Message::Request(block)) = action {
+                self.sweeper.block_requested(*addr, *block, now);
+            }
         }
+        actions
     }
 
     fn handle_message(&mut self, addr: SocketAddr, message: Message) -> Vec<Action> {
@@ -180,6 +186,7 @@ impl EventHandler {
                     warn!("{} sent block {:?} which was not requested", &addr, &block);
                     return Vec::new();
                 }
+                self.sweeper.block_downloaded(addr, block);
                 let mut actions = vec![Action::IntegrateBlock(block_data)];
                 if let Some(next_block) = self.allocator.block_downloaded(&addr, &block) {
                     actions.push(Action::Send(addr, Message::Request(next_block)));

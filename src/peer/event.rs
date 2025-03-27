@@ -2,9 +2,8 @@ use std::net::SocketAddr;
 
 use tokio::{net::TcpStream, time::Instant};
 
-use crate::message::{Block, Message};
-
-use super::stats::Stats;
+use crate::message::Message;
+use crate::peer::stats::Stats;
 
 #[derive(Debug)]
 pub enum Event {
@@ -13,7 +12,6 @@ pub enum Event {
     SweepTick(Instant),
     Message(SocketAddr, Message),
     Stats(SocketAddr, Stats),
-    BlockTimeout(SocketAddr, Block),
     PieceCompleted(usize),
     PieceInvalid(usize),
     Connect(SocketAddr),
