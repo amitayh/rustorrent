@@ -35,7 +35,6 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{self, Instant, Interval, timeout};
 
 use crate::message::{Block, Handshake, Message};
-use crate::peer::connection::Command;
 use crate::peer::connection::Connection;
 use crate::peer::event_handler::Action;
 use crate::peer::event_handler::EventHandler;
@@ -173,13 +172,13 @@ impl Peer {
                     Action::Send(addr, message) => {
                         self.start_block_timeout(addr, &message);
                         let peer = self.peers.get(&addr).expect("invalid peer");
-                        if let Err(_) = peer.tx.send(Command::Send(message)).await {
+                        if let Err(_) = peer.tx.send(message).await {
                             self.tx.send(Event::Disconnect(addr)).await?;
                         }
                     }
                     Action::Broadcast(message) => {
                         for (addr, peer) in &self.peers {
-                            if let Err(_) = peer.tx.send(Command::Send(message.clone())).await {
+                            if let Err(_) = peer.tx.send(message.clone()).await {
                                 self.tx.send(Event::Disconnect(*addr)).await?;
                             }
                         }
@@ -300,7 +299,7 @@ impl Peer {
 }
 
 struct PeerHandle {
-    tx: Sender<Command>,
+    tx: Sender<Message>,
     join_handle: JoinHandle<Result<()>>,
     cancellation_token: CancellationToken,
 }

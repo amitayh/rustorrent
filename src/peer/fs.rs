@@ -7,7 +7,6 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::{fs::File, sync::mpsc::Sender};
 
 use crate::message::{BlockData, Message};
-use crate::peer::connection::Command;
 use crate::peer::piece::Joiner;
 use crate::peer::sizes::Sizes;
 use crate::torrent::Info;
@@ -32,7 +31,7 @@ impl FileReaderWriter {
         }
     }
 
-    pub async fn read(&self, block: Block, tx: Sender<Command>) -> anyhow::Result<()> {
+    pub async fn read(&self, block: Block, tx: Sender<Message>) -> anyhow::Result<()> {
         let mut data = vec![0; block.length];
         let mut file = File::open(&self.path).await?;
         let offset = block.global_offset(self.piece_size.bytes() as usize);
@@ -43,7 +42,7 @@ impl FileReaderWriter {
             offset: block.offset,
             data,
         });
-        tx.send(Command::Send(message)).await?;
+        tx.send(message).await?;
         Ok(())
     }
 

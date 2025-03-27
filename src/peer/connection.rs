@@ -27,7 +27,7 @@ pub struct Connection {
     addr: SocketAddr,
     messages: Framed<TcpStream, MessageCodec>,
     tx: Sender<Event>,
-    rx: Receiver<Command>,
+    rx: Receiver<Message>,
     cancellation_token: CancellationToken,
     stats: Stats,
 }
@@ -36,7 +36,7 @@ impl Connection {
     pub fn new(
         socket: TcpStream,
         tx: Sender<Event>,
-        rx: Receiver<Command>,
+        rx: Receiver<Message>,
         cancellation_token: CancellationToken,
     ) -> Self {
         let addr = socket.peer_addr().expect("missing addr");
@@ -91,20 +91,14 @@ impl Connection {
                 _ = update_stats.tick() => {
                     self.tx.send(Event::Stats(self.addr, self.stats.clone())).await?;
                 },
-                Some(command) = self.rx.recv() => match command {
-                    Command::Send(message) => {
-                        info!("> sending {:?}", &message);
-                        let message_size = Size::from_bytes(message.transport_bytes());
-                        self.messages.send(message).await?;
-                        let elapsed = Instant::now() - start;
-                        let TransferRate(size, duration) = &mut self.stats.upload;
-                        *size += message_size;
-                        *duration = elapsed;
-                    }
-                    Command::Shutdown => {
-                        info!("shutting down...");
-                        running = false;
-                    }
+                Some(message) = self.rx.recv() => {
+                    info!("> sending {:?}", &message);
+                    let message_size = Size::from_bytes(message.transport_bytes());
+                    self.messages.send(message).await?;
+                    let elapsed = Instant::now() - start;
+                    let TransferRate(size, duration) = &mut self.stats.upload;
+                    *size += message_size;
+                    *duration = elapsed;
                 },
                 Some(message) = self.messages.next() => match message {
                     Ok(message) => {
@@ -134,10 +128,4 @@ impl Connection {
         }
         Ok(())
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum Command {
-    Send(Message),
-    Shutdown,
 }
