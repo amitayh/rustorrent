@@ -36,7 +36,15 @@ pub enum Message {
     Port(u16),
 }
 
-pub struct MessageCodec;
+pub struct MessageCodec {
+    max_length: usize,
+}
+
+impl MessageCodec {
+    pub fn new(max_length: usize) -> Self {
+        Self { max_length }
+    }
+}
 
 impl Encoder<Message> for MessageCodec {
     type Error = std::io::Error;
@@ -129,6 +137,17 @@ impl Decoder for MessageCodec {
             return Ok(Some(Message::KeepAlive));
         }
 
+        if length > self.max_length {
+            src.advance(LENGTH_SIZE);
+            return Err(Error::new(
+                ErrorKind::Other,
+                format!(
+                    "message length {} exceeds maximum of {}",
+                    length, self.max_length
+                ),
+            ));
+        }
+
         if src.len() < LENGTH_SIZE + length {
             src.reserve(LENGTH_SIZE + length - src.len());
             return Ok(None);
@@ -218,7 +237,7 @@ impl std::fmt::Debug for Message {
 
 impl TransportMessage for Message {
     fn transport_bytes(&self) -> usize {
-        let bytes = match self {
+        let payload_size = match self {
             Self::KeepAlive => 0,
             Self::Choke => 1,
             Self::Unchoke => 1,
@@ -235,6 +254,6 @@ impl TransportMessage for Message {
             Self::Cancel(_) => 13,
             Self::Port(_) => 3,
         };
-        4 + bytes
+        LENGTH_SIZE + payload_size
     }
 }

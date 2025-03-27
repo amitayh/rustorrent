@@ -22,9 +22,10 @@ mod tests {
     async fn verify_encode_decode(message: Message) {
         let length = message.transport_bytes();
         let cursor = Cursor::new(Vec::with_capacity(length));
-        let mut framed = Framed::new(cursor, MessageCodec);
+        let mut framed = Framed::new(cursor, MessageCodec::new(16));
 
         framed.send(message.clone()).await.expect("unable to write");
+        assert_eq!(length, framed.get_ref().position() as usize);
         framed.get_mut().rewind().expect("unable to rewind");
         let message_read = framed.next().await.expect("empty").expect("error");
         assert_eq!(message_read, message);
@@ -100,6 +101,23 @@ mod tests {
             data: vec![1, 2, 3],
         }))
         .await;
+    }
+
+    #[tokio::test]
+    async fn verify_max_length() {
+        let message = Message::Piece(BlockData {
+            piece: 1,
+            offset: 2,
+            data: vec![1, 2, 3],
+        });
+        let length = message.transport_bytes();
+        let cursor = Cursor::new(Vec::with_capacity(length));
+        let mut framed = Framed::new(cursor, MessageCodec::new(5));
+
+        framed.send(message.clone()).await.expect("unable to write");
+        framed.get_mut().rewind().expect("unable to rewind");
+        let message_read = framed.next().await.expect("empty");
+        assert!(message_read.is_err());
     }
 
     #[tokio::test]

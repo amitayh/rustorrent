@@ -230,6 +230,7 @@ impl Peer {
         let handshake = self.handshake.clone();
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
+        let block_size = self.config.block_size;
         let join_handle = tokio::spawn(async move {
             let (socket, send_handshake_first) = match socket {
                 Some(socket) => (socket, false),
@@ -242,7 +243,8 @@ impl Peer {
                     }
                 },
             };
-            let mut connection = Connection::new(socket, event_channel.clone(), tx, token_clone);
+            let mut connection =
+                Connection::new(socket, event_channel.clone(), tx, token_clone, block_size);
             if send_handshake_first {
                 connection.send(&handshake).await?;
                 connection.wait_for_handshake().await?;

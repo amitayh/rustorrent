@@ -39,9 +39,11 @@ impl Connection {
         tx: Sender<Event>,
         rx: Receiver<Message>,
         cancellation_token: CancellationToken,
+        block_size: Size,
     ) -> Self {
         let addr = socket.peer_addr().expect("missing addr");
-        let messages = Framed::new(socket, MessageCodec);
+        let max_size = (block_size.bytes() as usize) + 9;
+        let messages = Framed::new(socket, MessageCodec::new(max_size));
         Self {
             addr,
             messages,
