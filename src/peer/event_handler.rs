@@ -55,8 +55,8 @@ impl EventHandler {
             }
             Event::SweepTick(instant) => {
                 let result = self.sweeper.sweep(instant);
-                let mut actions = Vec::with_capacity(result.len());
-                for addr in result {
+                let mut actions = Vec::with_capacity(result.peers.len());
+                for addr in result.peers {
                     warn!("peer {} has been idle for too long", &addr);
                     self.choker.peer_disconnected(&addr);
                     self.allocator.peer_disconnected(&addr);
