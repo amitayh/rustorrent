@@ -17,6 +17,7 @@ use fs::FileReaderWriter;
 pub use peer_id::*;
 use sizes::Sizes;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -228,6 +229,8 @@ impl Peer {
         let (rx, tx) = mpsc::channel(1024);
         let event_channel = self.tx.clone();
         let handshake = self.handshake.clone();
+        let cancellation_token = CancellationToken::new();
+        let token_clone = cancellation_token.clone();
         let join_handle = tokio::spawn(async move {
             let (socket, send_handshake_first) = match socket {
                 Some(socket) => (socket, false),
@@ -240,7 +243,7 @@ impl Peer {
                     }
                 },
             };
-            let mut connection = Connection::new(socket, event_channel.clone(), tx);
+            let mut connection = Connection::new(socket, event_channel.clone(), tx, token_clone);
             if send_handshake_first {
                 connection.send(&handshake).await?;
                 connection.wait_for_handshake().await?;
@@ -258,6 +261,7 @@ impl Peer {
             PeerHandle {
                 tx: rx,
                 join_handle,
+                cancellation_token,
             },
         );
     }
@@ -298,11 +302,12 @@ impl Peer {
 struct PeerHandle {
     tx: Sender<Command>,
     join_handle: JoinHandle<Result<()>>,
+    cancellation_token: CancellationToken,
 }
 
 impl PeerHandle {
     async fn shutdown(self) -> anyhow::Result<()> {
-        let _ = self.tx.send(Command::Shutdown).await;
+        self.cancellation_token.cancel();
         self.join_handle.await??;
         Ok(())
     }

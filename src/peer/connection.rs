@@ -14,6 +14,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
+use tokio_util::sync::CancellationToken;
 
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
 use crate::message::MessageCodec;
@@ -27,11 +28,17 @@ pub struct Connection {
     messages: Framed<TcpStream, MessageCodec>,
     tx: Sender<Event>,
     rx: Receiver<Command>,
+    cancellation_token: CancellationToken,
     stats: Stats,
 }
 
 impl Connection {
-    pub fn new(socket: TcpStream, tx: Sender<Event>, rx: Receiver<Command>) -> Self {
+    pub fn new(
+        socket: TcpStream,
+        tx: Sender<Event>,
+        rx: Receiver<Command>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let addr = socket.peer_addr().expect("missing addr");
         let messages = Framed::new(socket, MessageCodec);
         Self {
@@ -39,6 +46,7 @@ impl Connection {
             messages,
             tx,
             rx,
+            cancellation_token,
             stats: Stats::default(),
         }
     }
@@ -117,6 +125,10 @@ impl Connection {
                         }
                     }
 
+                },
+                _ = self.cancellation_token.cancelled() => {
+                    info!("shutting down...");
+                    running = false;
                 }
             }
         }
