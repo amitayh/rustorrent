@@ -93,7 +93,7 @@ impl Connection {
                     self.tx.send(Event::Stats(self.addr, self.stats.clone())).await?;
                 },
                 Some(message) = self.rx.recv() => {
-                    debug!("> sending {:?}", &message);
+                    debug!("[{}] > sending {:?}", self.addr, &message);
                     let message_size = Size::from_bytes(message.transport_bytes());
                     self.messages.send(message).await?;
                     let elapsed = Instant::now() - start;
@@ -101,7 +101,7 @@ impl Connection {
                 },
                 Some(message) = self.messages.next() => match message {
                     Ok(message) => {
-                        debug!("< got {:?}", message);
+                        debug!("[{}] < got {:?}", self.addr, message);
                         let elapsed = Instant::now() - start;
                         let message_size = Size::from_bytes(message.transport_bytes());
                         self.stats.download += TransferRate(message_size, elapsed);
@@ -109,7 +109,7 @@ impl Connection {
                         self.tx.send(event).await?;
                     }
                     Err(err) => {
-                        warn!("failed to decode message: {}", err);
+                        warn!("[{}] failed to decode message: {}", self.addr, err);
                         if err.kind() == ErrorKind::UnexpectedEof {
                             info!("socket closed, shutting down...");
                             running = false;
@@ -118,7 +118,7 @@ impl Connection {
 
                 },
                 _ = self.cancellation_token.cancelled() => {
-                    info!("shutting down...");
+                    info!("[{}] shutting down...", self.addr);
                     running = false;
                 }
             }
