@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use futures::SinkExt;
+use log::debug;
 use log::{info, warn};
 use size::Size;
 use tokio::io::AsyncWriteExt;
@@ -83,33 +84,29 @@ impl Connection {
     }
 
     pub async fn start(&mut self) -> anyhow::Result<()> {
-        let start = Instant::now();
         let mut update_stats = tokio::time::interval(Duration::from_secs(1));
         let mut running = true;
         while running {
+            let start = Instant::now();
             tokio::select! {
                 _ = update_stats.tick() => {
                     self.tx.send(Event::Stats(self.addr, self.stats.clone())).await?;
                 },
                 Some(message) = self.rx.recv() => {
-                    info!("> sending {:?}", &message);
+                    debug!("> sending {:?}", &message);
                     let message_size = Size::from_bytes(message.transport_bytes());
                     self.messages.send(message).await?;
                     let elapsed = Instant::now() - start;
-                    let TransferRate(size, duration) = &mut self.stats.upload;
-                    *size += message_size;
-                    *duration = elapsed;
+                    self.stats.upload += TransferRate(message_size, elapsed);
                 },
                 Some(message) = self.messages.next() => match message {
                     Ok(message) => {
-                        info!("< got {:?}", message);
+                        debug!("< got {:?}", message);
                         let elapsed = Instant::now() - start;
                         let message_size = Size::from_bytes(message.transport_bytes());
-                        let TransferRate(size, duration) = &mut self.stats.download;
-                        *size += message_size;
-                        *duration = elapsed;
+                        self.stats.download += TransferRate(message_size, elapsed);
                         let event = Event::Message(self.addr, message);
-                        self.tx.send(event).await.expect("unable to send");
+                        self.tx.send(event).await?;
                     }
                     Err(err) => {
                         warn!("failed to decode message: {}", err);
