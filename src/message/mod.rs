@@ -12,7 +12,7 @@ mod tests {
 
     use bit_set::BitSet;
     use futures::{SinkExt, StreamExt};
-    use tokio_util::codec::{FramedRead, FramedWrite};
+    use tokio_util::codec::Framed;
 
     use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
     use crate::{crypto::Sha1, peer::PeerId};
@@ -20,13 +20,13 @@ mod tests {
     use super::*;
 
     async fn verify_encode_decode(message: Message) {
-        let (input, output) = tokio::io::duplex(message.transport_bytes() * 2);
+        let length = message.transport_bytes();
+        let cursor = Cursor::new(Vec::with_capacity(length));
+        let mut framed = Framed::new(cursor, MessageCodec);
 
-        let mut writer = FramedWrite::new(input, MessageCodec);
-        writer.send(message.clone()).await.expect("unable to write");
-
-        let mut reader = FramedRead::new(output, MessageCodec);
-        let message_read = reader.next().await.expect("empty").expect("error");
+        framed.send(message.clone()).await.expect("unable to write");
+        framed.get_mut().rewind().expect("unable to rewind");
+        let message_read = framed.next().await.expect("empty").expect("error");
         assert_eq!(message_read, message);
     }
 

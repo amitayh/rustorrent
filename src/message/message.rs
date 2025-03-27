@@ -19,6 +19,7 @@ const ID_REQUEST: u8 = 6;
 const ID_PIECE: u8 = 7;
 const ID_CANCEL: u8 = 8;
 const ID_PORT: u8 = 9;
+const LENGTH_SIZE: usize = 4;
 
 #[derive(PartialEq, Clone)]
 pub enum Message {
@@ -114,26 +115,26 @@ impl Decoder for MessageCodec {
     type Item = Message;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
-        if src.len() < 4 {
+        if src.len() < LENGTH_SIZE {
             // Not enough data to read length marker.
             return Ok(None);
         }
 
-        let mut length_bytes = [0; 4];
-        length_bytes.copy_from_slice(&src[..4]);
+        let mut length_bytes = [0; LENGTH_SIZE];
+        length_bytes.copy_from_slice(&src[0..LENGTH_SIZE]);
         let length = u32::from_be_bytes(length_bytes) as usize;
 
         if length == 0 {
-            src.advance(4);
+            src.advance(LENGTH_SIZE);
             return Ok(Some(Message::KeepAlive));
         }
 
-        if src.len() < 4 + length {
-            src.reserve(4 + length - src.len());
+        if src.len() < LENGTH_SIZE + length {
+            src.reserve(LENGTH_SIZE + length - src.len());
             return Ok(None);
         }
 
-        src.advance(4);
+        src.advance(LENGTH_SIZE);
         let id = src.get_u8();
         match (id, length) {
             (ID_CHOKE, 1) => Ok(Some(Message::Choke)),
@@ -145,8 +146,9 @@ impl Decoder for MessageCodec {
                 Ok(Some(Message::Have(piece)))
             }
             (ID_BITFIELD, 1..) => {
-                let bitset = BitSet::from_bytes(&src[..(length - 1)]);
-                src.advance(length - 1);
+                let bitset_length = length - 1;
+                let bitset = BitSet::from_bytes(&src[0..bitset_length]);
+                src.advance(bitset_length);
                 Ok(Some(Message::Bitfield(bitset)))
             }
             (ID_REQUEST, 13) => {
@@ -156,8 +158,9 @@ impl Decoder for MessageCodec {
             (ID_PIECE, 9..) => {
                 let piece = src.get_u32() as usize;
                 let offset = src.get_u32() as usize;
-                let data = src[..(length - 9)].to_vec();
-                src.advance(length - 9);
+                let data_length = length - 9;
+                let data = src[0..data_length].to_vec();
+                src.advance(data_length);
                 Ok(Some(Message::Piece(BlockData {
                     piece,
                     offset,
