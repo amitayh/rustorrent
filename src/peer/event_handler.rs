@@ -118,6 +118,7 @@ impl EventHandler {
                 self.sweeper.peer_disconnected(&addr);
                 vec![Action::RemovePeer(addr)]
             }
+            Event::Shutdown => vec![Action::Shutdown],
         };
         for action in &actions {
             if let Action::Send(addr, Message::Request(block)) = action {

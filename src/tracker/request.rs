@@ -1,28 +1,60 @@
 use size::Size;
+use url::Url;
+use url::form_urlencoded::byte_serialize;
 
 use crate::{crypto::Sha1, peer::PeerId};
 
 #[allow(dead_code)]
-struct TrackerRequest {
-    info_hash: Sha1,
-    peer_id: PeerId,
+#[derive(Debug)]
+pub struct TrackerRequest {
+    pub announce: Url,
+    pub info_hash: Sha1,
+    pub peer_id: PeerId,
     /// The port number that the client is listening on. Ports reserved for BitTorrent are
     /// typically 6881-6889. Clients may choose to give up if it cannot establish a port within
     /// this range.
-    port: u16,
+    pub port: u16,
     /// The total amount uploaded (since the client sent the 'started' event to the tracker).
-    uploaded: Size,
+    pub uploaded: Size,
     /// The total amount downloaded (since the client sent the 'started' event to the tracker).
-    downloaded: Size,
+    pub downloaded: Size,
     /// The number of bytes needed to download to be 100% complete and get all the included files
     /// in the torrent.
-    left: Size,
-    mode: ResponseMode,
-    event: Option<Event>,
+    pub left: Size,
+    pub mode: ResponseMode,
+    pub event: Option<Event>,
+}
+
+impl From<TrackerRequest> for Url {
+    fn from(value: TrackerRequest) -> Self {
+        let mut url = value.announce;
+        let mut query = format!(
+            "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1",
+            url_encode(&value.info_hash.0),
+            url_encode(&value.peer_id.0),
+            value.port,
+            value.uploaded.bytes(),
+            value.downloaded.bytes(),
+            value.left.bytes(),
+        );
+        if let Some(event) = &value.event {
+            query.push_str("&event=");
+            query.push_str(event.into());
+        }
+        // TODO: preseve old query if exists
+        url.set_query(Some(&query));
+        url
+    }
+}
+
+// TODO: prevent temp string
+fn url_encode(bytes: &[u8]) -> String {
+    String::from_iter(byte_serialize(bytes))
 }
 
 #[allow(dead_code)]
-enum ResponseMode {
+#[derive(Debug, Clone, Copy)]
+pub enum ResponseMode {
     Normal,
     /// Indicates that the tracker can omit peer id field in peers dictionary.
     NormalNoPeerId,
@@ -35,6 +67,7 @@ enum ResponseMode {
     Compact,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Event {
     /// The first request to the tracker must include the event key with this value.
     Started,

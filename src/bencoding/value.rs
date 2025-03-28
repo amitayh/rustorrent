@@ -18,7 +18,6 @@ pub enum Value {
 }
 
 impl Value {
-    #[allow(dead_code)]
     pub fn string(str: &str) -> Self {
         Self::String(str.as_bytes().to_vec())
     }

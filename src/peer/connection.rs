@@ -60,7 +60,10 @@ impl Connection {
                 warn!("[{}] error encountered run: {}", addr, err);
             }
             info!("peer {} disconnected", addr);
-            events_tx.send(Event::Disconnect(addr)).await?;
+            events_tx
+                .send(Event::Disconnect(addr))
+                .await
+                .expect("channel should be open");
             Ok(())
         });
         Self {

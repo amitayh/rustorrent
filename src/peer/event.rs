@@ -17,4 +17,5 @@ pub enum Event {
     Connect(SocketAddr),
     AcceptConnection(SocketAddr, TcpStream),
     Disconnect(SocketAddr),
+    Shutdown,
 }

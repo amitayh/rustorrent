@@ -29,7 +29,7 @@ use anyhow::Result;
 use bit_set::BitSet;
 use log::{info, warn};
 use tokio::fs::OpenOptions;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinSet;
 use tokio::time::{self, Instant, Interval, timeout};
@@ -38,7 +38,7 @@ use crate::peer::connection::Connection;
 use crate::peer::event_handler::Action;
 use crate::peer::event_handler::EventHandler;
 use crate::torrent::Torrent;
-use crate::tracker;
+use crate::tracker::{self, Tracker};
 
 pub struct Peer {
     listener: TcpListener,
@@ -112,42 +112,20 @@ impl Peer {
         let mut choke = interval_with_delay(self.config.choking_interval);
         let mut sweep = interval_with_delay(self.config.sweep_interval);
 
-        {
+        let tracker = {
             let self_addr = self.listener.local_addr()?;
             let client_id = self.config.clinet_id.clone();
-            let torrent = self.torrent.clone();
-            let tx = self.tx.clone();
-            tokio::spawn(async move {
-                let config = tracker::Config {
-                    client_id,
-                    port: self_addr.port(),
-                };
-
-                let mut event = Some(tracker::Event::Started);
-                loop {
-                    info!("refreshing list of peers...");
-                    let response = tracker::request(&torrent, &config, event).await?;
-                    info!("got {} peers from tracker", response.peers.len());
-                    for peer in response.peers {
-                        if peer.address != self_addr {
-                            tx.send(Event::Connect(peer.address)).await?;
-                        }
-                    }
-                    event = None;
-                    info!("waiting {:?} until next announce", &response.interval);
-                    tokio::select! {
-                        _ = tokio::time::sleep(response.interval) => (),
-                        _ = tokio::signal::ctrl_c() => break,
-                    }
-                }
-                tracker::request(&torrent, &config, Some(tracker::Event::Stopped)).await
-            });
-        }
+            let config = tracker::Config {
+                client_id,
+                port: self_addr.port(),
+            };
+            Tracker::spawn(&self.torrent, &config, self.tx.clone())
+        };
 
         let mut running = true;
         while running {
             let event = tokio::select! {
-                _ = tokio::signal::ctrl_c() => break,
+                _ = tokio::signal::ctrl_c() => Event::Shutdown,
                 _ = keep_alive.tick() => Event::KeepAliveTick,
                 _ = choke.tick() => Event::ChokeTick,
                 now = sweep.tick() => Event::SweepTick(now),
@@ -159,8 +137,19 @@ impl Peer {
 
             for action in self.event_handler.handle(event) {
                 match action {
-                    Action::EstablishConnection(addr, socket) => {
-                        self.establish_connection(addr, socket);
+                    Action::EstablishConnection(addr, socket)
+                        if !self.peers.contains_key(&addr) =>
+                    {
+                        self.peers.insert(
+                            addr,
+                            Connection::spawn(
+                                addr,
+                                socket,
+                                self.tx.clone(),
+                                self.torrent.info.info_hash.clone(),
+                                &self.config,
+                            ),
+                        );
                     }
                     Action::Send(addr, message) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
@@ -193,6 +182,7 @@ impl Peer {
                     Action::Shutdown => {
                         running = false;
                     }
+                    action => warn!("unhandled action: {:?}", action),
                 }
             }
         }
@@ -204,24 +194,10 @@ impl Peer {
         {
             warn!("timeout for graceful shutdown expired");
         }
+        tracker.shutdown().await?;
         info!("done");
 
         Ok(())
-    }
-
-    fn establish_connection(&mut self, addr: SocketAddr, socket: Option<TcpStream>) {
-        if self.peers.contains_key(&addr) {
-            // TODO: prevent sending bitfield again
-            return;
-        }
-        let handle = Connection::spawn(
-            addr,
-            socket,
-            self.tx.clone(),
-            self.torrent.info.info_hash.clone(),
-            &self.config,
-        );
-        self.peers.insert(addr, handle);
     }
 
     async fn shutdown(&mut self) -> Result<()> {

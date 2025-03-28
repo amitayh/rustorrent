@@ -20,6 +20,9 @@ pub struct TrackerResponse {
     pub interval: Duration,
     /// If present clients must not reannounce more frequently than this.
     pub min_interval: Option<Duration>,
+    /// A string that the client should send back on its next announcements. If absent and a
+    /// previous announce sent a tracker id, do not discard the old value; keep using it.
+    pub tracker_id: Option<String>,
     pub peers: Vec<PeerInfo>,
 }
 
@@ -27,10 +30,15 @@ impl TryFrom<Value> for TrackerResponse {
     type Error = Error;
 
     fn try_from(mut value: Value) -> Result<Self> {
+        // TODO: parse error response
         let complete = value.remove_entry("complete")?.try_into()?;
         let incomplete = value.remove_entry("incomplete")?.try_into()?;
         let interval = value.remove_entry("interval")?.try_into()?;
         let min_interval = match value.try_remove_entry("min interval")? {
+            Some(value) => Some(value.try_into()?),
+            None => None,
+        };
+        let tracker_id = match value.try_remove_entry("tracker id")? {
             Some(value) => Some(value.try_into()?),
             None => None,
         };
@@ -59,6 +67,7 @@ impl TryFrom<Value> for TrackerResponse {
             incomplete,
             interval,
             min_interval,
+            tracker_id,
             peers,
         })
     }
@@ -133,6 +142,7 @@ mod tests {
             .with_entry("complete", Value::Integer(12))
             .with_entry("incomplete", Value::Integer(34))
             .with_entry("interval", Value::Integer(1800))
+            .with_entry("tracker id", Value::string("foo"))
             .with_entry(
                 "peers",
                 Value::list().with_value(
@@ -152,6 +162,7 @@ mod tests {
                 incomplete: 34,
                 interval: Duration::from_secs(1800),
                 min_interval: None,
+                tracker_id: Some("foo".to_string()),
                 peers: vec![PeerInfo {
                     peer_id: Some(PeerId(peer_id.as_bytes().try_into().unwrap())),
                     address: "12.34.56.78:51413".parse().unwrap()
