@@ -15,6 +15,7 @@ pub struct Config {
     pub idle_peer_timeout: Duration,
     pub block_timeout: Duration,
     pub shutdown_timeout: Duration,
+    pub channel_buffer: usize,
 }
 
 #[allow(dead_code)]
@@ -47,6 +48,7 @@ impl Default for Config {
             idle_peer_timeout: Duration::from_secs(30),
             block_timeout: Duration::from_secs(10),
             shutdown_timeout: Duration::from_secs(10),
+            channel_buffer: 16,
         }
     }
 }

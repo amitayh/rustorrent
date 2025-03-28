@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use bit_set::BitSet;
-use log::warn;
+use log::{trace, warn};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
@@ -39,6 +39,7 @@ impl EventHandler {
     }
 
     pub fn handle(&mut self, event: Event) -> Vec<Action> {
+        trace!("handling event: {:?}", &event);
         let now = Instant::now();
         let actions = match event {
             Event::KeepAliveTick => vec![Action::Broadcast(Message::KeepAlive)],
@@ -206,7 +207,9 @@ impl EventHandler {
 pub enum Action {
     EstablishConnection(SocketAddr, Option<TcpStream>),
     Send(SocketAddr, Message),
+    /// Send a message to all connected peers
     Broadcast(Message),
+    /// Send a message to a specific peer
     Upload(SocketAddr, Block),
     IntegrateBlock(BlockData),
     RemovePeer(SocketAddr),

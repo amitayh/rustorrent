@@ -18,7 +18,6 @@ use fs::FileReaderWriter;
 pub use peer_id::*;
 use sizes::Sizes;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -32,10 +31,9 @@ use log::{info, warn};
 use tokio::fs::OpenOptions;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 use tokio::time::{self, Instant, Interval, timeout};
 
-use crate::message::{Handshake, Message};
 use crate::peer::connection::Connection;
 use crate::peer::event_handler::Action;
 use crate::peer::event_handler::EventHandler;
@@ -45,12 +43,11 @@ use crate::tracker;
 pub struct Peer {
     listener: TcpListener,
     torrent: Torrent,
-    peers: HashMap<SocketAddr, PeerHandle>,
+    peers: HashMap<SocketAddr, Connection>,
     event_handler: EventHandler,
     file_reader_writer: Arc<Mutex<FileReaderWriter>>,
     tx: Sender<Event>,
     rx: Receiver<Event>,
-    handshake: Handshake,
     config: Config,
 }
 
@@ -63,8 +60,6 @@ impl Peer {
         seeding: bool,
     ) -> Self {
         let torrent_info = &torrent.info;
-        let peer_id = PeerId::random();
-        let handshake = Handshake::new(torrent_info.info_hash.clone(), peer_id.clone());
         let total_pieces = torrent_info.pieces.len();
         let has_pieces = if seeding {
             BitSet::from_iter(0..total_pieces)
@@ -108,7 +103,6 @@ impl Peer {
             file_reader_writer,
             tx: tx.clone(),
             rx,
-            handshake,
             config,
         }
     }
@@ -170,11 +164,11 @@ impl Peer {
                     }
                     Action::Send(addr, message) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
-                        self.send(&addr, peer, message).await;
+                        peer.send(message).await;
                     }
                     Action::Broadcast(message) => {
-                        for (addr, peer) in &self.peers {
-                            self.send(addr, peer, message.clone()).await;
+                        for peer in self.peers.values() {
+                            peer.send(message.clone()).await;
                         }
                     }
                     Action::Upload(addr, block) => {
@@ -194,7 +188,7 @@ impl Peer {
                     }
                     Action::RemovePeer(addr) => {
                         let peer = self.peers.remove(&addr).expect("invalid peer");
-                        peer.cancellation_token.cancel();
+                        peer.abort();
                     }
                     Action::Shutdown => {
                         running = false;
@@ -210,17 +204,9 @@ impl Peer {
         {
             warn!("timeout for graceful shutdown expired");
         }
+        info!("done");
 
         Ok(())
-    }
-
-    async fn send(&self, addr: &SocketAddr, peer: &PeerHandle, message: Message) {
-        if peer.tx.send(message).await.is_err() {
-            self.tx
-                .send(Event::Disconnect(*addr))
-                .await
-                .expect("channel should be open");
-        }
     }
 
     fn establish_connection(&mut self, addr: SocketAddr, socket: Option<TcpStream>) {
@@ -228,47 +214,14 @@ impl Peer {
             // TODO: prevent sending bitfield again
             return;
         }
-
-        let (rx, tx) = mpsc::channel(1024);
-        let event_channel = self.tx.clone();
-        let handshake = self.handshake.clone();
-        let cancellation_token = CancellationToken::new();
-        let token_clone = cancellation_token.clone();
-        let block_size = self.config.block_size;
-        let join_handle = tokio::spawn(async move {
-            let (socket, send_handshake_first) = match socket {
-                Some(socket) => (socket, false),
-                None => match TcpStream::connect(addr).await {
-                    Ok(socket) => (socket, true),
-                    Err(err) => {
-                        warn!("unable to connect to {}: {}", &addr, err);
-                        event_channel.send(Event::Disconnect(addr)).await?;
-                        return Ok(());
-                    }
-                },
-            };
-            let mut connection =
-                Connection::new(socket, event_channel.clone(), tx, token_clone, block_size);
-            if send_handshake_first {
-                connection.send(&handshake).await?;
-                connection.wait_for_handshake().await?;
-            } else {
-                connection.wait_for_handshake().await?;
-                connection.send(&handshake).await?;
-            }
-            connection.start().await?;
-            info!("peer {} disconnected", addr);
-            event_channel.send(Event::Disconnect(addr)).await?;
-            Ok(())
-        });
-        self.peers.insert(
+        let handle = Connection::spawn(
             addr,
-            PeerHandle {
-                tx: rx,
-                join_handle,
-                cancellation_token,
-            },
+            socket,
+            self.tx.clone(),
+            self.torrent.info.info_hash.clone(),
+            &self.config,
         );
+        self.peers.insert(addr, handle);
     }
 
     async fn shutdown(&mut self) -> Result<()> {
@@ -277,20 +230,6 @@ impl Peer {
             join_set.spawn(async move { peer.shutdown().await });
         }
         join_set.join_all().await;
-        Ok(())
-    }
-}
-
-struct PeerHandle {
-    tx: Sender<Message>,
-    join_handle: JoinHandle<Result<()>>,
-    cancellation_token: CancellationToken,
-}
-
-impl PeerHandle {
-    async fn shutdown(self) -> anyhow::Result<()> {
-        self.cancellation_token.cancel();
-        self.join_handle.await??;
         Ok(())
     }
 }
@@ -424,7 +363,7 @@ mod tests {
 
         let mut set = JoinSet::new();
         set.spawn(async move { seeder.start().await });
-        set.spawn(async move { leecher.start().await });
+        //set.spawn(async move { leecher.start().await });
         set.spawn(async move { leecher2.start().await });
 
         let result = timeout(Duration::from_secs(120), set.join_all()).await;

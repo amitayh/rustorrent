@@ -59,7 +59,6 @@ impl Sweeper {
     }
 
     fn pop_abandoned_block(&mut self, now: Instant) -> Option<(SocketAddr, Block)> {
-        // TODO: this should use a different config
         self.blocks_in_flight
             .pop_if(|_, Reverse(last_activity)| *last_activity + self.block_timeout <= now)
             .map(|(block, _)| block)
