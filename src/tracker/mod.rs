@@ -42,6 +42,7 @@ impl Tracker {
         let port = config.port;
         let join_handle = tokio::spawn(async move {
             let mut event = Some(request::Event::Started);
+            let mut tracker_id = None;
             let mut running = true;
 
             while running {
@@ -57,27 +58,48 @@ impl Tracker {
                         left: download_progress.left(),
                         mode: ResponseMode::Compact,
                         event,
+                        tracker_id: tracker_id.clone(),
                     }
                 };
 
                 info!("refreshing list of peers...");
                 debug!("request to tracker: {:?}", &request);
-                let response = send_request(request).await?;
+                let mut response = send_request(request).await?;
                 info!("got {} peers from tracker", response.peers.len());
                 for peer in response.peers {
                     events_tx.send(peer::Event::Connect(peer.address)).await?;
                 }
 
                 event = None;
+                if let Some(new_id) = response.tracker_id.take() {
+                    tracker_id = Some(new_id);
+                }
+
                 tokio::select! {
                     _ = tokio::time::sleep(response.interval) => (),
                     _ = token_clone.cancelled() => {
                         info!("tracker shutting down...");
+                        // Send "stopped" event before shutting down
+                        let request = {
+                            let download_progress = rx.borrow_and_update();
+                            TrackerRequest {
+                                announce: tracker_url.clone(),
+                                info_hash: info_hash.clone(),
+                                peer_id: peer_id.clone(),
+                                port,
+                                uploaded: download_progress.uploaded,
+                                downloaded: download_progress.downloaded,
+                                left: download_progress.left(),
+                                mode: ResponseMode::Compact,
+                                event: Some(request::Event::Stopped),
+                                tracker_id: tracker_id.clone(),
+                            }
+                        };
+                        send_request(request).await?;
                         running = false;
                     }
                 }
             }
-            //tracker::request(&torrent, &config, Some(tracker::Event::Stopped)).await
             Ok(())
         });
         Self {

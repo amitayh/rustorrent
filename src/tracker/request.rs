@@ -23,6 +23,7 @@ pub struct TrackerRequest {
     pub left: Size,
     pub mode: ResponseMode,
     pub event: Option<Event>,
+    pub tracker_id: Option<String>,
 }
 
 impl From<TrackerRequest> for Url {
@@ -40,6 +41,10 @@ impl From<TrackerRequest> for Url {
         if let Some(event) = &value.event {
             query.push_str("&event=");
             query.push_str(event.into());
+        }
+        if let Some(id) = &value.tracker_id {
+            query.push_str("&trackerid=");
+            query.push_str(&url_encode(id.as_bytes()));
         }
         // TODO: preseve old query if exists
         url.set_query(Some(&query));
