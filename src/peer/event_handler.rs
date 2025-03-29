@@ -1,3 +1,4 @@
+use std::fmt::Formatter;
 use std::net::SocketAddr;
 
 use bit_set::BitSet;
@@ -121,6 +122,7 @@ impl EventHandler {
             Event::Shutdown => vec![Action::Shutdown],
         };
         for action in &actions {
+            trace!("action to perform: {:?}", &action);
             if let Action::Send(addr, Message::Request(block)) = action {
                 self.sweeper.block_requested(*addr, *block, now);
             }
@@ -204,7 +206,6 @@ impl EventHandler {
     }
 }
 
-#[derive(Debug)]
 pub enum Action {
     EstablishConnection(SocketAddr, Option<TcpStream>),
     Send(SocketAddr, Message),
@@ -215,6 +216,28 @@ pub enum Action {
     IntegrateBlock(BlockData),
     RemovePeer(SocketAddr),
     Shutdown,
+}
+
+impl std::fmt::Debug for Action {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::EstablishConnection(addr, socket) => {
+                write!(f, "EstablishConnection({:?}, {:?}", addr, socket)
+            }
+            Action::Send(addr, message) => write!(f, "Send({:?}, {:?})", addr, message),
+            Action::Broadcast(message) => write!(f, "Broadcast({:?})", message),
+            Action::Upload(addr, block) => write!(f, "Upload({:?}, {:?})", addr, block),
+            Action::IntegrateBlock(block_data) => write!(
+                f,
+                "IntegrateBlock {{ piece: {}, offset: {}, data: <{} bytes> }}",
+                block_data.piece,
+                block_data.offset,
+                block_data.data.len()
+            ),
+            Action::RemovePeer(addr) => write!(f, "RemovePeer({:?})", addr),
+            Action::Shutdown => write!(f, "Shutdown"),
+        }
+    }
 }
 
 #[cfg(test)]

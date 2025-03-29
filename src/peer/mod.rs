@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bit_set::BitSet;
-use log::{info, warn};
+use log::{debug, info, warn};
 use tokio::fs::OpenOptions;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -153,11 +153,11 @@ impl Peer {
                     }
                     Action::Send(addr, message) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
-                        peer.send(message).await;
+                        peer.send(message);
                     }
                     Action::Broadcast(message) => {
                         for peer in self.peers.values() {
-                            peer.send(message.clone()).await;
+                            peer.send(message.clone());
                         }
                     }
                     Action::Upload(addr, block) => {
@@ -339,7 +339,7 @@ mod tests {
 
         let mut set = JoinSet::new();
         set.spawn(async move { seeder.start().await });
-        //set.spawn(async move { leecher.start().await });
+        set.spawn(async move { leecher.start().await });
         set.spawn(async move { leecher2.start().await });
 
         let result = timeout(Duration::from_secs(120), set.join_all()).await;

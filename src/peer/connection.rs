@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use futures::SinkExt;
-use log::debug;
-use log::{info, warn};
+use log::{debug, error, info, warn};
 use size::Size;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout};
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
@@ -30,6 +30,7 @@ pub struct Connection {
     pub tx: Sender<Message>,
     join_handle: JoinHandle<anyhow::Result<()>>,
     cancellation_token: CancellationToken,
+    addr: SocketAddr,
 }
 
 impl Connection {
@@ -44,18 +45,21 @@ impl Connection {
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
         let handshake = Handshake::new(info_hash, config.clinet_id.clone());
+        let connect_timeout = config.connect_timeout;
         let block_size = config.block_size;
         let join_handle = tokio::spawn(async move {
-            let result = run(
-                addr,
-                socket,
-                handshake,
-                block_size,
-                events_tx.clone(),
-                rx,
-                token_clone,
-            )
-            .await;
+            let result = tokio::select! {
+                _ = token_clone.cancelled() => Ok(()),
+                result = run(
+                    addr,
+                    socket,
+                    connect_timeout,
+                    handshake,
+                    block_size,
+                    events_tx.clone(),
+                    rx,
+                ) => result,
+            };
             if let Err(err) = result {
                 warn!("[{}] error encountered run: {}", addr, err);
             }
@@ -70,12 +74,20 @@ impl Connection {
             tx,
             join_handle,
             cancellation_token,
+            addr,
         }
     }
 
-    pub async fn send(&self, message: Message) {
-        if self.tx.send(message).await.is_err() {
-            warn!("channel already closed");
+    pub fn send(&self, message: Message) {
+        match self.tx.try_send(message) {
+            Ok(_) => (),
+            Err(TrySendError::Full(_)) => {
+                error!("[{}] peer unresponsive, shutting down", &self.addr);
+                self.cancellation_token.cancel();
+            }
+            Err(TrySendError::Closed(_)) => {
+                panic!("[{}] sending message to disconnected peer", &self.addr);
+            }
         }
     }
 
@@ -93,13 +105,14 @@ impl Connection {
 async fn run(
     addr: SocketAddr,
     socket: Option<TcpStream>,
+    connect_timeout: Duration,
     handshake: Handshake,
     block_size: Size,
     events_tx: Sender<Event>,
     mut rx: Receiver<Message>,
-    cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let (mut socket, handshake_direction) = connect_if_needed(addr, socket).await?;
+    let (mut socket, handshake_direction) =
+        connect_if_needed(addr, socket, connect_timeout).await?;
     exchange_handshakes(&mut socket, handshake, handshake_direction).await?;
 
     let max_size = (block_size.bytes() as usize) + 9;
@@ -115,7 +128,7 @@ async fn run(
                 events_tx.send(Event::Stats(addr, stats.clone())).await?;
             },
             Some(message) = rx.recv() => {
-                debug!("[{}] > sending {:?}", addr, &message);
+                debug!("[{}] > sending {:?}", &addr, &message);
                 let message_size = Size::from_bytes(message.transport_bytes());
                 messages.send(message).await?;
                 let elapsed = Instant::now() - start;
@@ -123,7 +136,7 @@ async fn run(
             },
             Some(message) = messages.next() => match message {
                 Ok(message) => {
-                    debug!("[{}] < got {:?}", addr, message);
+                    debug!("[{}] < got {:?}", &addr, message);
                     let elapsed = Instant::now() - start;
                     let message_size = Size::from_bytes(message.transport_bytes());
                     stats.download += TransferRate(message_size, elapsed);
@@ -131,18 +144,13 @@ async fn run(
                     events_tx.send(event).await?;
                 }
                 Err(err) => {
-                    warn!("[{}] failed to decode message: {}", addr, err);
+                    warn!("[{}] failed to decode message: {}", &addr, err);
                     if err.kind() == ErrorKind::UnexpectedEof {
-                        info!("[{}] socket closed, shutting down...", addr);
+                        info!("[{}] socket closed, shutting down...", &addr);
                         running = false;
                     }
                 }
-
             },
-            _ = cancellation_token.cancelled() => {
-                info!("[{}] shutting down...", addr);
-                running = false;
-            }
         }
     }
 
@@ -153,15 +161,17 @@ async fn run(
 async fn connect_if_needed(
     addr: SocketAddr,
     socket: Option<TcpStream>,
+    connect_timeout: Duration,
 ) -> anyhow::Result<(TcpStream, HandshakeDirection)> {
     match socket {
         Some(socket) => {
-            info!("accepted connection from {}", addr);
+            info!("accepted connection from {}", &addr);
             Ok((socket, HandshakeDirection::PeerToClient))
         }
         None => {
-            info!("connecting to {}...", addr);
-            let socket = TcpStream::connect(addr).await?;
+            info!("connecting to {}...", &addr);
+            let socket = timeout(connect_timeout, TcpStream::connect(addr)).await??;
+            info!("connected to {}", &addr);
             Ok((socket, HandshakeDirection::ClientToPeer))
         }
     }
