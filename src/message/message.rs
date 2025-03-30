@@ -220,13 +220,13 @@ impl std::fmt::Debug for Message {
             Message::Have(piece) => write!(f, "Have {{ piece: {} }}", piece),
             Message::Bitfield(bitset) => write!(f, "Bitfield(<{} pieces>)", bitset.len()),
             Message::Request(block) => write!(f, "Request({:?})", block),
-            Message::Piece(block_data) => {
+            Message::Piece(block) => {
                 write!(
                     f,
                     "Piece {{ piece: {}, offset: {}, data: <{} bytes> }}",
-                    block_data.piece,
-                    block_data.offset,
-                    block_data.data.len()
+                    block.piece,
+                    block.offset,
+                    block.data.len()
                 )
             }
             Message::Cancel(block) => write!(f, "Cancel({:?})", block),
@@ -246,11 +246,7 @@ impl TransportMessage for Message {
             Self::Have(_) => 5,
             Self::Bitfield(bitset) => 1 + bitset.get_ref().to_bytes().len(),
             Self::Request(_) => 13,
-            Self::Piece(BlockData {
-                piece: _,
-                offset: _,
-                data,
-            }) => 9 + data.len(),
+            Self::Piece(block) => 9 + block.data.len(),
             Self::Cancel(_) => 13,
             Self::Port(_) => 3,
         };

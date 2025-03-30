@@ -1,4 +1,5 @@
-use std::{io::SeekFrom, path::PathBuf};
+use std::io::SeekFrom;
+use std::sync::Arc;
 
 use log::warn;
 use size::Size;
@@ -8,24 +9,24 @@ use tokio::{fs::File, sync::mpsc::Sender};
 
 use crate::message::{BlockData, Message};
 use crate::peer::piece::Joiner;
-use crate::peer::sizes::Sizes;
-use crate::torrent::Info;
 use crate::{message::Block, peer::Event};
 
+use super::Download;
 use super::piece::Status;
 
 pub struct FileReaderWriter {
-    path: PathBuf,
+    download: Arc<Download>,
     joiner: Joiner,
     piece_size: Size,
 }
 
 impl FileReaderWriter {
-    pub fn new(path: PathBuf, sizes: &Sizes, torrent_info: Info) -> Self {
-        let joiner = Joiner::new(sizes, torrent_info.pieces);
+    pub fn new(download: Arc<Download>) -> Self {
+        let sizes = download.sizes();
+        let joiner = Joiner::new(Arc::clone(&download));
         let piece_size = sizes.piece_size;
         Self {
-            path,
+            download,
             joiner,
             piece_size,
         }
@@ -33,7 +34,7 @@ impl FileReaderWriter {
 
     pub async fn read(&self, block: Block, tx: Sender<Message>) -> anyhow::Result<()> {
         let mut data = vec![0; block.length];
-        let mut file = File::open(&self.path).await?;
+        let mut file = File::open(&self.download.config.download_path).await?;
         let offset = block.global_offset(self.piece_size.bytes() as usize);
         file.seek(SeekFrom::Start(offset as u64)).await?;
         file.read_exact(&mut data).await?;
@@ -59,7 +60,7 @@ impl FileReaderWriter {
                 let mut file = OpenOptions::new()
                     .write(true)
                     .truncate(false)
-                    .open(&self.path)
+                    .open(&self.download.config.download_path)
                     .await?;
                 file.seek(SeekFrom::Start(offset)).await?;
                 file.write_all(&data).await?;

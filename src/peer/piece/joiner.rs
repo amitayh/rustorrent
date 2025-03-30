@@ -1,9 +1,11 @@
 use core::f64;
+use std::sync::Arc;
 
 use sha1::Digest;
 
 use crate::crypto::Sha1;
 use crate::message::BlockData;
+use crate::peer::Download;
 use crate::peer::sizes::Sizes;
 
 pub struct Joiner {
@@ -13,13 +15,14 @@ pub struct Joiner {
 
 // TODO: alternative names: Combiner, Stitcher, Fuser
 impl Joiner {
-    pub fn new(sizes: &Sizes, hashes: Vec<Sha1>) -> Self {
-        assert_eq!(sizes.total_pieces, hashes.len());
+    pub fn new(download: Arc<Download>) -> Self {
+        let sizes = download.sizes();
+        assert_eq!(sizes.total_pieces, download.torrent.info.pieces.len());
         let block_size = sizes.block_size.bytes() as usize;
         let mut pieces = Vec::with_capacity(sizes.total_pieces);
-        for (piece, sha1) in hashes.into_iter().enumerate() {
+        for (piece, sha1) in download.torrent.info.pieces.iter().enumerate() {
             let offset = sizes.piece_offset(piece) as u64;
-            pieces.push(PieceState::new(piece, offset, sha1, sizes));
+            pieces.push(PieceState::new(piece, offset, sha1.clone(), &sizes));
         }
         Self { block_size, pieces }
     }

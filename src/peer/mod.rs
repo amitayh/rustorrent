@@ -21,7 +21,6 @@ use tokio::sync::Mutex;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,55 +41,50 @@ use crate::tracker::Tracker;
 
 pub struct Peer {
     listener: TcpListener,
-    torrent: Torrent,
+    download: Arc<Download>,
     peers: HashMap<SocketAddr, Connection>,
     event_handler: EventHandler,
     file_reader_writer: Arc<Mutex<FileReaderWriter>>,
     tx: Sender<Event>,
     rx: Receiver<Event>,
-    config: Arc<Config>,
+}
+
+pub struct Download {
+    pub torrent: Torrent,
+    pub config: Config,
+}
+
+impl Download {
+    pub fn sizes(&self) -> Sizes {
+        Sizes::new(
+            self.torrent.info.piece_length,
+            self.torrent.info.download_type.length(),
+            self.config.block_size,
+        )
+    }
 }
 
 impl Peer {
-    pub async fn new(
-        listener: TcpListener,
-        torrent: Torrent,
-        file_path: PathBuf,
-        config: Arc<Config>,
-        seeding: bool,
-    ) -> Self {
-        let torrent_info = &torrent.info;
-        let total_pieces = torrent_info.pieces.len();
+    pub async fn new(listener: TcpListener, download: Arc<Download>, seeding: bool) -> Self {
+        let total_pieces = download.torrent.info.pieces.len();
         let has_pieces = if seeding {
             BitSet::from_iter(0..total_pieces)
         } else {
             BitSet::with_capacity(total_pieces)
         };
-        let event_handler =
-            EventHandler::new(torrent_info.clone(), Arc::clone(&config), has_pieces);
-        let file_reader_writer = {
-            let sizes = Sizes::new(
-                torrent_info.piece_length,
-                torrent_info.download_type.length(),
-                config.block_size,
-            );
-            Arc::new(Mutex::new(FileReaderWriter::new(
-                file_path.clone(),
-                &sizes,
-                torrent_info.clone(),
-            )))
-        };
+        let event_handler = EventHandler::new(Arc::clone(&download), has_pieces);
+        let file_reader_writer = Arc::new(Mutex::new(FileReaderWriter::new(Arc::clone(&download))));
 
         if !seeding {
             let file = OpenOptions::new()
                 .create(true)
                 .write(true)
                 .truncate(true)
-                .open(&file_path)
+                .open(&download.config.download_path)
                 .await
                 .unwrap();
 
-            file.set_len(torrent_info.download_type.length().bytes() as u64)
+            file.set_len(download.torrent.info.download_type.length().bytes() as u64)
                 .await
                 .unwrap();
         }
@@ -98,22 +92,22 @@ impl Peer {
         let (tx, rx) = mpsc::channel(1024);
         Self {
             listener,
-            torrent,
+            download,
             peers: HashMap::new(),
             event_handler,
             file_reader_writer,
             tx: tx.clone(),
             rx,
-            config,
         }
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        let mut keep_alive = interval_with_delay(self.config.keep_alive_interval);
-        let mut choke = interval_with_delay(self.config.choking_interval);
-        let mut sweep = interval_with_delay(self.config.sweep_interval);
+        let config = &self.download.config;
+        let mut keep_alive = interval_with_delay(config.keep_alive_interval);
+        let mut choke = interval_with_delay(config.choking_interval);
+        let mut sweep = interval_with_delay(config.sweep_interval);
 
-        let tracker = Tracker::spawn(&self.torrent, Arc::clone(&self.config), self.tx.clone());
+        let tracker = Tracker::spawn(Arc::clone(&self.download), self.tx.clone());
 
         let mut running = true;
         while running {
@@ -139,8 +133,7 @@ impl Peer {
                                 addr,
                                 socket,
                                 self.tx.clone(),
-                                self.torrent.info.info_hash.clone(),
-                                Arc::clone(&self.config),
+                                Arc::clone(&self.download),
                             ),
                         );
                     }
@@ -201,7 +194,7 @@ impl Peer {
         }
 
         info!("shutting down...");
-        if timeout(self.config.shutdown_timeout, self.shutdown())
+        if timeout(self.download.config.shutdown_timeout, self.shutdown())
             .await
             .is_err()
         {
@@ -250,8 +243,8 @@ mod tests {
 
     use super::*;
 
-    fn test_config() -> Config {
-        Config::default()
+    fn test_config(download_path: &str) -> Config {
+        Config::new(download_path.into())
             .with_keep_alive_interval(Duration::from_secs(5))
             .with_unchoking_interval(Duration::from_secs(1))
             .with_optimistic_unchoking_cycle(2)
@@ -325,27 +318,31 @@ mod tests {
 
         let mut seeder = Peer::new(
             seeder_listener,
-            test_torrent(announce_url.clone()),
-            "assets/alice_in_wonderland.txt".into(),
-            Arc::new(test_config().with_unchoking_interval(Duration::from_secs(2))),
+            Arc::new(Download {
+                torrent: test_torrent(announce_url.clone()),
+                config: test_config("assets/alice_in_wonderland.txt")
+                    .with_unchoking_interval(Duration::from_secs(2)),
+            }),
             true,
         )
         .await;
 
         let mut leecher = Peer::new(
             leecher_listener,
-            test_torrent(announce_url.clone()),
-            "/tmp/foo".into(),
-            Arc::new(test_config()),
+            Arc::new(Download {
+                torrent: test_torrent(announce_url.clone()),
+                config: test_config("/tmp/foo"),
+            }),
             false,
         )
         .await;
 
         let mut leecher2 = Peer::new(
             leecher2_listener,
-            test_torrent(announce_url),
-            "/tmp/bar".into(),
-            Arc::new(test_config()),
+            Arc::new(Download {
+                torrent: test_torrent(announce_url),
+                config: test_config("/tmp/bar"),
+            }),
             false,
         )
         .await;

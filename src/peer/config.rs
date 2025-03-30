@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use size::Size;
 
@@ -8,6 +8,7 @@ use crate::peer::PeerId;
 pub struct Config {
     pub client_id: PeerId,
     pub port: u16,
+    pub download_path: PathBuf,
     pub sweep_interval: Duration,
     pub keep_alive_interval: Duration,
     pub choking_interval: Duration,
@@ -38,11 +39,12 @@ impl Config {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    pub fn new(download_path: PathBuf) -> Self {
         Self {
             client_id: PeerId::random(),
             port: 6881,
+            download_path,
             sweep_interval: Duration::from_secs(5),
             keep_alive_interval: Duration::from_secs(120),
             choking_interval: Duration::from_secs(10),

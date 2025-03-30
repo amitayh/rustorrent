@@ -18,8 +18,7 @@ use url::Url;
 
 use crate::bencoding::Value;
 use crate::codec::AsyncDecoder;
-use crate::peer::{self, Config};
-use crate::torrent::Torrent;
+use crate::peer::{self, Download};
 use crate::tracker::request::{ResponseMode, TrackerRequest};
 use crate::tracker::response::TrackerResponse;
 
@@ -30,17 +29,12 @@ pub struct Tracker {
 }
 
 impl Tracker {
-    pub fn spawn(
-        torrent: &Torrent,
-        config: Arc<Config>,
-        events_tx: mpsc::Sender<peer::Event>,
-    ) -> Self {
-        let (tx, mut rx) =
-            watch::channel(DownloadProgress::new(torrent.info.download_type.length()));
+    pub fn spawn(download: Arc<Download>, events_tx: mpsc::Sender<peer::Event>) -> Self {
+        let (tx, mut rx) = watch::channel(DownloadProgress::new(
+            download.torrent.info.download_type.length(),
+        ));
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
-        let tracker_url = torrent.announce.clone();
-        let info_hash = torrent.info.info_hash.clone();
         let join_handle = tokio::spawn(async move {
             let mut event = Some(request::Event::Started);
             let mut tracker_id = None;
@@ -50,10 +44,10 @@ impl Tracker {
                 let request = {
                     let download_progress = rx.borrow_and_update();
                     TrackerRequest {
-                        announce: tracker_url.clone(),
-                        info_hash: info_hash.clone(),
-                        peer_id: config.client_id.clone(),
-                        port: config.port,
+                        announce: download.torrent.announce.clone(),
+                        info_hash: download.torrent.info.info_hash.clone(),
+                        peer_id: download.config.client_id.clone(),
+                        port: download.config.port,
                         uploaded: download_progress.uploaded,
                         downloaded: download_progress.downloaded,
                         left: download_progress.left(),
@@ -84,10 +78,10 @@ impl Tracker {
                         let request = {
                             let download_progress = rx.borrow_and_update();
                             TrackerRequest {
-                                announce: tracker_url.clone(),
-                                info_hash: info_hash.clone(),
-                                peer_id: config.client_id.clone(),
-                                port: config.port,
+                                announce: download.torrent.announce.clone(),
+                                info_hash: download.torrent.info.info_hash.clone(),
+                                peer_id: download.config.client_id.clone(),
+                                port: download.config.port,
                                 uploaded: download_progress.uploaded,
                                 downloaded: download_progress.downloaded,
                                 left: download_progress.left(),

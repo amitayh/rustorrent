@@ -9,13 +9,13 @@ use tokio::time::Instant;
 
 use crate::message::{Block, BlockData, Message};
 
-use crate::peer::Config;
 use crate::peer::event::Event;
 use crate::peer::sizes::Sizes;
 use crate::peer::stats::GlobalStats;
 use crate::peer::sweeper::Sweeper;
 use crate::peer::{choke::Choker, piece::Allocator};
-use crate::torrent::Info;
+
+use super::Download;
 
 pub struct EventHandler {
     choker: Choker,
@@ -25,18 +25,21 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-    pub fn new(torrent_info: Info, config: Arc<Config>, has_pieces: BitSet) -> Self {
+    pub fn new(download: Arc<Download>, has_pieces: BitSet) -> Self {
         let sizes = Sizes::new(
-            torrent_info.piece_length,
-            torrent_info.download_type.length(),
-            config.block_size,
+            download.torrent.info.piece_length,
+            download.torrent.info.download_type.length(),
+            download.config.block_size,
         );
         let stats = GlobalStats::new(sizes.total_pieces);
         let allocator = Allocator::new(sizes, has_pieces);
         Self {
-            choker: Choker::new(config.optimistic_choking_cycle),
+            choker: Choker::new(download.config.optimistic_choking_cycle),
             allocator,
-            sweeper: Sweeper::new(config.idle_peer_timeout, config.block_timeout),
+            sweeper: Sweeper::new(
+                download.config.idle_peer_timeout,
+                download.config.block_timeout,
+            ),
             stats,
         }
     }
@@ -100,10 +103,6 @@ impl EventHandler {
                 for not_interesting in self.allocator.client_has_piece(piece) {
                     actions.push(Action::Send(not_interesting, Message::NotInterested));
                 }
-                // TODO: remove this
-                //if self.allocator.is_complete() {
-                //    actions.push(Action::Shutdown);
-                //}
                 actions
             }
 
@@ -271,7 +270,8 @@ mod tests {
     use crate::{
         crypto::{Md5, Sha1},
         message::BlockData,
-        torrent::DownloadType,
+        peer::Config,
+        torrent::{DownloadType, Info, Torrent},
     };
 
     use super::*;
@@ -328,24 +328,27 @@ mod tests {
     }
 
     fn create_event_handler() -> EventHandler {
-        let torrent = Info {
-            info_hash: Sha1::from_hex("e90cf5ec83e174d7dcb94821560dac201ae1f663").unwrap(),
-            piece_length: Size::from_kibibytes(32),
-            pieces: vec![
-                Sha1::from_hex("a9af20024fc50543163b6be66fe4660be2170f6c").unwrap(),
-                Sha1::from_hex("2494039151d7db3e56b3ec021d233742e3de55a6").unwrap(),
-                Sha1::from_hex("af99be061f2c5eee12374055cf1a81909d276db5").unwrap(),
-                Sha1::from_hex("3c12e1fcba504fedc13ee17ea76b62901dc8c9f7").unwrap(),
-                Sha1::from_hex("d5facb89cbdc2e3ed1a1cd1050e217ec534f1fad").unwrap(),
-                Sha1::from_hex("d5d2b296f52ab11791aad35a7d493833d39c6786").unwrap(),
-            ],
-            download_type: DownloadType::SingleFile {
-                name: "alice_in_wonderland.txt".to_string(),
-                length: Size::from_bytes(174357),
-                md5sum: Some(Md5::from_hex("9a930de3cfc64468c05715237a6b4061").unwrap()),
+        let torrent = Torrent {
+            announce: "https://foo.bar".try_into().unwrap(),
+            info: Info {
+                info_hash: Sha1::from_hex("e90cf5ec83e174d7dcb94821560dac201ae1f663").unwrap(),
+                piece_length: Size::from_kibibytes(32),
+                pieces: vec![
+                    Sha1::from_hex("a9af20024fc50543163b6be66fe4660be2170f6c").unwrap(),
+                    Sha1::from_hex("2494039151d7db3e56b3ec021d233742e3de55a6").unwrap(),
+                    Sha1::from_hex("af99be061f2c5eee12374055cf1a81909d276db5").unwrap(),
+                    Sha1::from_hex("3c12e1fcba504fedc13ee17ea76b62901dc8c9f7").unwrap(),
+                    Sha1::from_hex("d5facb89cbdc2e3ed1a1cd1050e217ec534f1fad").unwrap(),
+                    Sha1::from_hex("d5d2b296f52ab11791aad35a7d493833d39c6786").unwrap(),
+                ],
+                download_type: DownloadType::SingleFile {
+                    name: "alice_in_wonderland.txt".to_string(),
+                    length: Size::from_bytes(174357),
+                    md5sum: Some(Md5::from_hex("9a930de3cfc64468c05715237a6b4061").unwrap()),
+                },
             },
         };
-
-        EventHandler::new(torrent, Arc::new(Config::default()), BitSet::new())
+        let config = Config::new("/tmp".into());
+        EventHandler::new(Arc::new(Download { torrent, config }), BitSet::new())
     }
 }

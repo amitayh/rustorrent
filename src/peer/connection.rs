@@ -1,4 +1,3 @@
-use std::fmt::Debug;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,10 +18,9 @@ use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
-use crate::crypto::Sha1;
 use crate::message::MessageCodec;
 use crate::message::{Handshake, Message};
-use crate::peer::Config;
+use crate::peer::Download;
 use crate::peer::Event;
 use crate::peer::stats::PeerStats;
 use crate::peer::transfer_rate::TransferRate;
@@ -39,22 +37,24 @@ impl Connection {
         addr: SocketAddr,
         socket: Option<TcpStream>,
         events_tx: Sender<Event>,
-        info_hash: Sha1,
-        config: Arc<Config>,
+        download: Arc<Download>,
     ) -> Self {
-        let (tx, rx) = mpsc::channel(config.channel_buffer);
+        let (tx, rx) = mpsc::channel(download.config.channel_buffer);
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
-        let handshake = Handshake::new(info_hash, config.client_id.clone());
+        let handshake = Handshake::new(
+            download.torrent.info.info_hash.clone(),
+            download.config.client_id.clone(),
+        );
         let join_handle = tokio::spawn(async move {
             let result = tokio::select! {
                 _ = token_clone.cancelled() => Ok(()),
                 result = run(
                     addr,
                     socket,
-                    config.connect_timeout,
+                    download.config.connect_timeout,
                     handshake,
-                    config.block_size,
+                    download.config.block_size,
                     events_tx.clone(),
                     rx,
                 ) => result,

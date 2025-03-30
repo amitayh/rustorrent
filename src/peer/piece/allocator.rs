@@ -183,7 +183,7 @@ impl Default for PeerState {
 #[derive(Debug)]
 struct PieceState {
     unassigned_blocks: VecDeque<Block>,
-    /// Number of blocks assigned from this piece
+    /// Blocks assigned from this piece
     assigned_blocks: HashSet<Block>,
     /// Number of peers that have this piece
     peers_with_piece: usize,
