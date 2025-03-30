@@ -11,7 +11,8 @@ use crate::message::{Block, BlockData, Message};
 use crate::peer::Config;
 use crate::peer::event::Event;
 use crate::peer::sizes::Sizes;
-use crate::peer::stats::Stats;
+use crate::peer::stats::GlobalStats;
+use crate::peer::stats::PeerStats;
 use crate::peer::sweeper::Sweeper;
 use crate::peer::{choke::Choker, piece::Allocator};
 use crate::torrent::Info;
@@ -20,7 +21,7 @@ pub struct EventHandler {
     choker: Choker,
     allocator: Allocator,
     sweeper: Sweeper,
-    stats: Stats,
+    stats: GlobalStats,
 }
 
 impl EventHandler {
@@ -30,12 +31,13 @@ impl EventHandler {
             torrent_info.download_type.length(),
             config.block_size,
         );
+        let stats = GlobalStats::new(sizes.total_pieces);
         let allocator = Allocator::new(sizes, has_pieces);
         Self {
             choker: Choker::new(config.optimistic_choking_cycle),
             allocator,
             sweeper: Sweeper::new(config.idle_peer_timeout, config.block_timeout),
-            stats: Stats::default(),
+            stats,
         }
     }
 
@@ -44,6 +46,7 @@ impl EventHandler {
         let now = Instant::now();
         let actions = match event {
             Event::KeepAliveTick => vec![Action::Broadcast(Message::KeepAlive)],
+
             Event::ChokeTick => {
                 let decision = self.choker.run();
                 let choke = decision
@@ -56,6 +59,7 @@ impl EventHandler {
                     .map(|addr| Action::Send(addr, Message::Unchoke));
                 choke.chain(unchoke).collect()
             }
+
             Event::SweepTick(instant) => {
                 let result = self.sweeper.sweep(instant);
                 let mut actions = Vec::with_capacity(result.peers.len());
@@ -73,31 +77,42 @@ impl EventHandler {
                 }
                 actions
             }
+
             Event::Message(addr, message) => {
-                self.sweeper.update(addr, now);
+                self.sweeper.update_peer_activity(addr, now);
                 self.handle_message(addr, message)
             }
+
             Event::Stats(addr, stats) => {
                 self.choker.update_peer_transfer_rate(addr, stats.download);
-                self.stats += stats;
+                self.stats.upload_rate += stats.upload;
+                self.stats.download_rate += stats.download;
                 Vec::new()
             }
+
             Event::PieceCompleted(piece) => {
-                let mut actions = vec![Action::Broadcast(Message::Have(piece))];
+                self.stats.completed_pieces += 1;
+                let mut actions = vec![
+                    Action::Broadcast(Message::Have(piece)),
+                    Action::UpdateStats(self.stats.clone()),
+                ];
                 for not_interesting in self.allocator.client_has_piece(piece) {
                     actions.push(Action::Send(not_interesting, Message::NotInterested));
                 }
                 // TODO: remove this
-                if self.allocator.is_complete() {
-                    actions.push(Action::Shutdown);
-                }
+                //if self.allocator.is_complete() {
+                //    actions.push(Action::Shutdown);
+                //}
                 actions
             }
+
             Event::PieceInvalid(piece) => {
                 self.allocator.invalidate(piece);
                 Vec::new()
             }
+
             Event::Connect(addr) => {
+                self.stats.connected_peers += 1;
                 let mut actions = Vec::with_capacity(2);
                 actions.push(Action::EstablishConnection(addr, None));
                 if !self.allocator.has_pieces.is_empty() {
@@ -106,19 +121,24 @@ impl EventHandler {
                 }
                 actions
             }
+
             Event::AcceptConnection(addr, socket) => {
+                self.stats.connected_peers += 1;
                 let pieces = self.allocator.has_pieces.clone();
                 vec![
                     Action::EstablishConnection(addr, Some(socket)),
                     Action::Send(addr, Message::Bitfield(pieces)),
                 ]
             }
+
             Event::Disconnect(addr) => {
                 self.choker.peer_disconnected(&addr);
                 self.allocator.peer_disconnected(&addr);
                 self.sweeper.peer_disconnected(&addr);
+                self.stats.connected_peers -= 1;
                 vec![Action::RemovePeer(addr)]
             }
+
             Event::Shutdown => vec![Action::Shutdown],
         };
         for action in &actions {
@@ -208,34 +228,36 @@ impl EventHandler {
 
 pub enum Action {
     EstablishConnection(SocketAddr, Option<TcpStream>),
+    /// Send a message to a specific peer
     Send(SocketAddr, Message),
     /// Send a message to all connected peers
     Broadcast(Message),
-    /// Send a message to a specific peer
     Upload(SocketAddr, Block),
     IntegrateBlock(BlockData),
     RemovePeer(SocketAddr),
+    UpdateStats(GlobalStats),
     Shutdown,
 }
 
 impl std::fmt::Debug for Action {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Action::EstablishConnection(addr, socket) => {
+            Self::EstablishConnection(addr, socket) => {
                 write!(f, "EstablishConnection({:?}, {:?}", addr, socket)
             }
-            Action::Send(addr, message) => write!(f, "Send({:?}, {:?})", addr, message),
-            Action::Broadcast(message) => write!(f, "Broadcast({:?})", message),
-            Action::Upload(addr, block) => write!(f, "Upload({:?}, {:?})", addr, block),
-            Action::IntegrateBlock(block_data) => write!(
+            Self::Send(addr, message) => write!(f, "Send({:?}, {:?})", addr, message),
+            Self::Broadcast(message) => write!(f, "Broadcast({:?})", message),
+            Self::Upload(addr, block) => write!(f, "Upload({:?}, {:?})", addr, block),
+            Self::IntegrateBlock(block_data) => write!(
                 f,
                 "IntegrateBlock {{ piece: {}, offset: {}, data: <{} bytes> }}",
                 block_data.piece,
                 block_data.offset,
                 block_data.data.len()
             ),
-            Action::RemovePeer(addr) => write!(f, "RemovePeer({:?})", addr),
-            Action::Shutdown => write!(f, "Shutdown"),
+            Self::RemovePeer(addr) => write!(f, "RemovePeer({:?})", addr),
+            Self::UpdateStats(stats) => write!(f, "UpdateStats({:?})", stats),
+            Self::Shutdown => write!(f, "Shutdown"),
         }
     }
 }

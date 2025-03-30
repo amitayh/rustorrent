@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bit_set::BitSet;
-use log::{debug, info, warn};
+use log::{info, warn};
 use tokio::fs::OpenOptions;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -151,15 +151,18 @@ impl Peer {
                             ),
                         );
                     }
+
                     Action::Send(addr, message) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
                         peer.send(message);
                     }
+
                     Action::Broadcast(message) => {
                         for peer in self.peers.values() {
                             peer.send(message.clone());
                         }
                     }
+
                     Action::Upload(addr, block) => {
                         let peer = self.peers.get(&addr).expect("invalid peer");
                         let file_reader_writer = Arc::clone(&self.file_reader_writer);
@@ -168,20 +171,37 @@ impl Peer {
                             file_reader_writer.lock().await.read(block, tx).await
                         });
                     }
+
                     Action::IntegrateBlock(block_data) => {
                         let file_reader_writer = Arc::clone(&self.file_reader_writer);
-                        let rx = self.tx.clone();
+                        let tx = self.tx.clone();
                         tokio::spawn(async move {
-                            file_reader_writer.lock().await.write(block_data, rx).await
+                            file_reader_writer.lock().await.write(block_data, tx).await
                         });
                     }
+
                     Action::RemovePeer(addr) => {
                         let peer = self.peers.remove(&addr).expect("invalid peer");
                         peer.abort();
                     }
+
+                    Action::UpdateStats(stats) => {
+                        tracker.update_progress(stats.download_rate.0, stats.upload_rate.0)?;
+                        println!(
+                            "Downloaded {}/{} pieces ({:.2}%) | Down: {} | Up: {} | Peers: {}",
+                            stats.completed_pieces,
+                            stats.total_pieces,
+                            stats.completed(),
+                            stats.download_rate,
+                            stats.upload_rate,
+                            stats.connected_peers
+                        );
+                    }
+
                     Action::Shutdown => {
                         running = false;
                     }
+
                     action => warn!("unhandled action: {:?}", action),
                 }
             }

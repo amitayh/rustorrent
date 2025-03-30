@@ -22,7 +22,7 @@ impl Sweeper {
         }
     }
 
-    pub fn update(&mut self, addr: SocketAddr, instant: Instant) {
+    pub fn update_peer_activity(&mut self, addr: SocketAddr, instant: Instant) {
         self.peer_activity.push_decrease(addr, Reverse(instant));
     }
 
@@ -60,7 +60,9 @@ impl Sweeper {
 
     fn pop_abandoned_block(&mut self, now: Instant) -> Option<(SocketAddr, Block)> {
         self.blocks_in_flight
-            .pop_if(|_, Reverse(last_activity)| *last_activity + self.block_timeout <= now)
+            .pop_if(|_, Reverse(block_request_time)| {
+                *block_request_time + self.block_timeout <= now
+            })
             .map(|(block, _)| block)
     }
 }
@@ -82,7 +84,7 @@ mod tests {
         let now = Instant::now();
 
         let addr = "127.0.0.1:6881".parse().unwrap();
-        sweeper.update(addr, now);
+        sweeper.update_peer_activity(addr, now);
 
         assert!(sweeper.sweep(now).peers.is_empty());
     }
@@ -93,13 +95,13 @@ mod tests {
         let now = Instant::now();
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        sweeper.update(addr1, now);
+        sweeper.update_peer_activity(addr1, now);
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        sweeper.update(addr2, now);
+        sweeper.update_peer_activity(addr2, now);
 
         // Peer #1 was active more recently, keep him
-        sweeper.update(addr1, now + Duration::from_secs(1));
+        sweeper.update_peer_activity(addr1, now + Duration::from_secs(1));
 
         assert_eq!(
             sweeper.sweep(now + Duration::from_secs(2)).peers,

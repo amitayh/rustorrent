@@ -23,7 +23,7 @@ use crate::message::MessageCodec;
 use crate::message::{Handshake, Message};
 use crate::peer::Config;
 use crate::peer::Event;
-use crate::peer::stats::Stats;
+use crate::peer::stats::PeerStats;
 use crate::peer::transfer_rate::TransferRate;
 
 pub struct Connection {
@@ -118,7 +118,7 @@ async fn run(
     let max_size = (block_size.bytes() as usize) + 9;
     let mut messages = Framed::new(socket, MessageCodec::new(max_size));
     let mut update_stats = tokio::time::interval(Duration::from_secs(1));
-    let mut stats = Stats::default();
+    let mut stats = PeerStats::default();
     let mut running = true;
 
     while running {
