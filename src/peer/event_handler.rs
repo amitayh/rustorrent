@@ -1,5 +1,6 @@
 use std::fmt::Formatter;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use bit_set::BitSet;
 use log::{trace, warn};
@@ -12,7 +13,6 @@ use crate::peer::Config;
 use crate::peer::event::Event;
 use crate::peer::sizes::Sizes;
 use crate::peer::stats::GlobalStats;
-use crate::peer::stats::PeerStats;
 use crate::peer::sweeper::Sweeper;
 use crate::peer::{choke::Choker, piece::Allocator};
 use crate::torrent::Info;
@@ -25,7 +25,7 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-    pub fn new(torrent_info: Info, config: Config, has_pieces: BitSet) -> Self {
+    pub fn new(torrent_info: Info, config: Arc<Config>, has_pieces: BitSet) -> Self {
         let sizes = Sizes::new(
             torrent_info.piece_length,
             torrent_info.download_type.length(),
@@ -67,6 +67,7 @@ impl EventHandler {
                     warn!("peer {} has been idle for too long", &addr);
                     self.choker.peer_disconnected(&addr);
                     self.allocator.peer_disconnected(&addr);
+                    self.stats.connected_peers -= 1;
                     actions.push(Action::RemovePeer(addr));
                 }
                 for (addr, block) in result.blocks {
@@ -345,6 +346,6 @@ mod tests {
             },
         };
 
-        EventHandler::new(torrent, Config::default(), BitSet::new())
+        EventHandler::new(torrent, Arc::new(Config::default()), BitSet::new())
     }
 }

@@ -6,10 +6,11 @@ use crate::peer::PeerId;
 
 #[derive(Clone)]
 pub struct Config {
-    pub clinet_id: PeerId,
+    pub client_id: PeerId,
+    pub port: u16,
+    pub sweep_interval: Duration,
     pub keep_alive_interval: Duration,
     pub choking_interval: Duration,
-    pub sweep_interval: Duration,
     pub optimistic_choking_cycle: usize,
     pub block_size: Size,
     pub connect_timeout: Duration,
@@ -40,10 +41,11 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            clinet_id: PeerId::random(),
+            client_id: PeerId::random(),
+            port: 6881,
+            sweep_interval: Duration::from_secs(5),
             keep_alive_interval: Duration::from_secs(120),
             choking_interval: Duration::from_secs(10),
-            sweep_interval: Duration::from_secs(5),
             optimistic_choking_cycle: 3,
             block_size: Size::from_kibibytes(16),
             connect_timeout: Duration::from_secs(5),

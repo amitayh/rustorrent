@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use bencoding::Value;
 use log::info;
-use peer::Peer;
+use peer::{Config, Peer};
 use tokio::{fs::File, net::TcpListener};
 
 use crate::codec::AsyncDecoder;
-use crate::peer::PeerId;
 use crate::torrent::Torrent;
 
 mod bencoding;
@@ -27,10 +27,7 @@ async fn load_torrent(path: &str) -> anyhow::Result<Torrent> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let config = tracker::Config {
-        client_id: PeerId::random(),
-        port: 6881,
-    };
+    let config = Arc::new(Config::default());
     let path = std::env::args().nth(1).expect("file must be provided");
 
     // Parse .torrent file
@@ -41,15 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("starting server...");
     let listener = TcpListener::bind(&address).await?;
     info!("listening on {}", &address);
-    let mut client = Peer::new(
-        listener,
-        torrent,
-        "/tmp/foo".into(),
-        peer::Config::default(),
-        false,
-    )
-    .await;
-
+    let mut client = Peer::new(listener, torrent, "/tmp/foo".into(), config, false).await;
     client.start().await?;
 
     Ok(())

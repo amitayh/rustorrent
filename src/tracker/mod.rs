@@ -2,6 +2,7 @@ mod request;
 mod response;
 
 use std::io::{Error, ErrorKind};
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use log::debug;
@@ -17,8 +18,7 @@ use url::Url;
 
 use crate::bencoding::Value;
 use crate::codec::AsyncDecoder;
-use crate::peer;
-use crate::peer::PeerId;
+use crate::peer::{self, Config};
 use crate::torrent::Torrent;
 use crate::tracker::request::{ResponseMode, TrackerRequest};
 use crate::tracker::response::TrackerResponse;
@@ -30,16 +30,17 @@ pub struct Tracker {
 }
 
 impl Tracker {
-    // TODO: change all clones to Arc?
-    pub fn spawn(torrent: &Torrent, config: &Config, events_tx: mpsc::Sender<peer::Event>) -> Self {
+    pub fn spawn(
+        torrent: &Torrent,
+        config: Arc<Config>,
+        events_tx: mpsc::Sender<peer::Event>,
+    ) -> Self {
         let (tx, mut rx) =
             watch::channel(DownloadProgress::new(torrent.info.download_type.length()));
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
         let tracker_url = torrent.announce.clone();
         let info_hash = torrent.info.info_hash.clone();
-        let peer_id = config.client_id.clone();
-        let port = config.port;
         let join_handle = tokio::spawn(async move {
             let mut event = Some(request::Event::Started);
             let mut tracker_id = None;
@@ -51,8 +52,8 @@ impl Tracker {
                     TrackerRequest {
                         announce: tracker_url.clone(),
                         info_hash: info_hash.clone(),
-                        peer_id: peer_id.clone(),
-                        port,
+                        peer_id: config.client_id.clone(),
+                        port: config.port,
                         uploaded: download_progress.uploaded,
                         downloaded: download_progress.downloaded,
                         left: download_progress.left(),
@@ -85,8 +86,8 @@ impl Tracker {
                             TrackerRequest {
                                 announce: tracker_url.clone(),
                                 info_hash: info_hash.clone(),
-                                peer_id: peer_id.clone(),
-                                port,
+                                peer_id: config.client_id.clone(),
+                                port: config.port,
                                 uploaded: download_progress.uploaded,
                                 downloaded: download_progress.downloaded,
                                 left: download_progress.left(),
@@ -149,11 +150,6 @@ impl DownloadProgress {
             uploaded,
         }
     }
-}
-
-pub struct Config {
-    pub client_id: PeerId,
-    pub port: u16,
 }
 
 async fn send_request(request: TrackerRequest) -> Result<TrackerResponse> {

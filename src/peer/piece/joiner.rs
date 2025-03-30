@@ -95,6 +95,7 @@ impl PieceState {
 mod tests {
     use super::*;
 
+    /*
     use size::Size;
 
     fn sizes() -> Sizes {
@@ -105,7 +106,6 @@ mod tests {
         )
     }
 
-    /*
     #[test]
     fn piece_incomplete() {
         let mut joiner = Joiner::new(&sizes(), vec![Sha1([0; 20]), Sha1([0; 20])]);

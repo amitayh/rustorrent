@@ -38,7 +38,7 @@ use crate::peer::connection::Connection;
 use crate::peer::event_handler::Action;
 use crate::peer::event_handler::EventHandler;
 use crate::torrent::Torrent;
-use crate::tracker::{self, Tracker};
+use crate::tracker::Tracker;
 
 pub struct Peer {
     listener: TcpListener,
@@ -48,7 +48,7 @@ pub struct Peer {
     file_reader_writer: Arc<Mutex<FileReaderWriter>>,
     tx: Sender<Event>,
     rx: Receiver<Event>,
-    config: Config,
+    config: Arc<Config>,
 }
 
 impl Peer {
@@ -56,7 +56,7 @@ impl Peer {
         listener: TcpListener,
         torrent: Torrent,
         file_path: PathBuf,
-        config: Config,
+        config: Arc<Config>,
         seeding: bool,
     ) -> Self {
         let torrent_info = &torrent.info;
@@ -66,7 +66,8 @@ impl Peer {
         } else {
             BitSet::with_capacity(total_pieces)
         };
-        let event_handler = EventHandler::new(torrent_info.clone(), config.clone(), has_pieces);
+        let event_handler =
+            EventHandler::new(torrent_info.clone(), Arc::clone(&config), has_pieces);
         let file_reader_writer = {
             let sizes = Sizes::new(
                 torrent_info.piece_length,
@@ -112,15 +113,7 @@ impl Peer {
         let mut choke = interval_with_delay(self.config.choking_interval);
         let mut sweep = interval_with_delay(self.config.sweep_interval);
 
-        let tracker = {
-            let self_addr = self.listener.local_addr()?;
-            let client_id = self.config.clinet_id.clone();
-            let config = tracker::Config {
-                client_id,
-                port: self_addr.port(),
-            };
-            Tracker::spawn(&self.torrent, &config, self.tx.clone())
-        };
+        let tracker = Tracker::spawn(&self.torrent, Arc::clone(&self.config), self.tx.clone());
 
         let mut running = true;
         while running {
@@ -147,7 +140,7 @@ impl Peer {
                                 socket,
                                 self.tx.clone(),
                                 self.torrent.info.info_hash.clone(),
-                                &self.config,
+                                Arc::clone(&self.config),
                             ),
                         );
                     }
@@ -334,7 +327,7 @@ mod tests {
             seeder_listener,
             test_torrent(announce_url.clone()),
             "assets/alice_in_wonderland.txt".into(),
-            test_config().with_unchoking_interval(Duration::from_secs(2)),
+            Arc::new(test_config().with_unchoking_interval(Duration::from_secs(2))),
             true,
         )
         .await;
@@ -343,7 +336,7 @@ mod tests {
             leecher_listener,
             test_torrent(announce_url.clone()),
             "/tmp/foo".into(),
-            test_config(),
+            Arc::new(test_config()),
             false,
         )
         .await;
@@ -352,7 +345,7 @@ mod tests {
             leecher2_listener,
             test_torrent(announce_url),
             "/tmp/bar".into(),
-            test_config(),
+            Arc::new(test_config()),
             false,
         )
         .await;

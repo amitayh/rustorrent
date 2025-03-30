@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -39,23 +40,21 @@ impl Connection {
         socket: Option<TcpStream>,
         events_tx: Sender<Event>,
         info_hash: Sha1,
-        config: &Config,
+        config: Arc<Config>,
     ) -> Self {
         let (tx, rx) = mpsc::channel(config.channel_buffer);
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
-        let handshake = Handshake::new(info_hash, config.clinet_id.clone());
-        let connect_timeout = config.connect_timeout;
-        let block_size = config.block_size;
+        let handshake = Handshake::new(info_hash, config.client_id.clone());
         let join_handle = tokio::spawn(async move {
             let result = tokio::select! {
                 _ = token_clone.cancelled() => Ok(()),
                 result = run(
                     addr,
                     socket,
-                    connect_timeout,
+                    config.connect_timeout,
                     handshake,
-                    block_size,
+                    config.block_size,
                     events_tx.clone(),
                     rx,
                 ) => result,
