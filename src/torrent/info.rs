@@ -35,6 +35,20 @@ impl Info {
         Ok(all)
     }
 
+    pub fn total_pieces(&self) -> usize {
+        self.pieces.len()
+    }
+
+    pub fn piece_size(&self, piece: usize) -> usize {
+        let piece_start = self.piece_offset(piece);
+        let piece_end = (piece_start + self.piece_size).min(self.total_size());
+        piece_end - piece_start
+    }
+
+    pub fn piece_offset(&self, piece: usize) -> usize {
+        self.piece_size * piece
+    }
+
     pub fn total_size(&self) -> usize {
         match &self.download_type {
             DownloadType::SingleFile { size, .. } => *size,

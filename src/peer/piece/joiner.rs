@@ -1,5 +1,4 @@
 use core::f64;
-use std::sync::Arc;
 
 use sha1::Digest;
 
@@ -14,12 +13,12 @@ pub struct Joiner {
 
 // TODO: alternative names: Combiner, Stitcher, Fuser
 impl Joiner {
-    pub fn new(download: Arc<Download>) -> Self {
-        //assert_eq!(sizes.total_pieces, download.torrent.info.pieces.len());
-        let mut pieces = Vec::with_capacity(download.total_pieces());
-        for (piece, sha1) in download.torrent.info.pieces.iter().enumerate() {
-            let offset = download.piece_offset(piece) as u64;
-            pieces.push(PieceState::new(piece, offset, sha1.clone(), &download));
+    pub fn new(download: &Download) -> Self {
+        let info = &download.torrent.info;
+        let mut pieces = Vec::with_capacity(info.total_pieces());
+        for (piece, sha1) in info.pieces.iter().enumerate() {
+            let offset = info.piece_offset(piece) as u64;
+            pieces.push(PieceState::new(piece, offset, sha1.clone(), download));
         }
         Self {
             block_size: download.config.block_size.bytes() as usize,
@@ -54,7 +53,7 @@ struct PieceState {
 
 impl PieceState {
     fn new(piece: usize, offset: u64, sha1: Sha1, download: &Download) -> Self {
-        let piece_size = download.piece_size(piece);
+        let piece_size = download.torrent.info.piece_size(piece);
         let block_size = download.config.block_size.bytes() as f64;
         let blocks = ((piece_size as f64) / block_size).ceil() as usize;
         let data = vec![None; blocks];
@@ -96,9 +95,9 @@ impl PieceState {
 
 #[cfg(test)]
 mod tests {
+    /*
     use super::*;
 
-    /*
     use size::Size;
 
     fn sizes() -> Sizes {

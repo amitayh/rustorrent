@@ -2,6 +2,7 @@ mod blocks;
 mod choke;
 mod config;
 mod connection;
+mod download;
 mod event;
 mod event_handler;
 mod fs;
@@ -11,8 +12,8 @@ mod stats;
 mod sweeper;
 mod transfer_rate;
 
-use blocks::Blocks;
 pub use config::*;
+pub use download::*;
 pub use event::Event;
 use fs::FileReaderWriter;
 pub use peer_id::*;
@@ -35,7 +36,6 @@ use tokio::time::{self, Instant, Interval, timeout};
 use crate::peer::connection::Connection;
 use crate::peer::event_handler::Action;
 use crate::peer::event_handler::EventHandler;
-use crate::torrent::Torrent;
 use crate::tracker::Tracker;
 
 pub struct Peer {
@@ -46,38 +46,6 @@ pub struct Peer {
     file_reader_writer: Arc<Mutex<FileReaderWriter>>,
     tx: Sender<Event>,
     rx: Receiver<Event>,
-}
-
-#[derive(Debug)]
-pub struct Download {
-    pub torrent: Torrent,
-    pub config: Config,
-}
-
-impl Download {
-    pub fn total_pieces(&self) -> usize {
-        self.torrent.info.pieces.len()
-    }
-
-    pub fn piece_size(&self, piece: usize) -> usize {
-        let piece_size = self.torrent.info.piece_size;
-        let total_size = self.torrent.info.total_size();
-        let piece_start = self.piece_offset(piece);
-        let piece_end = (piece_start + piece_size).min(total_size);
-        piece_end - piece_start
-    }
-
-    pub fn piece_offset(&self, piece: usize) -> usize {
-        self.torrent.info.piece_size * piece
-    }
-
-    pub fn blocks(&self, piece: usize) -> Blocks {
-        Blocks::new(
-            piece,
-            self.piece_size(piece),
-            self.config.block_size.bytes() as usize,
-        )
-    }
 }
 
 impl Peer {

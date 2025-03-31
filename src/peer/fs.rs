@@ -20,7 +20,7 @@ pub struct FileReaderWriter {
 
 impl FileReaderWriter {
     pub fn new(download: Arc<Download>) -> Self {
-        let joiner = Joiner::new(Arc::clone(&download));
+        let joiner = Joiner::new(&download);
         Self { download, joiner }
     }
 

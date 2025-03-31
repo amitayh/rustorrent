@@ -21,8 +21,9 @@ pub struct Allocator {
 
 impl Allocator {
     pub fn new(download: Arc<Download>, has_pieces: BitSet) -> Self {
-        let mut pieces = Vec::with_capacity(download.total_pieces());
-        for piece in 0..download.total_pieces() {
+        let total_pieces = download.torrent.info.total_pieces();
+        let mut pieces = Vec::with_capacity(total_pieces);
+        for piece in 0..total_pieces {
             let blocks = download.blocks(piece);
             pieces.push(PieceState::new(blocks));
         }
