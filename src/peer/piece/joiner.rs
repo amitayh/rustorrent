@@ -6,7 +6,6 @@ use sha1::Digest;
 use crate::crypto::Sha1;
 use crate::message::BlockData;
 use crate::peer::Download;
-use crate::peer::sizes::Sizes;
 
 pub struct Joiner {
     block_size: usize,
@@ -16,15 +15,16 @@ pub struct Joiner {
 // TODO: alternative names: Combiner, Stitcher, Fuser
 impl Joiner {
     pub fn new(download: Arc<Download>) -> Self {
-        let sizes = download.sizes();
-        assert_eq!(sizes.total_pieces, download.torrent.info.pieces.len());
-        let block_size = sizes.block_size.bytes() as usize;
-        let mut pieces = Vec::with_capacity(sizes.total_pieces);
+        //assert_eq!(sizes.total_pieces, download.torrent.info.pieces.len());
+        let mut pieces = Vec::with_capacity(download.total_pieces());
         for (piece, sha1) in download.torrent.info.pieces.iter().enumerate() {
-            let offset = sizes.piece_offset(piece) as u64;
-            pieces.push(PieceState::new(piece, offset, sha1.clone(), &sizes));
+            let offset = download.piece_offset(piece) as u64;
+            pieces.push(PieceState::new(piece, offset, sha1.clone(), &download));
         }
-        Self { block_size, pieces }
+        Self {
+            block_size: download.config.block_size.bytes() as usize,
+            pieces,
+        }
     }
 
     pub fn add(&mut self, block_data: BlockData) -> Status {
@@ -53,9 +53,9 @@ struct PieceState {
 }
 
 impl PieceState {
-    fn new(piece: usize, offset: u64, sha1: Sha1, sizes: &Sizes) -> Self {
-        let piece_size = sizes.piece_size(piece);
-        let block_size = sizes.block_size.bytes() as f64;
+    fn new(piece: usize, offset: u64, sha1: Sha1, download: &Download) -> Self {
+        let piece_size = download.piece_size(piece);
+        let block_size = download.config.block_size.bytes() as f64;
         let blocks = ((piece_size as f64) / block_size).ceil() as usize;
         let data = vec![None; blocks];
         Self {

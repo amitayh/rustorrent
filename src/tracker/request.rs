@@ -1,4 +1,3 @@
-use size::Size;
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
@@ -15,12 +14,12 @@ pub struct TrackerRequest {
     /// this range.
     pub port: u16,
     /// The total amount uploaded (since the client sent the 'started' event to the tracker).
-    pub uploaded: Size,
+    pub uploaded: usize,
     /// The total amount downloaded (since the client sent the 'started' event to the tracker).
-    pub downloaded: Size,
+    pub downloaded: usize,
     /// The number of bytes needed to download to be 100% complete and get all the included files
     /// in the torrent.
-    pub left: Size,
+    pub left: usize,
     pub mode: ResponseMode,
     pub event: Option<Event>,
     pub tracker_id: Option<String>,
@@ -34,9 +33,9 @@ impl From<TrackerRequest> for Url {
             url_encode(&value.info_hash.0),
             url_encode(&value.peer_id.0),
             value.port,
-            value.uploaded.bytes(),
-            value.downloaded.bytes(),
-            value.left.bytes(),
+            value.uploaded,
+            value.downloaded,
+            value.left,
         );
         if let Some(event) = &value.event {
             query.push_str("&event=");

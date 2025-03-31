@@ -2,7 +2,6 @@ use std::io::SeekFrom;
 use std::sync::Arc;
 
 use log::warn;
-use size::Size;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::{fs::File, sync::mpsc::Sender};
@@ -17,25 +16,18 @@ use super::piece::Status;
 pub struct FileReaderWriter {
     download: Arc<Download>,
     joiner: Joiner,
-    piece_size: Size,
 }
 
 impl FileReaderWriter {
     pub fn new(download: Arc<Download>) -> Self {
-        let sizes = download.sizes();
         let joiner = Joiner::new(Arc::clone(&download));
-        let piece_size = sizes.piece_size;
-        Self {
-            download,
-            joiner,
-            piece_size,
-        }
+        Self { download, joiner }
     }
 
     pub async fn read(&self, block: Block, tx: Sender<Message>) -> anyhow::Result<()> {
         let mut data = vec![0; block.length];
         let mut file = File::open(&self.download.config.download_path).await?;
-        let offset = block.global_offset(self.piece_size.bytes() as usize);
+        let offset = block.global_offset(self.download.torrent.info.piece_size);
         file.seek(SeekFrom::Start(offset as u64)).await?;
         file.read_exact(&mut data).await?;
         let message = Message::Piece(BlockData {

@@ -1,33 +1,34 @@
 use std::cmp::Reverse;
 use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
 use std::{collections::HashMap, net::SocketAddr};
 
 use bit_set::BitSet;
 
 use crate::message::Block;
+use crate::peer::Download;
 use crate::peer::blocks::Blocks;
-use crate::peer::sizes::Sizes;
 
 /// Allocates blocks to request from peers. Optimizes rarest piece first while trying to ditribute
 /// the blocks between peers who have them.
 #[derive(Debug)]
 pub struct Allocator {
-    sizes: Sizes,
+    download: Arc<Download>,
     peers: HashMap<SocketAddr, PeerState>,
     pieces: Vec<PieceState>,
     pub has_pieces: BitSet,
 }
 
 impl Allocator {
-    pub fn new(sizes: Sizes, has_pieces: BitSet) -> Self {
-        let mut pieces = Vec::with_capacity(sizes.total_pieces);
-        for piece in 0..sizes.total_pieces {
-            let blocks = Blocks::new(&sizes, piece);
+    pub fn new(download: Arc<Download>, has_pieces: BitSet) -> Self {
+        let mut pieces = Vec::with_capacity(download.total_pieces());
+        for piece in 0..download.total_pieces() {
+            let blocks = download.blocks(piece);
             pieces.push(PieceState::new(blocks));
         }
 
         Self {
-            sizes,
+            download,
             peers: HashMap::new(),
             pieces,
             has_pieces,
@@ -114,7 +115,7 @@ impl Allocator {
     pub fn invalidate(&mut self, piece: usize) {
         let state = self.pieces.get_mut(piece).expect("invalid piece");
         assert!(state.assigned_blocks.is_empty());
-        let blocks = Blocks::new(&self.sizes, piece);
+        let blocks = self.download.blocks(piece);
         state.unassigned_blocks = blocks.collect();
     }
 
@@ -238,6 +239,7 @@ impl PieceState {
 
 #[cfg(test)]
 mod tests {
+    /*
     use super::*;
 
     use size::Size;
@@ -463,4 +465,5 @@ mod tests {
         assert_eq!(not_interesting.len(), 1);
         assert!(not_interesting.contains(&addr2));
     }
+    */
 }

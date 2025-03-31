@@ -7,7 +7,6 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use log::debug;
 use log::info;
-use size::Size;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -30,9 +29,8 @@ pub struct Tracker {
 
 impl Tracker {
     pub fn spawn(download: Arc<Download>, events_tx: mpsc::Sender<peer::Event>) -> Self {
-        let (tx, mut rx) = watch::channel(DownloadProgress::new(
-            download.torrent.info.download_type.length(),
-        ));
+        let (tx, mut rx) =
+            watch::channel(DownloadProgress::new(download.torrent.info.total_size()));
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
         let join_handle = tokio::spawn(async move {
@@ -104,7 +102,7 @@ impl Tracker {
         }
     }
 
-    pub fn update_progress(&self, downloaded: Size, uploaded: Size) -> anyhow::Result<()> {
+    pub fn update_progress(&self, downloaded: usize, uploaded: usize) -> anyhow::Result<()> {
         let updated_progress = self.tx.borrow().update(downloaded, uploaded);
         self.tx.send(updated_progress)?;
         Ok(())
@@ -119,25 +117,25 @@ impl Tracker {
 
 #[derive(Clone)]
 struct DownloadProgress {
-    total: Size,
-    uploaded: Size,
-    downloaded: Size,
+    total: usize,
+    uploaded: usize,
+    downloaded: usize,
 }
 
 impl DownloadProgress {
-    fn new(total: Size) -> Self {
+    fn new(total: usize) -> Self {
         Self {
             total,
-            downloaded: Size::from_bytes(0),
-            uploaded: Size::from_bytes(0),
+            downloaded: 0,
+            uploaded: 0,
         }
     }
 
-    fn left(&self) -> Size {
+    fn left(&self) -> usize {
         self.total - self.downloaded
     }
 
-    fn update(&self, downloaded: Size, uploaded: Size) -> Self {
+    fn update(&self, downloaded: usize, uploaded: usize) -> Self {
         Self {
             total: self.total,
             downloaded,

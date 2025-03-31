@@ -10,7 +10,6 @@ use tokio::time::Instant;
 use crate::message::{Block, BlockData, Message};
 
 use crate::peer::event::Event;
-use crate::peer::sizes::Sizes;
 use crate::peer::stats::GlobalStats;
 use crate::peer::sweeper::Sweeper;
 use crate::peer::{choke::Choker, piece::Allocator};
@@ -26,13 +25,9 @@ pub struct EventHandler {
 
 impl EventHandler {
     pub fn new(download: Arc<Download>, has_pieces: BitSet) -> Self {
-        let sizes = Sizes::new(
-            download.torrent.info.piece_length,
-            download.torrent.info.download_type.length(),
-            download.config.block_size,
-        );
-        let stats = GlobalStats::new(sizes.total_pieces);
-        let allocator = Allocator::new(sizes, has_pieces);
+        // TODO: is this needed?
+        let stats = GlobalStats::new(download.torrent.info.pieces.len());
+        let allocator = Allocator::new(Arc::clone(&download), has_pieces);
         Self {
             choker: Choker::new(download.config.optimistic_choking_cycle),
             allocator,
@@ -265,7 +260,6 @@ impl std::fmt::Debug for Action {
 #[cfg(test)]
 mod tests {
     use log::info;
-    use size::Size;
 
     use crate::{
         crypto::{Md5, Sha1},
@@ -332,7 +326,7 @@ mod tests {
             announce: "https://foo.bar".try_into().unwrap(),
             info: Info {
                 info_hash: Sha1::from_hex("e90cf5ec83e174d7dcb94821560dac201ae1f663").unwrap(),
-                piece_length: Size::from_kibibytes(32),
+                piece_size: 32 * 1024,
                 pieces: vec![
                     Sha1::from_hex("a9af20024fc50543163b6be66fe4660be2170f6c").unwrap(),
                     Sha1::from_hex("2494039151d7db3e56b3ec021d233742e3de55a6").unwrap(),
@@ -343,7 +337,7 @@ mod tests {
                 ],
                 download_type: DownloadType::SingleFile {
                     name: "alice_in_wonderland.txt".to_string(),
-                    length: Size::from_bytes(174357),
+                    size: 174357,
                     md5sum: Some(Md5::from_hex("9a930de3cfc64468c05715237a6b4061").unwrap()),
                 },
             },

@@ -7,16 +7,15 @@ mod event_handler;
 mod fs;
 mod peer_id;
 mod piece;
-mod sizes;
 mod stats;
 mod sweeper;
 mod transfer_rate;
 
+use blocks::Blocks;
 pub use config::*;
 pub use event::Event;
 use fs::FileReaderWriter;
 pub use peer_id::*;
-use sizes::Sizes;
 use tokio::sync::Mutex;
 
 use std::collections::HashMap;
@@ -49,17 +48,34 @@ pub struct Peer {
     rx: Receiver<Event>,
 }
 
+#[derive(Debug)]
 pub struct Download {
     pub torrent: Torrent,
     pub config: Config,
 }
 
 impl Download {
-    pub fn sizes(&self) -> Sizes {
-        Sizes::new(
-            self.torrent.info.piece_length,
-            self.torrent.info.download_type.length(),
-            self.config.block_size,
+    pub fn total_pieces(&self) -> usize {
+        self.torrent.info.pieces.len()
+    }
+
+    pub fn piece_size(&self, piece: usize) -> usize {
+        let piece_size = self.torrent.info.piece_size;
+        let total_size = self.torrent.info.total_size();
+        let piece_start = self.piece_offset(piece);
+        let piece_end = (piece_start + piece_size).min(total_size);
+        piece_end - piece_start
+    }
+
+    pub fn piece_offset(&self, piece: usize) -> usize {
+        self.torrent.info.piece_size * piece
+    }
+
+    pub fn blocks(&self, piece: usize) -> Blocks {
+        Blocks::new(
+            piece,
+            self.piece_size(piece),
+            self.config.block_size.bytes() as usize,
         )
     }
 }
@@ -84,7 +100,7 @@ impl Peer {
                 .await
                 .unwrap();
 
-            file.set_len(download.torrent.info.download_type.length().bytes() as u64)
+            file.set_len(download.torrent.info.total_size() as u64)
                 .await
                 .unwrap();
         }
@@ -172,7 +188,10 @@ impl Peer {
                     }
 
                     Action::UpdateStats(stats) => {
-                        tracker.update_progress(stats.download_rate.0, stats.upload_rate.0)?;
+                        tracker.update_progress(
+                            stats.download_rate.0.bytes() as usize,
+                            stats.upload_rate.0.bytes() as usize,
+                        )?;
                         println!(
                             "Downloaded {}/{} pieces ({:.2}%) | Down: {} | Up: {} | Peers: {}",
                             stats.completed_pieces,
@@ -226,7 +245,6 @@ mod tests {
 
     use std::time::Duration;
 
-    use size::Size;
     use tokio::{task::JoinSet, time::timeout};
     use url::Url;
     use wiremock::{
@@ -255,7 +273,7 @@ mod tests {
             announce: announce_url,
             info: Info {
                 info_hash: Sha1::from_hex("e90cf5ec83e174d7dcb94821560dac201ae1f663").unwrap(),
-                piece_length: Size::from_kibibytes(32),
+                piece_size: 1024 * 32,
                 pieces: vec![
                     Sha1::from_hex("8fdfb566405fc084761b1fe0b6b7f8c6a37234ed").unwrap(),
                     Sha1::from_hex("2494039151d7db3e56b3ec021d233742e3de55a6").unwrap(),
@@ -266,7 +284,7 @@ mod tests {
                 ],
                 download_type: DownloadType::SingleFile {
                     name: "alice_in_wonderland.txt".to_string(),
-                    length: Size::from_bytes(174357),
+                    size: 174357,
                     md5sum: Some(Md5::from_hex("9a930de3cfc64468c05715237a6b4061").unwrap()),
                 },
             },

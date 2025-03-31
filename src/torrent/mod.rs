@@ -32,8 +32,6 @@ impl TryFrom<Value> for Torrent {
 mod tests {
     use std::path::PathBuf;
 
-    use size::Size;
-
     use crate::{
         bencoding::Value,
         crypto::{Md5, Sha1},
@@ -70,16 +68,16 @@ mod tests {
             torrent.announce.to_string(),
             "udp://tracker.opentrackr.org:1337/announce".to_string()
         );
-        assert_eq!(torrent.info.piece_length, Size::from_bytes(1234));
+        assert_eq!(torrent.info.piece_size, 1234);
         assert_eq!(torrent.info.pieces, vec![Sha1(piece1), Sha1(piece2)]);
         if let DownloadType::SingleFile {
             name,
-            length,
+            size: length,
             md5sum,
         } = torrent.info.download_type
         {
             assert_eq!(name, "image.iso");
-            assert_eq!(length, Size::from_bytes(5678));
+            assert_eq!(length, 5678);
             assert!(md5sum.is_some());
         } else {
             panic!("unexpected download type");
@@ -143,11 +141,11 @@ mod tests {
             assert_eq!(directory_name, "root");
             assert_eq!(files.len(), 2);
 
-            assert_eq!(files[0].length, Size::from_bytes(12));
+            assert_eq!(files[0].size, 12);
             assert_eq!(files[0].path, PathBuf::from("dir/file1"));
             assert!(files[0].md5sum.is_some());
 
-            assert_eq!(files[1].length, Size::from_bytes(34));
+            assert_eq!(files[1].size, 34);
             assert_eq!(files[1].path, PathBuf::from("dir/file2"));
             assert!(files[1].md5sum.is_some());
         } else {
@@ -163,7 +161,7 @@ mod tests {
             info,
             Info {
                 info_hash: Sha1::from_hex("e90cf5ec83e174d7dcb94821560dac201ae1f663").unwrap(),
-                piece_length: Size::from_kibibytes(32),
+                piece_size: 1024 * 32,
                 pieces: vec![
                     Sha1::from_hex("8fdfb566405fc084761b1fe0b6b7f8c6a37234ed").unwrap(),
                     Sha1::from_hex("2494039151d7db3e56b3ec021d233742e3de55a6").unwrap(),
@@ -174,7 +172,7 @@ mod tests {
                 ],
                 download_type: DownloadType::SingleFile {
                     name: "alice_in_wonderland.txt".to_string(),
-                    length: Size::from_bytes(174357),
+                    size: 174357,
                     md5sum: Some(Md5::from_hex("9a930de3cfc64468c05715237a6b4061").unwrap())
                 },
             }

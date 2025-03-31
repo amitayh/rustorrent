@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use anyhow::{Error, Result, anyhow};
-use size::Size;
 
 use crate::{bencoding::Value, crypto::Md5};
 
@@ -9,24 +8,13 @@ use crate::{bencoding::Value, crypto::Md5};
 pub enum DownloadType {
     SingleFile {
         name: String,
-        length: Size,
+        size: usize,
         md5sum: Option<Md5>,
     },
     MultiFile {
         directory_name: String,
         files: Vec<File>,
     },
-}
-
-impl DownloadType {
-    pub fn length(&self) -> Size {
-        match self {
-            Self::SingleFile { length, .. } => *length,
-            Self::MultiFile { files, .. } => files
-                .iter()
-                .fold(Size::from_bytes(0), |total, file| total + file.length),
-        }
-    }
 }
 
 impl TryFrom<Value> for DownloadType {
@@ -42,7 +30,7 @@ impl TryFrom<Value> for DownloadType {
             };
             return Ok(DownloadType::SingleFile {
                 name,
-                length,
+                size: length,
                 md5sum,
             });
         }
@@ -66,7 +54,7 @@ impl TryFrom<Value> for DownloadType {
 #[derive(Debug, PartialEq, Clone)]
 pub struct File {
     pub path: PathBuf,
-    pub length: Size,
+    pub size: usize,
     pub md5sum: Option<Md5>,
 }
 
@@ -74,7 +62,7 @@ impl TryFrom<Value> for File {
     type Error = Error;
 
     fn try_from(mut value: Value) -> Result<Self> {
-        let length = value.remove_entry("length")?.try_into()?;
+        let size = value.remove_entry("length")?.try_into()?;
         let parts: Vec<Value> = value.remove_entry("path")?.try_into()?;
         let mut path = PathBuf::with_capacity(parts.len());
         for part in parts {
@@ -85,10 +73,6 @@ impl TryFrom<Value> for File {
             Ok(Some(value)) => Some(value.try_into()?),
             _ => None,
         };
-        Ok(File {
-            length,
-            path,
-            md5sum,
-        })
+        Ok(File { size, path, md5sum })
     }
 }

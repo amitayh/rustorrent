@@ -2,7 +2,7 @@ use std::{io::Write, os::unix::ffi::OsStrExt, path::Path};
 
 use anyhow::{Error, Result, anyhow};
 use sha1::Digest;
-use size::{KiB, Size};
+use size::KiB;
 use tokio::io::AsyncReadExt;
 
 use crate::torrent::DownloadType;
@@ -13,7 +13,7 @@ const SHA1_LEN: usize = 20;
 #[derive(Debug, PartialEq, Clone)]
 pub struct Info {
     pub info_hash: Sha1,
-    pub piece_length: Size,
+    pub piece_size: usize,
     pub pieces: Vec<Sha1>,
     pub download_type: DownloadType,
 }
@@ -33,6 +33,13 @@ impl Info {
             all.push(Sha1(bytes));
         }
         Ok(all)
+    }
+
+    pub fn total_size(&self) -> usize {
+        match &self.download_type {
+            DownloadType::SingleFile { size, .. } => *size,
+            DownloadType::MultiFile { files, .. } => files.iter().map(|file| file.size).sum(),
+        }
     }
 
     #[allow(dead_code)]
@@ -91,7 +98,7 @@ impl TryFrom<Value> for Info {
         let download_type = value.try_into()?;
         Ok(Info {
             info_hash,
-            piece_length,
+            piece_size: piece_length,
             pieces,
             download_type,
         })

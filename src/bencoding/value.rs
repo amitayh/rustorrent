@@ -5,7 +5,6 @@ use std::{
 };
 
 use anyhow::{Error, Result, anyhow};
-use size::Size;
 
 use crate::crypto::Md5;
 
@@ -124,17 +123,6 @@ impl TryFrom<Value> for usize {
     fn try_from(value: Value) -> Result<Self> {
         match value {
             Value::Integer(integer) => Self::try_from(integer).map_err(Error::new),
-            _ => Err(Error::new(TypeMismatch::new(ValueType::Integer, value))),
-        }
-    }
-}
-
-impl TryFrom<Value> for Size {
-    type Error = Error;
-
-    fn try_from(value: Value) -> Result<Self> {
-        match value {
-            Value::Integer(bytes) => Ok(Size::from_bytes(bytes)),
             _ => Err(Error::new(TypeMismatch::new(ValueType::Integer, value))),
         }
     }
