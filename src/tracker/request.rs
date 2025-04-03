@@ -20,32 +20,37 @@ pub struct TrackerRequest {
     /// The number of bytes needed to download to be 100% complete and get all the included files
     /// in the torrent.
     pub left: usize,
-    pub mode: ResponseMode,
+    pub mode: Mode,
     pub event: Option<Event>,
     pub tracker_id: Option<String>,
 }
 
 impl From<TrackerRequest> for Url {
-    fn from(value: TrackerRequest) -> Self {
-        let mut url = value.announce;
+    fn from(request: TrackerRequest) -> Self {
         let mut query = format!(
-            "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1",
-            url_encode(&value.info_hash.0),
-            url_encode(&value.peer_id.0),
-            value.port,
-            value.uploaded,
-            value.downloaded,
-            value.left,
+            "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}",
+            url_encode(&request.info_hash.0),
+            url_encode(&request.peer_id.0),
+            request.port,
+            request.uploaded,
+            request.downloaded,
+            request.left,
         );
-        if let Some(event) = &value.event {
+        if let Some(event) = &request.event {
             query.push_str("&event=");
             query.push_str(event.into());
         }
-        if let Some(id) = &value.tracker_id {
+        if let Some(id) = &request.tracker_id {
             query.push_str("&trackerid=");
             query.push_str(&url_encode(id.as_bytes()));
         }
+        if request.mode == Mode::NormalNoPeerId {
+            query.push_str("&no_peer_id=1");
+        } else if request.mode == Mode::Compact {
+            query.push_str("&compact=1");
+        }
         // TODO: preseve old query if exists
+        let mut url = request.announce;
         url.set_query(Some(&query));
         url
     }
@@ -57,8 +62,8 @@ fn url_encode(bytes: &[u8]) -> String {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
-pub enum ResponseMode {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
     Normal,
     /// Indicates that the tracker can omit peer id field in peers dictionary.
     NormalNoPeerId,

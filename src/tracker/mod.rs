@@ -18,7 +18,7 @@ use url::Url;
 use crate::bencoding::Value;
 use crate::codec::AsyncDecoder;
 use crate::peer::{self, Download};
-use crate::tracker::request::{ResponseMode, TrackerRequest};
+use crate::tracker::request::{Mode, TrackerRequest};
 use crate::tracker::response::TrackerResponse;
 
 pub struct Tracker {
@@ -49,7 +49,7 @@ impl Tracker {
                         uploaded: download_progress.uploaded,
                         downloaded: download_progress.downloaded,
                         left: download_progress.left(),
-                        mode: ResponseMode::Compact,
+                        mode: Mode::Compact,
                         event,
                         tracker_id: tracker_id.clone(),
                     }
@@ -83,7 +83,7 @@ impl Tracker {
                                 uploaded: download_progress.uploaded,
                                 downloaded: download_progress.downloaded,
                                 left: download_progress.left(),
-                                mode: ResponseMode::Compact,
+                                mode: Mode::Compact,
                                 event: Some(request::Event::Stopped),
                                 tracker_id: tracker_id.clone(),
                             }
