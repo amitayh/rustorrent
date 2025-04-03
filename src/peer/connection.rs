@@ -115,6 +115,8 @@ async fn run(
 
     exchange_handshakes(&mut socket, handshake, handshake_direction).await?;
 
+    // The largest message we should accept is a `Piece` message, which should
+    // always have size of `config.block_size` + 9
     let max_size = (config.block_size.bytes() as usize) + 9;
     let mut messages = Framed::new(socket, MessageCodec::new(max_size));
     let mut update_stats = tokio::time::interval(Duration::from_secs(1));

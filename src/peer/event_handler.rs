@@ -70,7 +70,7 @@ impl EventHandler {
                 }
                 for (addr, block) in result.blocks {
                     warn!("block requet timed out: {} - {:?}", &addr, &block);
-                    if let Some(next_block) = self.allocator.release(&addr, block) {
+                    for next_block in self.allocator.release(&addr, block) {
                         actions.push(Action::Send(addr, Message::Request(next_block)));
                     }
                 }
@@ -154,10 +154,12 @@ impl EventHandler {
                 Vec::new()
             }
 
-            Message::Unchoke => match self.allocator.peer_unchoked(addr) {
-                Some(block) => vec![Action::Send(addr, Message::Request(block))],
-                None => Vec::new(),
-            },
+            Message::Unchoke => self
+                .allocator
+                .peer_unchoked(addr)
+                .into_iter()
+                .map(|block| Action::Send(addr, Message::Request(block)))
+                .collect(),
 
             Message::Interested => {
                 self.choker.peer_interested(addr);
@@ -175,13 +177,13 @@ impl EventHandler {
             }
 
             Message::Bitfield(pieces) => {
-                let mut actions = Vec::with_capacity(2);
-                let (became_interesting, next_block) =
+                let (became_interesting, next_blocks) =
                     self.allocator.peer_has_pieces(addr, &pieces);
+                let mut actions = Vec::with_capacity(next_blocks.len() + 1);
                 if became_interesting {
                     actions.push(Action::Send(addr, Message::Interested));
                 }
-                if let Some(block) = next_block {
+                for block in next_blocks {
                     actions.push(Action::Send(addr, Message::Request(block)));
                 }
                 actions
@@ -207,7 +209,7 @@ impl EventHandler {
                 }
                 self.sweeper.block_downloaded(addr, block);
                 let mut actions = vec![Action::IntegrateBlock(block_data)];
-                if let Some(next_block) = self.allocator.block_downloaded(&addr, &block) {
+                for next_block in self.allocator.block_downloaded(&addr, &block) {
                     actions.push(Action::Send(addr, Message::Request(next_block)));
                 }
                 actions

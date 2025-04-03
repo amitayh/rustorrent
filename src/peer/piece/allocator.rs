@@ -55,7 +55,7 @@ impl Allocator {
             .collect()
     }
 
-    pub fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) -> (bool, Option<Block>) {
+    pub fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) -> (bool, Vec<Block>) {
         let peer = self.peers.entry(addr).or_default();
         peer.has_pieces.union_with(pieces);
         let became_interesting = peer.update_interest(&self.has_pieces);
@@ -67,10 +67,11 @@ impl Allocator {
     }
 
     /// Returns a block to request form peer who unchoked if possible
-    pub fn peer_unchoked(&mut self, addr: SocketAddr) -> Option<Block> {
+    pub fn peer_unchoked(&mut self, addr: SocketAddr) -> Vec<Block> {
         let peer = self.peers.entry(addr).or_default();
         if !peer.choking {
-            return None;
+            // Client was already unchoked, do nothing
+            return Vec::new();
         }
         peer.choking = false;
         self.assign(&addr)
@@ -85,7 +86,7 @@ impl Allocator {
         }
     }
 
-    pub fn release(&mut self, addr: &SocketAddr, block: Block) -> Option<Block> {
+    pub fn release(&mut self, addr: &SocketAddr, block: Block) -> Vec<Block> {
         let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
         piece.release(&block);
         if let Some(peer) = self.peers.get_mut(addr) {
@@ -93,7 +94,7 @@ impl Allocator {
                 return self.assign(addr);
             }
         }
-        None
+        Vec::new()
     }
 
     // TODO: test
@@ -102,14 +103,14 @@ impl Allocator {
         peer.assigned_blocks.contains(block)
     }
 
-    pub fn block_downloaded(&mut self, addr: &SocketAddr, block: &Block) -> Option<Block> {
+    pub fn block_downloaded(&mut self, addr: &SocketAddr, block: &Block) -> Vec<Block> {
         let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
         piece.block_downloaded(block);
-        let peer = self.peers.get_mut(addr)?;
+        let peer = self.peers.get_mut(addr).expect("invalid peer");
         if peer.assigned_blocks.remove(block) {
             return self.assign(addr);
         }
-        None
+        Vec::new()
     }
 
     // TODO: test
@@ -129,11 +130,23 @@ impl Allocator {
         }
     }
 
-    fn assign(&mut self, addr: &SocketAddr) -> Option<Block> {
+    fn assign(&mut self, addr: &SocketAddr) -> Vec<Block> {
+        let mut blocks = Vec::new();
+        while let Some(block) = self.assign_one(addr) {
+            blocks.push(block);
+        }
+        blocks
+    }
+
+    fn assign_one(&mut self, addr: &SocketAddr) -> Option<Block> {
         let peer = self.peers.get_mut(addr).expect("invalid peer");
         if peer.choking || peer.has_pieces.difference(&self.has_pieces).count() == 0 {
             return None;
         }
+        if peer.assigned_blocks.len() >= self.download.config.max_concurrent_requests_per_peer {
+            return None;
+        }
+        // TODO: change to heap
         let (piece, _) = peer
             .has_pieces
             .iter()
