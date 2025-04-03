@@ -25,6 +25,8 @@ use crate::peer::Event;
 use crate::peer::stats::PeerStats;
 use crate::peer::transfer_rate::TransferRate;
 
+use super::Config;
+
 pub struct Connection {
     pub tx: Sender<Message>,
     join_handle: JoinHandle<anyhow::Result<()>>,
@@ -52,11 +54,10 @@ impl Connection {
                 result = run(
                     addr,
                     socket,
-                    download.config.connect_timeout,
                     handshake,
-                    download.config.block_size,
                     events_tx.clone(),
                     rx,
+                    &download.config,
                 ) => result,
             };
             if let Err(err) = result {
@@ -81,11 +82,11 @@ impl Connection {
         match self.tx.try_send(message) {
             Ok(_) => (),
             Err(TrySendError::Full(_)) => {
-                error!("[{}] peer unresponsive, shutting down", &self.addr);
+                warn!("[{}] peer unresponsive, shutting down", &self.addr);
                 self.cancellation_token.cancel();
             }
             Err(TrySendError::Closed(_)) => {
-                panic!("[{}] sending message to disconnected peer", &self.addr);
+                error!("[{}] sending message to disconnected peer", &self.addr);
             }
         }
     }
@@ -104,17 +105,17 @@ impl Connection {
 async fn run(
     addr: SocketAddr,
     socket: Option<TcpStream>,
-    connect_timeout: Duration,
     handshake: Handshake,
-    block_size: Size,
     events_tx: Sender<Event>,
     mut rx: Receiver<Message>,
+    config: &Config,
 ) -> anyhow::Result<()> {
     let (mut socket, handshake_direction) =
-        connect_if_needed(addr, socket, connect_timeout).await?;
+        connect_if_needed(addr, socket, config.connect_timeout).await?;
+
     exchange_handshakes(&mut socket, handshake, handshake_direction).await?;
 
-    let max_size = (block_size.bytes() as usize) + 9;
+    let max_size = (config.block_size.bytes() as usize) + 9;
     let mut messages = Framed::new(socket, MessageCodec::new(max_size));
     let mut update_stats = tokio::time::interval(Duration::from_secs(1));
     let mut stats = PeerStats::default();

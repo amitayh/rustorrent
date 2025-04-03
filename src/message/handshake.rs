@@ -8,6 +8,40 @@ use crate::peer::PeerId;
 
 const PROTOCOL: &str = "BitTorrent protocol";
 
+/// The handshake is a required message and must be the first message transmitted by the client. It
+/// is (49+len(pstr)) bytes long.
+///
+/// _handshake: <pstrlen><pstr><reserved><info\_hash><peer\_id>_
+///
+/// * **pstrlen**: string length of <pstr>, as a single raw byte
+/// * **pstr**: string identifier of the protocol
+/// * **reserved**: eight (8) reserved bytes. All current implementations use all zeroes. Each bit
+/// in these bytes can be used to change the behavior of the protocol. _An email from Bram suggests
+/// that trailing bits should be used first, so that leading bits may be used to change the meaning
+/// of trailing bits._
+/// * **info\_hash**: 20-byte SHA1 hash of the info key in the metainfo file. This is the same
+/// info\_hash that is transmitted in tracker requests.
+/// * **peer\_id**: 20-byte string used as a unique ID for the client. This is usually the same
+/// peer\_id that is transmitted in tracker requests (but not always e.g. an anonymity option in
+/// Azureus).
+///
+/// In version 1.0 of the BitTorrent protocol, pstrlen = 19, and pstr = "BitTorrent protocol".
+///
+/// The initiator of a connection is expected to transmit their handshake immediately. The
+/// recipient may wait for the initiator's handshake, if it is capable of serving multiple torrents
+/// simultaneously (torrents are uniquely identified by their info_hash). However, the recipient
+/// must respond as soon as it sees the info\_hash part of the handshake (the peer id will
+/// presumably be sent after the recipient sends its own handshake). The tracker's NAT-checking
+/// feature does not send the peer\_id field of the handshake._
+///
+/// If a client receives a handshake with an info\_hash that it is not currently serving, then the
+/// client must drop the connection.
+///
+/// If the initiator of the connection receives a handshake in which the peer\_id does not match
+/// the expected peer_id, then the initiator is expected to drop the connection._ Note that the
+/// initiator presumably received the peer information from the tracker, which includes the
+/// peer\_id that was registered by the peer. The peer\_id from the tracker and in the handshake
+/// are expected to match.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Handshake {
     pub protocol: String,
