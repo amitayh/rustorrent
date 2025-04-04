@@ -330,12 +330,7 @@ mod tests {
 
     #[test]
     fn distribute_same_piece_between_two_peers() {
-        let torrent = test_torrent();
-        let config = test_config("/tmp")
-            .with_block_size(Size::from_bytes(8))
-            .with_max_concurrent_requests_per_peer(1);
-        let download = Arc::new(Download { torrent, config });
-        let mut allocator = Allocator::new(download, BitSet::new());
+        let mut allocator = test_allocator();
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
@@ -351,12 +346,7 @@ mod tests {
 
     #[test]
     fn select_rarest_pieces_first() {
-        let torrent = test_torrent();
-        let config = test_config("/tmp")
-            .with_block_size(Size::from_bytes(8))
-            .with_max_concurrent_requests_per_peer(1);
-        let download = Arc::new(Download { torrent, config });
-        let mut allocator = Allocator::new(download, BitSet::new());
+        let mut allocator = test_allocator();
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
@@ -372,75 +362,74 @@ mod tests {
         // Peer 1 only has piece #0, select it.
         assert_eq!(allocator.peer_unchoked(addr1), vec![Block::new(0, 0, 8)]);
     }
-    /*
 
     #[test]
     fn prioritize_pieces_that_already_started_downloading() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let mut allocator = test_allocator();
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_empty());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0, 1]);
-        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_empty());
 
         // Peer 1 only has piece #0, select it.
-        assert_eq!(allocator.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
+        assert_eq!(allocator.peer_unchoked(addr1), vec![Block::new(0, 0, 8)]);
 
         // Peer 2 has both piece #0 and #1. Piece #1 is rarer, but peer 1 already started
         // downloading piece #0, so prioritize it first.
-        assert_eq!(allocator.peer_unchoked(addr2), Some(Block::new(0, 8, 8)));
+        assert_eq!(allocator.peer_unchoked(addr2), vec![Block::new(0, 8, 8)]);
     }
 
     #[test]
     fn continue_to_next_block_after_previous_block_completed_downloading() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let mut allocator = test_allocator();
 
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
         let block1 = Block::new(0, 0, 8);
         let block2 = Block::new(0, 8, 8);
 
-        assert!(allocator.peer_has_pieces(addr, &pieces).1.is_none());
-        assert_eq!(allocator.peer_unchoked(addr), Some(block1));
+        assert!(allocator.peer_has_pieces(addr, &pieces).1.is_empty());
+        assert_eq!(allocator.peer_unchoked(addr), vec![block1]);
 
         // Continue with next block once previous one completes
-        assert_eq!(allocator.block_downloaded(&addr, &block1), Some(block2));
+        assert_eq!(allocator.block_downloaded(&addr, &block1), vec![block2]);
     }
 
     #[test]
     fn release_abandoned_block() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let mut allocator = test_allocator();
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
         let block = Block::new(0, 0, 8);
 
-        assert!(allocator.peer_has_pieces(addr, &pieces).1.is_none());
-        assert_eq!(allocator.peer_unchoked(addr), Some(block));
+        assert!(allocator.peer_has_pieces(addr, &pieces).1.is_empty());
+        assert_eq!(allocator.peer_unchoked(addr), vec![block]);
 
         // Block abandoned, mark it as unassigned and re-assigns the same abandoned block
-        assert_eq!(allocator.release(&addr, block), Some(block));
+        assert_eq!(allocator.release(&addr, block), vec![block]);
     }
 
     #[test]
     fn release_block_after_peer_disconnected() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let mut allocator = test_allocator();
         let block = Block::new(0, 0, 8);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
-        assert_eq!(allocator.peer_unchoked(addr1), Some(block));
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_empty());
+        assert_eq!(allocator.peer_unchoked(addr1), vec![block]);
 
         allocator.peer_disconnected(&addr1);
-        assert!(allocator.release(&addr1, block).is_none());
+        assert!(allocator.release(&addr1, block).is_empty());
 
-        let addr2 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
-        assert_eq!(allocator.peer_unchoked(addr2), Some(block));
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_empty());
+        assert_eq!(allocator.peer_unchoked(addr2), vec![block]);
         //// Peer 2 has only piece #0
         //let addr2 = "127.0.0.2:6881".parse().unwrap();
         //let pieces = BitSet::from_iter([0]);
@@ -454,62 +443,75 @@ mod tests {
 
     #[test]
     fn assign_abandoned_block_to_other_peer_if_needed() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let torrent = test_torrent();
+        let config = test_config("/tmp")
+            .with_block_size(Size::from_bytes(8))
+            .with_max_concurrent_requests_per_peer(1);
+        let download = Arc::new(Download { torrent, config });
+        let mut allocator = Allocator::new(download, BitSet::new());
 
         let pieces = BitSet::from_iter([0]);
         let block = Block::new(0, 0, 8);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
-        assert_eq!(allocator.peer_unchoked(addr1), Some(block));
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_empty());
+        assert_eq!(allocator.peer_unchoked(addr1), vec![block]);
 
         // Peer 1 choked before completing the block, assign to peer 2
         allocator.peer_choked(addr1);
 
-        let addr2 = "127.0.0.1:6881".parse().unwrap();
-        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
-        assert_eq!(allocator.peer_unchoked(addr2), Some(block));
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_empty());
+        assert_eq!(allocator.peer_unchoked(addr2), vec![block]);
     }
 
     #[test]
     fn do_not_reassign_downloaded_block() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let mut allocator = test_allocator();
 
         let pieces = BitSet::from_iter([0]);
         let block1 = Block::new(0, 0, 8);
         let block2 = Block::new(0, 8, 8);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
-        assert_eq!(allocator.peer_unchoked(addr1), Some(block1));
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_empty());
+        assert_eq!(allocator.peer_unchoked(addr1), vec![block1]);
 
         // Peer 1 completed downloading block #1 and choked. Assign next block to peer 2
-        assert_eq!(allocator.block_downloaded(&addr1, &block1), Some(block2));
+        assert_eq!(allocator.block_downloaded(&addr1, &block1), vec![block2]);
         allocator.peer_choked(addr1);
 
-        let addr2 = "127.0.0.1:6881".parse().unwrap();
-        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
-        assert_eq!(allocator.peer_unchoked(addr2), Some(block2));
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_empty());
+        assert_eq!(allocator.peer_unchoked(addr2), vec![block2]);
     }
 
     #[test]
     fn find_all_peers_that_are_no_longer_interesting() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let mut allocator = test_allocator();
 
         // Peer 1 has pieces #0 and #1
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0, 1]);
-        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_empty());
 
         // Peer 2 has only piece #0
         let addr2 = "127.0.0.2:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_empty());
 
         // Once piece #0 is downloaded, we're no longer interested in peer 2
         let not_interesting = allocator.client_has_piece(0);
         assert_eq!(not_interesting.len(), 1);
         assert!(not_interesting.contains(&addr2));
     }
-    */
+
+    fn test_allocator() -> Allocator {
+        let torrent = test_torrent();
+        let config = test_config("/tmp")
+            .with_block_size(Size::from_bytes(8))
+            .with_max_concurrent_requests_per_peer(1);
+        let download = Arc::new(Download { torrent, config });
+        Allocator::new(download, BitSet::new())
+    }
 }
