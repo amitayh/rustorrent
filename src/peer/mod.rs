@@ -229,14 +229,25 @@ mod tests {
 
     use super::*;
 
-    fn test_config(download_path: &str) -> Config {
+    pub fn test_config(download_path: &str) -> Config {
         Config::new(download_path.into())
             .with_keep_alive_interval(Duration::from_secs(5))
             .with_unchoking_interval(Duration::from_secs(1))
             .with_optimistic_unchoking_cycle(2)
     }
 
-    fn test_torrent(announce_url: Url) -> Torrent {
+    // TODO: remove duplication
+    pub fn create_download() -> Download {
+        let torrent = test_torrent();
+        let config = Config::new("/tmp".into());
+        Download { torrent, config }
+    }
+
+    pub fn test_torrent() -> Torrent {
+        test_torrent_with_announce_url("https://foo.bar".try_into().unwrap())
+    }
+
+    fn test_torrent_with_announce_url(announce_url: Url) -> Torrent {
         Torrent {
             announce: announce_url,
             info: Info {
@@ -305,7 +316,7 @@ mod tests {
         let mut seeder = Peer::new(
             seeder_listener,
             Arc::new(Download {
-                torrent: test_torrent(announce_url.clone()),
+                torrent: test_torrent_with_announce_url(announce_url.clone()),
                 config: test_config("assets/alice_in_wonderland.txt")
                     .with_unchoking_interval(Duration::from_secs(2)),
             }),
@@ -316,7 +327,7 @@ mod tests {
         let mut leecher = Peer::new(
             leecher_listener,
             Arc::new(Download {
-                torrent: test_torrent(announce_url.clone()),
+                torrent: test_torrent_with_announce_url(announce_url.clone()),
                 config: test_config("/tmp/foo"),
             }),
             false,
@@ -326,7 +337,7 @@ mod tests {
         let mut leecher2 = Peer::new(
             leecher2_listener,
             Arc::new(Download {
-                torrent: test_torrent(announce_url),
+                torrent: test_torrent_with_announce_url(announce_url),
                 config: test_config("/tmp/bar"),
             }),
             false,

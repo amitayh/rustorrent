@@ -38,6 +38,16 @@ impl Config {
         self.optimistic_choking_cycle = n;
         self
     }
+
+    pub fn with_block_size(mut self, size: Size) -> Self {
+        self.block_size = size;
+        self
+    }
+
+    pub fn with_max_concurrent_requests_per_peer(mut self, n: usize) -> Self {
+        self.max_concurrent_requests_per_peer = n;
+        self
+    }
 }
 
 impl Config {

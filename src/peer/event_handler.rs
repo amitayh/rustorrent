@@ -263,12 +263,7 @@ impl std::fmt::Debug for Action {
 mod tests {
     use log::info;
 
-    use crate::{
-        crypto::{Md5, Sha1},
-        message::BlockData,
-        peer::Config,
-        torrent::{DownloadType, Info, Torrent},
-    };
+    use crate::{message::BlockData, peer::tests::create_download};
 
     use super::*;
 
@@ -324,27 +319,6 @@ mod tests {
     }
 
     fn create_event_handler() -> EventHandler {
-        let torrent = Torrent {
-            announce: "https://foo.bar".try_into().unwrap(),
-            info: Info {
-                info_hash: Sha1::from_hex("e90cf5ec83e174d7dcb94821560dac201ae1f663").unwrap(),
-                piece_size: 32 * 1024,
-                pieces: vec![
-                    Sha1::from_hex("a9af20024fc50543163b6be66fe4660be2170f6c").unwrap(),
-                    Sha1::from_hex("2494039151d7db3e56b3ec021d233742e3de55a6").unwrap(),
-                    Sha1::from_hex("af99be061f2c5eee12374055cf1a81909d276db5").unwrap(),
-                    Sha1::from_hex("3c12e1fcba504fedc13ee17ea76b62901dc8c9f7").unwrap(),
-                    Sha1::from_hex("d5facb89cbdc2e3ed1a1cd1050e217ec534f1fad").unwrap(),
-                    Sha1::from_hex("d5d2b296f52ab11791aad35a7d493833d39c6786").unwrap(),
-                ],
-                download_type: DownloadType::SingleFile {
-                    name: "alice_in_wonderland.txt".to_string(),
-                    size: 174357,
-                    md5sum: Some(Md5::from_hex("9a930de3cfc64468c05715237a6b4061").unwrap()),
-                },
-            },
-        };
-        let config = Config::new("/tmp".into());
-        EventHandler::new(Arc::new(Download { torrent, config }), BitSet::new())
+        EventHandler::new(Arc::new(create_download()), BitSet::new())
     }
 }

@@ -1,9 +1,10 @@
 use std::cmp::Reverse;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::{collections::HashMap, net::SocketAddr};
 
 use bit_set::BitSet;
+use priority_queue::PriorityQueue;
 
 use crate::message::Block;
 use crate::peer::Download;
@@ -166,11 +167,15 @@ struct PeerState {
     choking: bool,
     /// Available pieces peer has
     has_pieces: BitSet,
+    //has_pieces2: PriorityQueue<usize, PiecePriority>,
     /// Blocks assigned to be downloaded from the peer
     assigned_blocks: HashSet<Block>,
     /// If the peer is interesting to the client (has pieces the client doesn't)
     interesting: bool,
 }
+
+#[derive(Debug)]
+struct PiecePriority;
 
 impl PeerState {
     /// Returns whether there was a change in interest. i.e:
@@ -189,13 +194,14 @@ impl Default for PeerState {
         Self {
             choking: true,
             has_pieces: BitSet::new(),
+            //has_pieces2: PriorityQueue::new(),
             assigned_blocks: HashSet::new(),
             interesting: false,
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PieceState {
     unassigned_blocks: VecDeque<Block>,
     /// Blocks assigned from this piece
@@ -251,96 +257,122 @@ impl PieceState {
     }
 }
 
+impl Ord for PieceState {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        todo!()
+    }
+}
+
+impl PartialOrd for PieceState {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    /*
-    use super::*;
-
     use size::Size;
 
-    fn sizes() -> Sizes {
-        Sizes::new(
-            Size::from_bytes(24),
-            Size::from_bytes(32),
-            Size::from_bytes(8),
-        )
-    }
+    use crate::peer::tests::{create_download, test_config, test_torrent};
+
+    use super::*;
 
     #[test]
     fn peer_unchoked_but_has_no_pieces() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let download = Arc::new(create_download());
+        let mut allocator = Allocator::new(download, BitSet::new());
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert!(allocator.peer_unchoked(addr).is_none());
+        assert!(allocator.peer_unchoked(addr).is_empty());
     }
 
     #[test]
     fn peer_unchoked_but_client_already_has_that_piece() {
+        let download = Arc::new(create_download());
         let pieces = BitSet::from_iter([0]);
-        let mut allocator = Allocator::new(sizes(), pieces.clone());
+        let mut allocator = Allocator::new(download, pieces.clone());
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert_eq!(allocator.peer_has_pieces(addr, &pieces), (false, None));
-        assert!(allocator.peer_unchoked(addr).is_none());
+        assert_eq!(allocator.peer_has_pieces(addr, &pieces), (false, vec![]));
+        assert!(allocator.peer_unchoked(addr).is_empty());
     }
 
     #[test]
     fn assign_a_block_to_request_from_peer() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let download = Arc::new(create_download());
+        let mut allocator = Allocator::new(download, BitSet::new());
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
 
-        assert_eq!(allocator.peer_has_pieces(addr, &pieces), (true, None));
-        assert_eq!(allocator.peer_unchoked(addr), Some(Block::new(0, 0, 8)));
+        assert_eq!(allocator.peer_has_pieces(addr, &pieces), (true, vec![]));
+        assert_eq!(
+            allocator.peer_unchoked(addr),
+            vec![Block::new(0, 0, 16384), Block::new(0, 16384, 16384)]
+        );
     }
 
     #[test]
     fn peer_unchoked_before_notifying_on_completed_piece() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let download = Arc::new(create_download());
+        let mut allocator = Allocator::new(download, BitSet::new());
         let addr = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
 
-        assert!(allocator.peer_unchoked(addr).is_none());
+        assert!(allocator.peer_unchoked(addr).is_empty());
         assert_eq!(
             allocator.peer_has_pieces(addr, &pieces),
-            (true, Some(Block::new(0, 0, 8)))
+            (
+                true,
+                vec![Block::new(0, 0, 16384), Block::new(0, 16384, 16384)]
+            )
         );
     }
 
     #[test]
     fn distribute_same_piece_between_two_peers() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let torrent = test_torrent();
+        let config = test_config("/tmp")
+            .with_block_size(Size::from_bytes(8))
+            .with_max_concurrent_requests_per_peer(1);
+        let download = Arc::new(Download { torrent, config });
+        let mut allocator = Allocator::new(download, BitSet::new());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_empty());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_empty());
 
         // Both peers have piece #0. Distribute its blocks among them.
-        assert_eq!(allocator.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
-        assert_eq!(allocator.peer_unchoked(addr2), Some(Block::new(0, 8, 8)));
+        assert_eq!(allocator.peer_unchoked(addr1), vec![Block::new(0, 0, 8)]);
+        assert_eq!(allocator.peer_unchoked(addr2), vec![Block::new(0, 8, 8)]);
     }
 
     #[test]
     fn select_rarest_pieces_first() {
-        let mut allocator = Allocator::new(sizes(), BitSet::new());
+        let torrent = test_torrent();
+        let config = test_config("/tmp")
+            .with_block_size(Size::from_bytes(8))
+            .with_max_concurrent_requests_per_peer(1);
+        let download = Arc::new(Download { torrent, config });
+        let mut allocator = Allocator::new(download, BitSet::new());
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0]);
-        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr1, &pieces).1.is_empty());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
         let pieces = BitSet::from_iter([0, 1]);
-        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_none());
+        assert!(allocator.peer_has_pieces(addr2, &pieces).1.is_empty());
 
         // Peer 2 has both piece #0 and #1. Since piece #1 is rarer, select it first.
-        assert_eq!(allocator.peer_unchoked(addr2), Some(Block::new(1, 0, 8)));
+        assert_eq!(allocator.peer_unchoked(addr2), vec![Block::new(1, 0, 8)]);
 
         // Peer 1 only has piece #0, select it.
-        assert_eq!(allocator.peer_unchoked(addr1), Some(Block::new(0, 0, 8)));
+        assert_eq!(allocator.peer_unchoked(addr1), vec![Block::new(0, 0, 8)]);
     }
+    /*
 
     #[test]
     fn prioritize_pieces_that_already_started_downloading() {
