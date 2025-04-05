@@ -58,11 +58,17 @@ impl Allocator {
 
     pub fn peer_has_pieces(&mut self, addr: SocketAddr, pieces: &BitSet) -> (bool, Vec<Block>) {
         let peer = self.peers.entry(addr).or_default();
-        peer.has_pieces.union_with(pieces);
+        peer.has_pieces(pieces);
         let became_interesting = peer.update_interest(&self.has_pieces);
         for piece in pieces {
-            let piece = self.pieces.get_mut(piece).expect("invalid piece");
-            piece.peer_has_piece();
+            let piece_state = &mut self.pieces[piece];
+            piece_state.peer_has_piece(addr);
+            let piece_priority = PiecePriority::from(piece_state);
+            for peer in self.peers.values_mut() {
+                if peer.has_pieces.contains(piece) {
+                    peer.peer_pieces.change_priority(&piece, piece_priority);
+                }
+            }
         }
         (became_interesting, self.assign(&addr))
     }
@@ -82,14 +88,14 @@ impl Allocator {
         let peer = self.peers.entry(addr).or_default();
         peer.choking = true;
         for block in peer.assigned_blocks.drain() {
-            let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-            piece.release(&block);
+            let piece = &mut self.pieces[block.piece];
+            piece.release(&addr, &block);
         }
     }
 
     pub fn release(&mut self, addr: &SocketAddr, block: Block) -> Vec<Block> {
-        let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-        piece.release(&block);
+        let piece = &mut self.pieces[block.piece];
+        piece.release(addr, &block);
         if let Some(peer) = self.peers.get_mut(addr) {
             if peer.assigned_blocks.remove(&block) {
                 return self.assign(addr);
@@ -100,12 +106,12 @@ impl Allocator {
 
     // TODO: test
     pub fn block_in_flight(&self, addr: &SocketAddr, block: &Block) -> bool {
-        let peer = self.peers.get(addr).expect("invalid peer");
+        let peer = &self.peers[addr];
         peer.assigned_blocks.contains(block)
     }
 
     pub fn block_downloaded(&mut self, addr: &SocketAddr, block: &Block) -> Vec<Block> {
-        let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
+        let piece = &mut self.pieces[block.piece];
         piece.block_downloaded(block);
         let peer = self.peers.get_mut(addr).expect("invalid peer");
         if peer.assigned_blocks.remove(block) {
@@ -116,7 +122,7 @@ impl Allocator {
 
     // TODO: test
     pub fn invalidate(&mut self, piece: usize) {
-        let state = self.pieces.get_mut(piece).expect("invalid piece");
+        let state = &mut self.pieces[piece];
         assert!(state.assigned_blocks.is_empty());
         let blocks = self.download.blocks(piece);
         state.unassigned_blocks = blocks.collect();
@@ -125,8 +131,8 @@ impl Allocator {
     pub fn peer_disconnected(&mut self, addr: &SocketAddr) {
         if let Some(mut peer) = self.peers.remove(addr) {
             for block in peer.assigned_blocks.drain() {
-                let piece = self.pieces.get_mut(block.piece).expect("invalid piece");
-                piece.release(&block);
+                let piece = &mut self.pieces[block.piece];
+                piece.release(addr, &block);
             }
         }
     }
@@ -151,7 +157,7 @@ impl Allocator {
         let (piece, _) = peer
             .has_pieces
             .iter()
-            .map(|piece| (piece, self.pieces.get(piece).expect("invalid piece")))
+            .map(|piece| (piece, &self.pieces[piece]))
             .filter(|(_, piece)| piece.is_eligible())
             .max_by_key(|(_, piece)| piece.priority())?;
 
@@ -167,15 +173,27 @@ struct PeerState {
     choking: bool,
     /// Available pieces peer has
     has_pieces: BitSet,
-    //has_pieces2: PriorityQueue<usize, PiecePriority>,
+    peer_pieces: PriorityQueue<usize, PiecePriority>,
     /// Blocks assigned to be downloaded from the peer
     assigned_blocks: HashSet<Block>,
     /// If the peer is interesting to the client (has pieces the client doesn't)
     interesting: bool,
 }
 
-#[derive(Debug)]
-struct PiecePriority;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct PiecePriority {
+    has_assigned_blocks: bool,
+    peers_with_piece: Reverse<usize>,
+}
+
+impl PiecePriority {
+    fn from(piece: &PieceState) -> Self {
+        Self {
+            has_assigned_blocks: !piece.assigned_blocks.is_empty(),
+            peers_with_piece: Reverse(piece.peers_with_piece.len()),
+        }
+    }
+}
 
 impl PeerState {
     /// Returns whether there was a change in interest. i.e:
@@ -187,6 +205,10 @@ impl PeerState {
         self.interesting = remaining_pieces.next().is_some();
         was_interesting ^ self.interesting
     }
+
+    fn has_pieces(&mut self, pieces: &BitSet) {
+        self.has_pieces.union_with(pieces);
+    }
 }
 
 impl Default for PeerState {
@@ -194,7 +216,7 @@ impl Default for PeerState {
         Self {
             choking: true,
             has_pieces: BitSet::new(),
-            //has_pieces2: PriorityQueue::new(),
+            peer_pieces: PriorityQueue::new(),
             assigned_blocks: HashSet::new(),
             interesting: false,
         }
@@ -207,7 +229,7 @@ struct PieceState {
     /// Blocks assigned from this piece
     assigned_blocks: HashSet<Block>,
     /// Number of peers that have this piece
-    peers_with_piece: usize,
+    peers_with_piece: HashSet<SocketAddr>,
 }
 
 impl PieceState {
@@ -217,12 +239,12 @@ impl PieceState {
         Self {
             unassigned_blocks,
             assigned_blocks,
-            peers_with_piece: 0,
+            peers_with_piece: HashSet::new(),
         }
     }
 
-    fn peer_has_piece(&mut self) {
-        self.peers_with_piece += 1;
+    fn peer_has_piece(&mut self, addr: SocketAddr) {
+        self.peers_with_piece.insert(addr);
     }
 
     fn select_block(&mut self) -> Option<Block> {
@@ -231,8 +253,9 @@ impl PieceState {
         Some(block)
     }
 
-    fn release(&mut self, block: &Block) {
+    fn release(&mut self, addr: &SocketAddr, block: &Block) {
         // TODO: assert block belongs to piece?
+        self.peers_with_piece.remove(addr);
         if let Some(block) = self.assigned_blocks.take(block) {
             self.unassigned_blocks.push_front(block);
         }
@@ -243,7 +266,7 @@ impl PieceState {
             // Favor pieces which are already in flight in order to reduce fragmentation
             !self.assigned_blocks.is_empty(),
             // Otherwise, favor rarest piece first
-            Reverse(self.peers_with_piece),
+            Reverse(self.peers_with_piece.len()),
         )
     }
 
