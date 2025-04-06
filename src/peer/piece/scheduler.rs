@@ -81,20 +81,20 @@ impl Scheduler {
     }
 
     pub fn release(&mut self, addr: &SocketAddr, block: Block) -> Vec<Block> {
-        let peer = self.peers.get_mut(addr).expect("invalid peer");
-        assert!(
-            peer.assigned_blocks.remove(&block),
-            "peer should have the block assigned"
-        );
-
-        let piece = self
-            .active_pieces
+        self.active_pieces
             .get_mut(&block.piece)
-            .expect("invalid piece");
+            .expect("invalid piece")
+            .unassign(block);
 
-        piece.unassign(block);
+        if let Some(peer) = self.peers.get_mut(addr) {
+            assert!(
+                peer.assigned_blocks.remove(&block),
+                "peer should have the block assigned"
+            );
+            return self.assign(addr);
+        }
 
-        self.assign(addr)
+        Vec::new()
     }
 
     pub fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) -> HaveResult {
@@ -461,6 +461,23 @@ mod tests {
 
         // Block abandoned, mark it as unassigned and re-assigns the same abandoned block
         assert_eq!(scheduler.release(&addr, block), vec![block]);
+    }
+
+    #[test]
+    fn release_block_after_peer_disconnected() {
+        let mut scheduler = test_scheduler(&[]);
+        let block = Block::new(0, 0, 8);
+
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_unchoked(addr1), vec![block]);
+
+        scheduler.peer_disconnected(&addr1);
+        assert!(scheduler.release(&addr1, block).is_empty());
+
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_unchoked(addr2), vec![block]);
     }
 
     fn test_scheduler(has_pieces: &[usize]) -> Scheduler {
