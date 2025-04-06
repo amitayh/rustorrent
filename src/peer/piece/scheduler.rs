@@ -57,10 +57,10 @@ impl Scheduler {
         self.assign(&addr)
     }
 
-    pub fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) -> (bool, Vec<Block>) {
+    pub fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) -> HaveResult {
         if !self.pieces.contains_key(&piece) {
             // Ignore if client already has piece
-            return (false, vec![]);
+            return HaveResult::NotInterested;
         }
 
         let priority = {
@@ -69,7 +69,7 @@ impl Scheduler {
             state.priority()
         };
 
-        let blocks = {
+        let blocks_to_request = {
             // Add piece to peer's queue
             let peer = self.peers.entry(addr).or_default();
             peer.peer_pieces.push(piece, priority);
@@ -83,7 +83,7 @@ impl Scheduler {
             peer.peer_pieces.change_priority(&piece, priority);
         }
 
-        (true, blocks)
+        HaveResult::Interested { blocks_to_request }
     }
 
     /// Returns peers that are no longer interesting (don't have any piece we don't already have)
@@ -142,6 +142,13 @@ impl Scheduler {
 
         blocks
     }
+}
+
+// TODO: rename
+#[derive(Debug, PartialEq, Eq)]
+pub enum HaveResult {
+    NotInterested,
+    Interested { blocks_to_request: Vec<Block> },
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -237,7 +244,7 @@ mod tests {
         scheduler.client_has_piece(0);
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert_eq!(scheduler.peer_has_piece(addr, 0), (false, vec![]));
+        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::NotInterested);
         assert!(scheduler.peer_unchoked(addr).is_empty());
     }
 
@@ -246,7 +253,12 @@ mod tests {
         let mut scheduler = test_scheduler();
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert_eq!(scheduler.peer_has_piece(addr, 0), (true, vec![]));
+        assert_eq!(
+            scheduler.peer_has_piece(addr, 0),
+            HaveResult::Interested {
+                blocks_to_request: vec![]
+            }
+        );
         assert_eq!(scheduler.peer_unchoked(addr), vec![Block::new(0, 0, 8)]);
     }
 
