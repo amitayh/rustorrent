@@ -60,6 +60,26 @@ impl Scheduler {
         self.assign(&addr)
     }
 
+    pub fn block_downloaded(&mut self, addr: &SocketAddr, block: &Block) -> Vec<Block> {
+        let peer = self.peers.get_mut(addr).expect("invalid peer");
+        assert!(
+            peer.assigned_blocks.remove(block),
+            "peer should have the block assigned"
+        );
+
+        let piece = self
+            .active_pieces
+            .get_mut(&block.piece)
+            .expect("invalid piece");
+
+        piece.downloaded_blocks += 1;
+        if piece.is_complete() {
+            self.active_pieces.remove(&block.piece);
+        }
+
+        self.assign(addr)
+    }
+
     pub fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) -> HaveResult {
         if self.orphan_pieces.remove(piece) {
             let state = Piece::new(piece, self.download.blocks(piece), addr);
@@ -156,6 +176,8 @@ impl Scheduler {
             }
         }
 
+        peer.assigned_blocks.extend(&blocks);
+
         blocks
     }
 }
@@ -219,6 +241,7 @@ impl PiecePriorityMap {
 struct Piece {
     index: usize,
     total_blocks: usize,
+    downloaded_blocks: usize,
     unassigned_blocks: Blocks,
     released_blocks: Vec<Block>,
     peers_with_piece: HashSet<SocketAddr>,
@@ -229,6 +252,7 @@ impl Piece {
         Self {
             index: piece,
             total_blocks: blocks.len(),
+            downloaded_blocks: 0,
             unassigned_blocks: blocks,
             released_blocks: Vec::new(),
             peers_with_piece: HashSet::from_iter([addr]),
@@ -265,6 +289,10 @@ impl Piece {
         }
 
         assigned
+    }
+
+    fn is_complete(&self) -> bool {
+        self.downloaded_blocks == self.total_blocks
     }
 }
 
@@ -388,6 +416,21 @@ mod tests {
         // Peer 2 has both piece #0 and #1. Piece #1 is rarer, but peer 1 already started
         // downloading piece #0, so prioritize it first.
         assert_eq!(scheduler.peer_unchoked(addr2), vec![Block::new(0, 8, 8)]);
+    }
+
+    #[test]
+    fn continue_to_next_block_after_previous_block_completed_downloading() {
+        let mut scheduler = test_scheduler(&[]);
+
+        let addr = "127.0.0.1:6881".parse().unwrap();
+        let block1 = Block::new(0, 0, 8);
+        let block2 = Block::new(0, 8, 8);
+
+        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_unchoked(addr), vec![block1]);
+
+        // Continue with next block once previous one completes
+        assert_eq!(scheduler.block_downloaded(&addr, &block1), vec![block2]);
     }
 
     fn test_scheduler(has_pieces: &[usize]) -> Scheduler {
