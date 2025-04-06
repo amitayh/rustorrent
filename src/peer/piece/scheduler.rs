@@ -1,14 +1,12 @@
-#![allow(dead_code, unused)]
+#![allow(dead_code)]
 use std::{
-    cmp::Reverse,
-    collections::{HashMap, HashSet, VecDeque},
+    cmp::{Ordering, Reverse},
+    collections::{BTreeSet, HashMap, HashSet, hash_map::Entry},
     net::SocketAddr,
     sync::Arc,
 };
 
 use bit_set::BitSet;
-use futures::SinkExt;
-use priority_queue::PriorityQueue;
 
 use crate::{
     message::Block,
@@ -20,21 +18,29 @@ pub struct Scheduler {
     /// Contains only pieces that the client still doesn't have
     pieces: HashMap<usize, Piece>,
     peers: HashMap<SocketAddr, Peer>,
+
+    pieces_by_priority: BTreeSet<Reverse<PiecePriority>>,
 }
 
 impl Scheduler {
     pub fn new(download: Arc<Download>, has_pieces: BitSet) -> Self {
         let total_pieces = download.torrent.info.total_pieces();
         let mut pieces = HashMap::with_capacity(total_pieces);
+
+        let mut pieces_by_priority = BTreeSet::new();
+
         let missing_pieces = (0..total_pieces).filter(|piece| !has_pieces.contains(*piece));
         for piece in missing_pieces {
             let blocks = download.blocks(piece);
-            pieces.insert(piece, Piece::new(blocks));
+            let state = Piece::new(piece, blocks);
+            pieces_by_priority.insert(Reverse(state.priority));
+            pieces.insert(piece, state);
         }
         Self {
             download,
             pieces,
             peers: HashMap::new(),
+            pieces_by_priority,
         }
     }
 
@@ -60,30 +66,31 @@ impl Scheduler {
     pub fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) -> HaveResult {
         if !self.pieces.contains_key(&piece) {
             // Ignore if client already has piece
-            return HaveResult::NotInterested;
+            return HaveResult::None;
         }
 
-        let priority = {
-            let state = self.pieces.get_mut(&piece).expect("invalid piece");
-            state.peers_with_piece.insert(addr);
-            state.priority()
-        };
+        let state = self.pieces.get_mut(&piece).expect("invalid piece");
+        assert!(
+            self.pieces_by_priority.remove(&Reverse(state.priority)),
+            "piece priority should be present"
+        );
+        state.priority.num_peers_with_piece += 1;
+        self.pieces_by_priority.insert(Reverse(state.priority));
 
-        let blocks_to_request = {
-            // Add piece to peer's queue
-            let peer = self.peers.entry(addr).or_default();
-            peer.peer_pieces.push(piece, priority);
-            self.assign(&addr)
+        let (peer, interested) = match self.peers.entry(addr) {
+            Entry::Occupied(entry) => (entry.into_mut(), false),
+            Entry::Vacant(entry) => (entry.insert(Peer::default()), true),
         };
-
-        // Update piece priority for all peers
-        let state = self.pieces.get(&piece).expect("invalid piece");
-        for addr in &state.peers_with_piece {
-            let peer = self.peers.get_mut(addr).expect("invalid peer");
-            peer.peer_pieces.change_priority(&piece, priority);
+        peer.peer_pieces.insert(piece);
+        if peer.choking {
+            return if interested {
+                HaveResult::Interested
+            } else {
+                HaveResult::None
+            };
         }
 
-        HaveResult::Interested { blocks_to_request }
+        HaveResult::InterestedAndRequest(self.assign(&addr))
     }
 
     /// Returns peers that are no longer interesting (don't have any piece we don't already have)
@@ -113,31 +120,28 @@ impl Scheduler {
         let max_blocks = self.download.config.max_concurrent_requests_per_peer;
         let mut blocks_to_request = max_blocks - peer.assigned_blocks.len();
         let mut blocks = Vec::with_capacity(blocks_to_request);
+        let mut assigned_pieces = BitSet::new();
 
-        // Update priority for pieces
-        let mut pieces_assigned_from = BitSet::new();
-
-        while blocks_to_request > 0 && !peer.peer_pieces.is_empty() {
-            let (piece, _) = peer.peer_pieces.peek().expect("queue is not empty");
-            let state = self.pieces.get_mut(piece).expect("invalid piece");
-            pieces_assigned_from.insert(*piece);
-            while blocks_to_request > 0 && !state.unassigned_blocks.is_empty() {
-                let block = state.unassigned_blocks.pop_front();
-                blocks.push(block.expect("unassigned blocks not empty"));
-                blocks_to_request -= 1;
-            }
-            if state.unassigned_blocks.is_empty() {
-                peer.peer_pieces.pop();
+        for Reverse(PiecePriority { piece, .. }) in &self.pieces_by_priority {
+            if peer.peer_pieces.contains(*piece) {
+                let state = self.pieces.get_mut(piece).expect("invalid piece");
+                let assigned = state.try_assign_n(blocks_to_request, &mut blocks);
+                blocks_to_request -= assigned;
+                assigned_pieces.insert(*piece);
+                if blocks_to_request == 0 {
+                    break;
+                }
             }
         }
 
-        for piece in &pieces_assigned_from {
-            let state = self.pieces.get(&piece).expect("invalid piece");
-            let priority = state.priority();
-            for addr in &state.peers_with_piece {
-                let peer = self.peers.get_mut(addr).expect("invalid peer");
-                peer.peer_pieces.change_priority(&piece, priority);
-            }
+        for piece in &assigned_pieces {
+            let state = self.pieces.get_mut(&piece).expect("invalid piece");
+            assert!(
+                self.pieces_by_priority.remove(&Reverse(state.priority)),
+                "piece priority should be present"
+            );
+            state.priority.has_assigned_blocks = true;
+            self.pieces_by_priority.insert(Reverse(state.priority));
         }
 
         blocks
@@ -147,25 +151,31 @@ impl Scheduler {
 // TODO: rename
 #[derive(Debug, PartialEq, Eq)]
 pub enum HaveResult {
-    NotInterested,
-    Interested { blocks_to_request: Vec<Block> },
+    None,
+    Interested,
+    InterestedAndRequest(Vec<Block>),
+    Request(Vec<Block>),
 }
 
 // -------------------------------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct Piece {
     total_blocks: usize,
-    unassigned_blocks: VecDeque<Block>,
+    unassigned_blocks: Blocks,
+    released_blocks: Vec<Block>,
     peers_with_piece: HashSet<SocketAddr>,
+    priority: PiecePriority,
 }
 
 impl Piece {
-    fn new(blocks: Blocks) -> Self {
-        let unassigned_blocks: VecDeque<_> = blocks.collect();
+    fn new(piece: usize, blocks: Blocks) -> Self {
         Self {
-            total_blocks: unassigned_blocks.len(),
-            unassigned_blocks,
+            total_blocks: blocks.len(),
+            unassigned_blocks: blocks,
+            released_blocks: Vec::new(),
             peers_with_piece: HashSet::new(),
+            priority: PiecePriority::new(piece),
         }
     }
 
@@ -174,25 +184,63 @@ impl Piece {
     }
 
     fn unassign(&mut self, block: Block) {
-        self.unassigned_blocks.push_front(block);
+        self.released_blocks.push(block);
     }
 
-    fn priority(&self) -> DownloadPriority {
-        DownloadPriority::new(self)
+    fn try_assign_n(&mut self, n: usize, blocks: &mut Vec<Block>) -> usize {
+        let mut assigned = 0;
+        // Use released blocks first
+        let released_n = n.min(self.released_blocks.len());
+        blocks.extend(self.released_blocks.drain(0..released_n));
+        assigned += released_n;
+
+        // Assign remaining from unassigned blocks
+        while assigned < n {
+            if let Some(block) = self.unassigned_blocks.next() {
+                blocks.push(block);
+                assigned += 1;
+            } else {
+                break;
+            }
+        }
+
+        assigned
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct DownloadPriority {
+// -------------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PiecePriority {
+    piece: usize,
     has_assigned_blocks: bool,
-    num_peers_with_piece: Reverse<usize>,
+    // TODO: this can probably be a u16 or even u8
+    num_peers_with_piece: usize,
 }
 
-impl DownloadPriority {
-    fn new(piece: &Piece) -> Self {
+impl Ord for PiecePriority {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Favor pieces which are already in flight in order to reduce fragmentation
+        self.has_assigned_blocks
+            .cmp(&other.has_assigned_blocks)
+            // Otherwise, favor rarest piece first
+            .then(other.num_peers_with_piece.cmp(&self.num_peers_with_piece))
+            .then(self.piece.cmp(&other.piece))
+    }
+}
+
+impl PartialOrd for PiecePriority {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PiecePriority {
+    fn new(piece: usize) -> Self {
         Self {
-            has_assigned_blocks: piece.unassigned_blocks.len() < piece.total_blocks,
-            num_peers_with_piece: Reverse(piece.peers_with_piece.len()),
+            piece,
+            has_assigned_blocks: false,
+            num_peers_with_piece: 0,
         }
     }
 }
@@ -203,8 +251,8 @@ impl DownloadPriority {
 struct Peer {
     /// If the peer is choking the clinet
     choking: bool,
-    /// Pieces the peer has and the client doesn't, by download priority
-    peer_pieces: PriorityQueue<usize, DownloadPriority>,
+    /// Pieces the peer has and the client doesn't
+    peer_pieces: BitSet,
     /// Blocks assigned to be downloaded from the peer
     assigned_blocks: HashSet<Block>,
 }
@@ -213,7 +261,7 @@ impl Default for Peer {
     fn default() -> Self {
         Self {
             choking: true,
-            peer_pieces: PriorityQueue::default(),
+            peer_pieces: BitSet::default(),
             assigned_blocks: HashSet::default(),
         }
     }
@@ -223,10 +271,7 @@ impl Default for Peer {
 mod tests {
     use size::Size;
 
-    use crate::peer::{
-        piece::scheduler,
-        tests::{test_config, test_torrent},
-    };
+    use crate::peer::tests::{test_config, test_torrent};
 
     use super::*;
 
@@ -244,7 +289,7 @@ mod tests {
         scheduler.client_has_piece(0);
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::NotInterested);
+        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::None);
         assert!(scheduler.peer_unchoked(addr).is_empty());
     }
 
@@ -253,13 +298,72 @@ mod tests {
         let mut scheduler = test_scheduler();
         let addr = "127.0.0.1:6881".parse().unwrap();
 
+        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_unchoked(addr), vec![Block::new(0, 0, 8)]);
+    }
+
+    #[test]
+    fn peer_unchoked_before_notifying_on_completed_piece() {
+        let mut scheduler = test_scheduler();
+        let addr = "127.0.0.1:6881".parse().unwrap();
+
+        assert!(scheduler.peer_unchoked(addr).is_empty());
         assert_eq!(
             scheduler.peer_has_piece(addr, 0),
-            HaveResult::Interested {
-                blocks_to_request: vec![]
-            }
+            HaveResult::InterestedAndRequest(vec![Block::new(0, 0, 8)])
         );
-        assert_eq!(scheduler.peer_unchoked(addr), vec![Block::new(0, 0, 8)]);
+    }
+
+    #[test]
+    fn distribute_same_piece_between_two_peers() {
+        let mut scheduler = test_scheduler();
+
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+
+        // Both peers have piece #0. Distribute its blocks among them.
+        assert_eq!(scheduler.peer_unchoked(addr1), vec![Block::new(0, 0, 8)]);
+        assert_eq!(scheduler.peer_unchoked(addr2), vec![Block::new(0, 8, 8)]);
+    }
+
+    #[test]
+    fn select_rarest_pieces_first() {
+        let mut scheduler = test_scheduler();
+
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_has_piece(addr2, 1), HaveResult::None);
+
+        // Peer 2 has both piece #0 and #1. Since piece #1 is rarer, select it first.
+        assert_eq!(scheduler.peer_unchoked(addr2), vec![Block::new(1, 0, 8)]);
+
+        // Peer 1 only has piece #0, select it.
+        assert_eq!(scheduler.peer_unchoked(addr1), vec![Block::new(0, 0, 8)]);
+    }
+
+    #[test]
+    fn prioritize_pieces_that_already_started_downloading() {
+        let mut scheduler = test_scheduler();
+
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_has_piece(addr2, 1), HaveResult::None);
+
+        // Peer 1 only has piece #0, select it.
+        assert_eq!(scheduler.peer_unchoked(addr1), vec![Block::new(0, 0, 8)]);
+
+        // Peer 2 has both piece #0 and #1. Piece #1 is rarer, but peer 1 already started
+        // downloading piece #0, so prioritize it first.
+        assert_eq!(scheduler.peer_unchoked(addr2), vec![Block::new(0, 8, 8)]);
     }
 
     fn test_scheduler() -> Scheduler {

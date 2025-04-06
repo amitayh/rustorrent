@@ -1,5 +1,6 @@
 use crate::message::Block;
 
+#[derive(Debug)]
 pub struct Blocks {
     block_size: usize,
     piece: usize,
