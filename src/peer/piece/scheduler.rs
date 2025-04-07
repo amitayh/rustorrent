@@ -15,16 +15,18 @@ use crate::{
 /// The scheduler only keeps track of pieces the client still doesn't have
 pub struct Scheduler {
     download: Arc<Download>,
+
+    /// Maintains state for connected peers
     peers: HashMap<SocketAddr, Peer>,
 
     /// Pieces that no peer has announced to have yet (with Have / Bitfield messages)
     orphan_pieces: BitSet,
 
     /// Pieces that are known to be available by at least one peer
-    available_pieces: PiecePriorityMap,
+    available_pieces: AvailablePieces,
 
     /// Pieces that are currently selected for download
-    active_pieces: HashMap<usize, Piece>,
+    active_pieces: HashMap<usize, ActivePiece>,
 }
 
 impl Scheduler {
@@ -36,7 +38,7 @@ impl Scheduler {
             download,
             peers: HashMap::new(),
             orphan_pieces,
-            available_pieces: PiecePriorityMap::new(),
+            available_pieces: AvailablePieces::new(),
             active_pieces: HashMap::new(),
         }
     }
@@ -99,8 +101,8 @@ impl Scheduler {
 
     pub fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) -> HaveResult {
         if self.orphan_pieces.remove(piece) {
-            let state = Piece::new(piece, self.download.blocks(piece), addr);
-            self.available_pieces.insert(state);
+            self.available_pieces
+                .insert(AvailablePiece::new(piece, addr));
         } else if self.available_pieces.contains(&piece) {
             self.available_pieces.peer_has_piece(&piece, addr);
         } else if self.active_pieces.contains_key(&piece) {
@@ -165,31 +167,20 @@ impl Scheduler {
             }
         }
 
-        if blocks_to_request > 0 {
-            // Check if there's an available piece to assign from
-            let mut priorities_to_remove = Vec::new();
-            for (_, piece) in &self.available_pieces.priorities {
-                if peer.peer_pieces.contains(*piece) {
-                    let mut state = self
-                        .available_pieces
-                        .pieces
-                        .remove(piece)
-                        .expect("invalud piece");
-                    priorities_to_remove.push(state.priority());
-                    let assigned = state.try_assign_n(blocks_to_request, &mut blocks);
-                    self.active_pieces.insert(*piece, state);
-                    blocks_to_request -= assigned;
-                    assigned_pieces.insert(*piece);
-                    if blocks_to_request == 0 {
-                        break;
-                    }
+        while blocks_to_request > 0 {
+            if let Some(available_piece) = self.available_pieces.select_piece_for_peer(addr) {
+                let index = available_piece.index;
+                let piece_blocks = self.download.blocks(index);
+                let mut active_piece = ActivePiece::new(available_piece, piece_blocks);
+                let assigned = active_piece.try_assign_n(blocks_to_request, &mut blocks);
+                self.active_pieces.insert(index, active_piece);
+                blocks_to_request -= assigned;
+                assigned_pieces.insert(index);
+                if blocks_to_request == 0 {
+                    break;
                 }
-            }
-            for priority in &priorities_to_remove {
-                assert!(
-                    self.available_pieces.priorities.remove(priority),
-                    "piece priority should be present"
-                );
+            } else {
+                break;
             }
         }
 
@@ -210,12 +201,12 @@ pub enum HaveResult {
 
 // -------------------------------------------------------------------------------------------------
 
-struct PiecePriorityMap {
-    pieces: HashMap<usize, Piece>,
+struct AvailablePieces {
+    pieces: HashMap<usize, AvailablePiece>,
     priorities: BTreeSet<(usize, usize)>,
 }
 
-impl PiecePriorityMap {
+impl AvailablePieces {
     fn new() -> Self {
         Self {
             pieces: HashMap::new(),
@@ -223,7 +214,7 @@ impl PiecePriorityMap {
         }
     }
 
-    fn insert(&mut self, piece: Piece) {
+    fn insert(&mut self, piece: AvailablePiece) {
         self.priorities.insert(piece.priority());
         self.pieces.insert(piece.index, piece);
     }
@@ -242,7 +233,7 @@ impl PiecePriorityMap {
         self.priorities.insert(state.priority());
     }
 
-    fn remove(&mut self, piece: &usize) -> Piece {
+    fn remove(&mut self, piece: &usize) -> AvailablePiece {
         let state = self.pieces.remove(piece).expect("invalid piece");
         assert!(
             self.priorities.remove(&state.priority()),
@@ -250,12 +241,47 @@ impl PiecePriorityMap {
         );
         state
     }
+
+    fn select_piece_for_peer(&mut self, addr: &SocketAddr) -> Option<AvailablePiece> {
+        let piece = self
+            .priorities
+            .iter()
+            .map(|(_, piece)| self.pieces.get(piece).expect("invalid piece"))
+            .find(|piece| piece.peers_with_piece.contains(addr))
+            .map(|piece| piece.index)?;
+
+        let state = self.pieces.remove(&piece).expect("piece should be present");
+        assert!(
+            self.priorities.remove(&state.priority()),
+            "piece priority should be present"
+        );
+
+        Some(state)
+    }
+}
+
+struct AvailablePiece {
+    index: usize,
+    peers_with_piece: HashSet<SocketAddr>,
+}
+
+impl AvailablePiece {
+    fn new(index: usize, addr: SocketAddr) -> Self {
+        Self {
+            index,
+            peers_with_piece: HashSet::from_iter([addr]),
+        }
+    }
+
+    fn priority(&self) -> (usize, usize) {
+        (self.peers_with_piece.len(), self.index)
+    }
 }
 
 // -------------------------------------------------------------------------------------------------
 
 #[derive(Debug)]
-struct Piece {
+struct ActivePiece {
     index: usize,
     total_blocks: usize,
     downloaded_blocks: usize,
@@ -264,20 +290,16 @@ struct Piece {
     peers_with_piece: HashSet<SocketAddr>,
 }
 
-impl Piece {
-    fn new(piece: usize, blocks: Blocks, addr: SocketAddr) -> Self {
+impl ActivePiece {
+    fn new(piece: AvailablePiece, blocks: Blocks) -> Self {
         Self {
-            index: piece,
+            index: piece.index,
             total_blocks: blocks.len(),
             downloaded_blocks: 0,
             unassigned_blocks: blocks,
             released_blocks: Vec::new(),
-            peers_with_piece: HashSet::from_iter([addr]),
+            peers_with_piece: piece.peers_with_piece,
         }
-    }
-
-    fn priority(&self) -> (usize, usize) {
-        (self.peers_with_piece.len(), self.index)
     }
 
     fn peer_disconnected(&mut self, addr: &SocketAddr) {
