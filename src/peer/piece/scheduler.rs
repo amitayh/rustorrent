@@ -117,7 +117,6 @@ impl Scheduler {
             Entry::Occupied(entry) => (entry.into_mut(), false),
             Entry::Vacant(entry) => (entry.insert(Peer::default()), true),
         };
-        peer.peer_pieces.insert(piece);
         if peer.choking {
             return if interested {
                 HaveResult::Interested
@@ -156,11 +155,11 @@ impl Scheduler {
         let mut assigned_pieces = BitSet::new();
 
         // Check if there's an active piece to assign from
-        for (piece, state) in &mut self.active_pieces {
-            if peer.peer_pieces.contains(*piece) {
-                let assigned = state.try_assign_n(blocks_to_request, &mut blocks);
+        for (index, piece) in &mut self.active_pieces {
+            if piece.peers_with_piece.contains(addr) {
+                let assigned = piece.try_assign_n(blocks_to_request, &mut blocks);
                 blocks_to_request -= assigned;
-                assigned_pieces.insert(*piece);
+                assigned_pieces.insert(*index);
                 if blocks_to_request == 0 {
                     break;
                 }
@@ -168,7 +167,7 @@ impl Scheduler {
         }
 
         while blocks_to_request > 0 {
-            if let Some(available_piece) = self.available_pieces.select_piece_for_peer(addr) {
+            if let Some(available_piece) = self.available_pieces.next(addr) {
                 let index = available_piece.index;
                 let piece_blocks = self.download.blocks(index);
                 let mut active_piece = ActivePiece::new(available_piece, piece_blocks);
@@ -223,26 +222,26 @@ impl AvailablePieces {
         self.pieces.contains_key(piece)
     }
 
-    fn peer_has_piece(&mut self, piece: &usize, addr: SocketAddr) {
-        let state = self.pieces.get_mut(piece).expect("invalid piece");
+    fn peer_has_piece(&mut self, index: &usize, addr: SocketAddr) {
+        let piece = self.pieces.get_mut(index).expect("invalid piece");
         assert!(
-            self.priorities.remove(&state.priority()),
+            self.priorities.remove(&piece.priority()),
             "piece priority should be present"
         );
-        state.peers_with_piece.insert(addr);
-        self.priorities.insert(state.priority());
+        piece.peers_with_piece.insert(addr);
+        self.priorities.insert(piece.priority());
     }
 
-    fn remove(&mut self, piece: &usize) -> AvailablePiece {
-        let state = self.pieces.remove(piece).expect("invalid piece");
+    fn remove(&mut self, index: &usize) -> AvailablePiece {
+        let piece = self.pieces.remove(index).expect("invalid piece");
         assert!(
-            self.priorities.remove(&state.priority()),
+            self.priorities.remove(&piece.priority()),
             "piece priority should be present"
         );
-        state
+        piece
     }
 
-    fn select_piece_for_peer(&mut self, addr: &SocketAddr) -> Option<AvailablePiece> {
+    fn next(&mut self, addr: &SocketAddr) -> Option<AvailablePiece> {
         let piece = self
             .priorities
             .iter()
@@ -250,13 +249,7 @@ impl AvailablePieces {
             .find(|piece| piece.peers_with_piece.contains(addr))
             .map(|piece| piece.index)?;
 
-        let state = self.pieces.remove(&piece).expect("piece should be present");
-        assert!(
-            self.priorities.remove(&state.priority()),
-            "piece priority should be present"
-        );
-
-        Some(state)
+        Some(self.remove(&piece))
     }
 }
 
@@ -341,8 +334,6 @@ impl ActivePiece {
 struct Peer {
     /// If the peer is choking the clinet
     choking: bool,
-    /// Pieces the peer has and the client doesn't
-    peer_pieces: BitSet,
     /// Blocks assigned to be downloaded from the peer
     assigned_blocks: HashSet<Block>,
 }
@@ -351,7 +342,6 @@ impl Default for Peer {
     fn default() -> Self {
         Self {
             choking: true,
-            peer_pieces: BitSet::default(),
             assigned_blocks: HashSet::default(),
         }
     }
