@@ -41,7 +41,7 @@ impl AvailablePieces {
             self.priorities.remove(&piece.priority()),
             "piece priority should be present"
         );
-        piece.peers_with_piece.remove(addr);
+        piece.peer_disconnected(addr);
         if piece.peers_with_piece.is_empty() {
             // No more peers have this piece, it should no longer be considered "available"
             self.pieces.remove(index).unwrap();

@@ -1,18 +1,17 @@
 #![allow(dead_code)]
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
 };
 
 use bit_set::BitSet;
 
-use crate::{
-    message::Block,
-    peer::{Download, blocks::Blocks},
-};
+use crate::{message::Block, peer::Download};
+use active_pieces::*;
 use available_pieces::*;
 
+mod active_pieces;
 mod available_pieces;
 
 enum PieceState<'a> {
@@ -80,8 +79,7 @@ impl Scheduler {
 
         let piece = self.active_pieces.get_mut(&block.piece);
 
-        piece.downloaded_blocks += 1;
-        if piece.is_complete() {
+        if piece.block_downloaded() {
             self.active_pieces.remove(&block.piece);
             //for addr in piece.peers_with_piece {
             //    let peer = self.peers.get_mut(&addr).expect("invalid peer");
@@ -117,7 +115,7 @@ impl Scheduler {
             self.available_pieces.peer_has_piece(&piece, addr);
         } else if self.active_pieces.contains(&piece) {
             let state = self.active_pieces.get_mut(&piece);
-            state.peers_with_piece.insert(addr);
+            state.peer_has_piece(addr);
         } else {
             // Ignore if client already has piece
             return HaveResult::None;
@@ -141,7 +139,7 @@ impl Scheduler {
     /// Returns peers that are no longer interesting (don't have any piece we don't already have)
     pub fn client_has_piece(&mut self, piece: usize) -> HashSet<SocketAddr> {
         let piece = self.active_pieces.remove(&piece);
-        for peer in piece.peers_with_piece {
+        for peer in piece.iter_peers() {
             // Check if peer has any more pieces we want
         }
         HashSet::new()
@@ -184,13 +182,11 @@ impl Scheduler {
         let mut blocks = Vec::with_capacity(blocks_to_request);
 
         // Check if there's an active piece to assign from
-        for piece in self.active_pieces.iter_mut() {
-            if piece.peers_with_piece.contains(addr) {
-                let assigned = piece.try_assign_n(blocks_to_request, &mut blocks);
-                blocks_to_request -= assigned;
-                if blocks_to_request == 0 {
-                    break;
-                }
+        for piece in self.active_pieces.peer_pieces(addr) {
+            let assigned = piece.try_assign_n(blocks_to_request, &mut blocks);
+            blocks_to_request -= assigned;
+            if blocks_to_request == 0 {
+                break;
             }
         }
 
@@ -219,95 +215,6 @@ pub enum HaveResult {
     Interested,
     InterestedAndRequest(Vec<Block>),
     Request(Vec<Block>),
-}
-
-// -------------------------------------------------------------------------------------------------
-
-struct ActivePieces(HashMap<usize, ActivePiece>);
-
-impl ActivePieces {
-    fn new() -> Self {
-        Self(HashMap::new())
-    }
-
-    fn insert(&mut self, index: usize, piece: ActivePiece) {
-        self.0.insert(index, piece);
-    }
-
-    fn get_mut<'a>(&'a mut self, piece: &usize) -> &'a mut ActivePiece {
-        self.0.get_mut(piece).expect("invalid piece")
-    }
-
-    fn contains(&self, piece: &usize) -> bool {
-        self.0.contains_key(piece)
-    }
-
-    fn remove(&mut self, piece: &usize) -> ActivePiece {
-        self.0.remove(piece).expect("invalid piece")
-    }
-
-    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut ActivePiece> {
-        self.0.values_mut()
-    }
-}
-
-#[derive(Debug)]
-struct ActivePiece {
-    index: usize,
-    total_blocks: usize,
-    downloaded_blocks: usize,
-    unassigned_blocks: Blocks,
-    released_blocks: Vec<Block>,
-    peers_with_piece: HashSet<SocketAddr>,
-}
-
-impl ActivePiece {
-    fn new(piece: AvailablePiece, download: &Download) -> Self {
-        let blocks = download.blocks(piece.index);
-        Self {
-            index: piece.index,
-            total_blocks: blocks.len(),
-            downloaded_blocks: 0,
-            unassigned_blocks: blocks,
-            released_blocks: Vec::new(),
-            peers_with_piece: piece.peers_with_piece,
-        }
-    }
-
-    /// Returns `true` is there are no more connected peers with this piece
-    fn peer_disconnected(&mut self, addr: &SocketAddr) -> bool {
-        self.peers_with_piece.remove(addr);
-        self.peers_with_piece.is_empty()
-    }
-
-    fn unassign(&mut self, block: Block) {
-        self.released_blocks.push(block);
-    }
-
-    fn try_assign_n(&mut self, n: usize, dest: &mut Vec<Block>) -> usize {
-        let mut assigned = 0;
-
-        // Use released blocks first
-        let released_n = n.min(self.released_blocks.len());
-        dest.extend(self.released_blocks.drain(0..released_n));
-        assigned += released_n;
-
-        // Assign remaining from unassigned blocks
-        while assigned < n {
-            if let Some(block) = self.unassigned_blocks.next() {
-                dest.push(block);
-                assigned += 1;
-            } else {
-                break;
-            }
-        }
-
-        assigned
-    }
-
-    fn is_complete(&self) -> bool {
-        self.downloaded_blocks == self.total_blocks
-    }
 }
 
 // -------------------------------------------------------------------------------------------------
