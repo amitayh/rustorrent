@@ -32,7 +32,7 @@ pub struct Scheduler {
     available_pieces: AvailablePieces,
 
     /// Pieces that are currently selected for download
-    active_pieces: HashMap<usize, ActivePiece>,
+    active_pieces: ActivePieces,
 }
 
 impl Scheduler {
@@ -45,7 +45,7 @@ impl Scheduler {
             peers: HashMap::new(),
             orphan_pieces,
             available_pieces: AvailablePieces::new(),
-            active_pieces: HashMap::new(),
+            active_pieces: ActivePieces::new(),
         }
     }
 
@@ -53,10 +53,7 @@ impl Scheduler {
         let peer = self.peers.entry(addr).or_default();
         peer.choking = true;
         for block in peer.assigned_blocks.drain() {
-            let piece = self
-                .active_pieces
-                .get_mut(&block.piece)
-                .expect("invalid piece");
+            let piece = self.active_pieces.get_mut(&block.piece);
             piece.unassign(block);
         }
     }
@@ -78,10 +75,7 @@ impl Scheduler {
             "peer should have the block assigned"
         );
 
-        let piece = self
-            .active_pieces
-            .get_mut(&block.piece)
-            .expect("invalid piece");
+        let piece = self.active_pieces.get_mut(&block.piece);
 
         piece.downloaded_blocks += 1;
         if piece.is_complete() {
@@ -99,10 +93,7 @@ impl Scheduler {
     }
 
     pub fn release(&mut self, addr: &SocketAddr, block: Block) -> Vec<Block> {
-        self.active_pieces
-            .get_mut(&block.piece)
-            .expect("invalid piece")
-            .unassign(block);
+        self.active_pieces.get_mut(&block.piece).unassign(block);
 
         if let Some(peer) = self.peers.get_mut(addr) {
             assert!(
@@ -121,8 +112,8 @@ impl Scheduler {
                 .insert(AvailablePiece::new(piece, addr));
         } else if self.available_pieces.contains(&piece) {
             self.available_pieces.peer_has_piece(&piece, addr);
-        } else if self.active_pieces.contains_key(&piece) {
-            let state = self.active_pieces.get_mut(&piece).expect("invalid piece");
+        } else if self.active_pieces.contains(&piece) {
+            let state = self.active_pieces.get_mut(&piece);
             state.peers_with_piece.insert(addr);
         } else {
             // Ignore if client already has piece
@@ -146,7 +137,7 @@ impl Scheduler {
 
     /// Returns peers that are no longer interesting (don't have any piece we don't already have)
     pub fn client_has_piece(&mut self, piece: usize) -> HashSet<SocketAddr> {
-        let piece = self.active_pieces.remove(&piece).expect("invalid piece");
+        let piece = self.active_pieces.remove(&piece);
         for peer in piece.peers_with_piece {
             // Check if peer has any more pieces we want
         }
@@ -155,25 +146,26 @@ impl Scheduler {
 
     pub fn peer_disconnected(&mut self, addr: &SocketAddr) {
         let mut peer = self.peers.remove(addr).expect("invalid peer");
+
+        // Unassign all blocks assigned to peer
+        for block in peer.assigned_blocks.drain() {
+            let piece = self.active_pieces.get_mut(&block.piece);
+            piece.unassign(block);
+        }
+
         // Remove peer association form its pieces
         for piece in &peer.has_pieces {
             if self.available_pieces.contains(&piece) {
                 if self.available_pieces.peer_disconnected(&piece, addr) {
                     self.orphan_pieces.insert(piece);
                 }
-            } else if self.active_pieces.contains_key(&piece) {
-                let active_piece = self.active_pieces.get_mut(&piece).expect("invalid piece");
+            } else if self.active_pieces.contains(&piece) {
+                let active_piece = self.active_pieces.get_mut(&piece);
                 if active_piece.peer_disconnected(addr) {
                     self.orphan_pieces.insert(piece);
                 }
             } else {
                 panic!("peer piece must be either active or available");
-            }
-        }
-        for block in peer.assigned_blocks.drain() {
-            if let Some(piece) = self.active_pieces.get_mut(&block.piece) {
-                // Piece might no longer be active if orphaned
-                piece.unassign(block);
             }
         }
     }
@@ -189,7 +181,7 @@ impl Scheduler {
         let mut blocks = Vec::with_capacity(blocks_to_request);
 
         // Check if there's an active piece to assign from
-        for piece in self.active_pieces.values_mut() {
+        for piece in self.active_pieces.iter_mut() {
             if piece.peers_with_piece.contains(addr) {
                 let assigned = piece.try_assign_n(blocks_to_request, &mut blocks);
                 blocks_to_request -= assigned;
@@ -214,19 +206,6 @@ impl Scheduler {
         peer.assigned_blocks.extend(&blocks);
 
         blocks
-    }
-
-    // TODO: is this useful?
-    fn get_piece(&mut self, piece: usize) -> PieceState {
-        if self.orphan_pieces.contains(piece) {
-            return PieceState::Orphan;
-        }
-        self.available_pieces
-            .pieces
-            .get_mut(&piece)
-            .map(PieceState::Available)
-            .or_else(|| self.active_pieces.get_mut(&piece).map(PieceState::Active))
-            .expect("invalid piece")
     }
 }
 
@@ -335,6 +314,34 @@ impl AvailablePiece {
 }
 
 // -------------------------------------------------------------------------------------------------
+
+struct ActivePieces(HashMap<usize, ActivePiece>);
+
+impl ActivePieces {
+    fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    fn insert(&mut self, index: usize, piece: ActivePiece) {
+        self.0.insert(index, piece);
+    }
+
+    fn get_mut<'a>(&'a mut self, piece: &usize) -> &'a mut ActivePiece {
+        self.0.get_mut(piece).expect("invalid piece")
+    }
+
+    fn contains(&self, piece: &usize) -> bool {
+        self.0.contains_key(piece)
+    }
+
+    fn remove(&mut self, piece: &usize) -> ActivePiece {
+        self.0.remove(piece).expect("invalid piece")
+    }
+
+    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut ActivePiece> {
+        self.0.values_mut()
+    }
+}
 
 #[derive(Debug)]
 struct ActivePiece {
