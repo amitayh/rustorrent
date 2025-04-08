@@ -11,6 +11,9 @@ use crate::{
     message::Block,
     peer::{Download, blocks::Blocks},
 };
+use available_pieces::*;
+
+mod available_pieces;
 
 enum PieceState<'a> {
     Orphan,
@@ -216,101 +219,6 @@ pub enum HaveResult {
     Interested,
     InterestedAndRequest(Vec<Block>),
     Request(Vec<Block>),
-}
-
-// -------------------------------------------------------------------------------------------------
-
-struct AvailablePieces {
-    pieces: HashMap<usize, AvailablePiece>,
-    priorities: BTreeSet<(usize, usize)>,
-}
-
-impl AvailablePieces {
-    fn new() -> Self {
-        Self {
-            pieces: HashMap::new(),
-            priorities: BTreeSet::new(),
-        }
-    }
-
-    fn insert(&mut self, piece: AvailablePiece) {
-        self.priorities.insert(piece.priority());
-        self.pieces.insert(piece.index, piece);
-    }
-
-    fn contains(&self, piece: &usize) -> bool {
-        self.pieces.contains_key(piece)
-    }
-
-    fn peer_has_piece(&mut self, index: &usize, addr: SocketAddr) {
-        let piece = self.pieces.get_mut(index).expect("invalid piece");
-        assert!(
-            self.priorities.remove(&piece.priority()),
-            "piece priority should be present"
-        );
-        piece.peers_with_piece.insert(addr);
-        self.priorities.insert(piece.priority());
-    }
-
-    fn peer_disconnected(&mut self, index: &usize, addr: &SocketAddr) -> bool {
-        let piece = self.pieces.get_mut(index).expect("invalid piece");
-        assert!(
-            self.priorities.remove(&piece.priority()),
-            "piece priority should be present"
-        );
-        piece.peers_with_piece.remove(addr);
-        if piece.peers_with_piece.is_empty() {
-            // No more peers have this piece, it should no longer be considered "available"
-            self.pieces.remove(index).unwrap();
-            true
-        } else {
-            // Update priority after peer-set change
-            self.priorities.insert(piece.priority());
-            false
-        }
-    }
-
-    fn next(&mut self, addr: &SocketAddr) -> Option<AvailablePiece> {
-        let piece = self
-            .priorities
-            .iter()
-            .map(|(_, piece)| self.pieces.get(piece).expect("invalid piece"))
-            .find(|piece| piece.peers_with_piece.contains(addr))
-            .map(|piece| piece.index)?;
-
-        Some(self.remove(&piece))
-    }
-
-    fn remove(&mut self, index: &usize) -> AvailablePiece {
-        let piece = self.pieces.remove(index).expect("invalid piece");
-        assert!(
-            self.priorities.remove(&piece.priority()),
-            "piece priority should be present"
-        );
-        piece
-    }
-}
-
-struct AvailablePiece {
-    index: usize,
-    peers_with_piece: HashSet<SocketAddr>,
-}
-
-impl AvailablePiece {
-    fn new(index: usize, addr: SocketAddr) -> Self {
-        Self {
-            index,
-            peers_with_piece: HashSet::from_iter([addr]),
-        }
-    }
-
-    fn priority(&self) -> (usize, usize) {
-        (self.peers_with_piece.len(), self.index)
-    }
-
-    fn peer_disconnected(&mut self, addr: &SocketAddr) {
-        assert!(self.peers_with_piece.remove(addr), "peer should have piece");
-    }
 }
 
 // -------------------------------------------------------------------------------------------------

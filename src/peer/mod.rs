@@ -8,6 +8,7 @@ mod event_handler;
 mod fs;
 mod peer_id;
 mod piece;
+mod scheduler;
 mod stats;
 mod sweeper;
 mod transfer_rate;
