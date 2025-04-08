@@ -53,8 +53,11 @@ impl Scheduler {
         let peer = self.peers.entry(addr).or_default();
         peer.choking = true;
         for block in peer.assigned_blocks.drain() {
-            //let piece = self.pieces.get_mut(&block.piece).expect("invalid piece");
-            //piece.unassign(block);
+            let piece = self
+                .active_pieces
+                .get_mut(&block.piece)
+                .expect("invalid piece");
+            piece.unassign(block);
         }
     }
 
@@ -152,12 +155,26 @@ impl Scheduler {
 
     pub fn peer_disconnected(&mut self, addr: &SocketAddr) {
         let mut peer = self.peers.remove(addr).expect("invalid peer");
+        // Remove peer association form its pieces
+        for piece in &peer.has_pieces {
+            if self.available_pieces.contains(&piece) {
+                if self.available_pieces.peer_disconnected(&piece, addr) {
+                    self.orphan_pieces.insert(piece);
+                }
+            } else if self.active_pieces.contains_key(&piece) {
+                let active_piece = self.active_pieces.get_mut(&piece).expect("invalid piece");
+                if active_piece.peer_disconnected(addr) {
+                    self.orphan_pieces.insert(piece);
+                }
+            } else {
+                panic!("peer piece must be either active or available");
+            }
+        }
         for block in peer.assigned_blocks.drain() {
-            let piece = self
-                .active_pieces
-                .get_mut(&block.piece)
-                .expect("invalid piece");
-            piece.unassign(block);
+            if let Some(piece) = self.active_pieces.get_mut(&block.piece) {
+                // Piece might no longer be active if orphaned
+                piece.unassign(block);
+            }
         }
     }
 
@@ -182,6 +199,7 @@ impl Scheduler {
             }
         }
 
+        // Assign remaining blocks from available pieces the peer has
         while blocks_to_request > 0 {
             if let Some(available_piece) = self.available_pieces.next(addr) {
                 let mut active_piece = ActivePiece::new(available_piece, &self.download);
@@ -255,13 +273,22 @@ impl AvailablePieces {
         self.priorities.insert(piece.priority());
     }
 
-    fn remove(&mut self, index: &usize) -> AvailablePiece {
-        let piece = self.pieces.remove(index).expect("invalid piece");
+    fn peer_disconnected(&mut self, index: &usize, addr: &SocketAddr) -> bool {
+        let piece = self.pieces.get_mut(index).expect("invalid piece");
         assert!(
             self.priorities.remove(&piece.priority()),
             "piece priority should be present"
         );
-        piece
+        piece.peers_with_piece.remove(addr);
+        if piece.peers_with_piece.is_empty() {
+            // No more peers have this piece, it should no longer be considered "available"
+            self.pieces.remove(index).unwrap();
+            true
+        } else {
+            // Update priority after peer-set change
+            self.priorities.insert(piece.priority());
+            false
+        }
     }
 
     fn next(&mut self, addr: &SocketAddr) -> Option<AvailablePiece> {
@@ -273,6 +300,15 @@ impl AvailablePieces {
             .map(|piece| piece.index)?;
 
         Some(self.remove(&piece))
+    }
+
+    fn remove(&mut self, index: &usize) -> AvailablePiece {
+        let piece = self.pieces.remove(index).expect("invalid piece");
+        assert!(
+            self.priorities.remove(&piece.priority()),
+            "piece priority should be present"
+        );
+        piece
     }
 }
 
@@ -291,6 +327,10 @@ impl AvailablePiece {
 
     fn priority(&self) -> (usize, usize) {
         (self.peers_with_piece.len(), self.index)
+    }
+
+    fn peer_disconnected(&mut self, addr: &SocketAddr) {
+        assert!(self.peers_with_piece.remove(addr), "peer should have piece");
     }
 }
 
@@ -319,8 +359,10 @@ impl ActivePiece {
         }
     }
 
-    fn peer_disconnected(&mut self, addr: &SocketAddr) {
+    /// Returns `true` is there are no more connected peers with this piece
+    fn peer_disconnected(&mut self, addr: &SocketAddr) -> bool {
         self.peers_with_piece.remove(addr);
+        self.peers_with_piece.is_empty()
     }
 
     fn unassign(&mut self, block: Block) {
