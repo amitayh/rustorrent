@@ -59,7 +59,7 @@ impl Scheduler {
             return Vec::new();
         }
         peer.choking = false;
-        self.assign(&addr)
+        self.try_assign(&addr)
     }
 
     pub fn block_downloaded(&mut self, addr: &SocketAddr, block: &Block) -> Vec<Block> {
@@ -79,7 +79,7 @@ impl Scheduler {
             self.active_pieces.remove(&block.piece);
         }
 
-        self.assign(addr)
+        self.try_assign(addr)
     }
 
     pub fn release(&mut self, addr: &SocketAddr, block: Block) -> Vec<Block> {
@@ -93,7 +93,7 @@ impl Scheduler {
                 peer.assigned_blocks.remove(&block),
                 "peer should have the block assigned"
             );
-            return self.assign(addr);
+            return self.try_assign(addr);
         }
 
         Vec::new()
@@ -125,7 +125,7 @@ impl Scheduler {
             };
         }
 
-        HaveResult::InterestedAndRequest(self.assign(&addr))
+        HaveResult::InterestedAndRequest(self.try_assign(&addr))
     }
 
     /// Returns peers that are no longer interesting (don't have any piece we don't already have)
@@ -143,7 +143,7 @@ impl Scheduler {
         }
     }
 
-    fn assign(&mut self, addr: &SocketAddr) -> Vec<Block> {
+    fn try_assign(&mut self, addr: &SocketAddr) -> Vec<Block> {
         let peer = self.peers.get_mut(addr).expect("invalid peer");
         if peer.choking {
             return Vec::new();
@@ -152,14 +152,12 @@ impl Scheduler {
         let max_blocks = self.download.config.max_concurrent_requests_per_peer;
         let mut blocks_to_request = max_blocks - peer.assigned_blocks.len();
         let mut blocks = Vec::with_capacity(blocks_to_request);
-        let mut assigned_pieces = BitSet::new();
 
         // Check if there's an active piece to assign from
-        for (index, piece) in &mut self.active_pieces {
+        for piece in self.active_pieces.values_mut() {
             if piece.peers_with_piece.contains(addr) {
                 let assigned = piece.try_assign_n(blocks_to_request, &mut blocks);
                 blocks_to_request -= assigned;
-                assigned_pieces.insert(*index);
                 if blocks_to_request == 0 {
                     break;
                 }
@@ -168,16 +166,10 @@ impl Scheduler {
 
         while blocks_to_request > 0 {
             if let Some(available_piece) = self.available_pieces.next(addr) {
-                let index = available_piece.index;
-                let piece_blocks = self.download.blocks(index);
-                let mut active_piece = ActivePiece::new(available_piece, piece_blocks);
+                let mut active_piece = ActivePiece::new(available_piece, &self.download);
                 let assigned = active_piece.try_assign_n(blocks_to_request, &mut blocks);
-                self.active_pieces.insert(index, active_piece);
+                self.active_pieces.insert(active_piece.index, active_piece);
                 blocks_to_request -= assigned;
-                assigned_pieces.insert(index);
-                if blocks_to_request == 0 {
-                    break;
-                }
             } else {
                 break;
             }
@@ -284,7 +276,8 @@ struct ActivePiece {
 }
 
 impl ActivePiece {
-    fn new(piece: AvailablePiece, blocks: Blocks) -> Self {
+    fn new(piece: AvailablePiece, download: &Download) -> Self {
+        let blocks = download.blocks(piece.index);
         Self {
             index: piece.index,
             total_blocks: blocks.len(),
@@ -303,17 +296,18 @@ impl ActivePiece {
         self.released_blocks.push(block);
     }
 
-    fn try_assign_n(&mut self, n: usize, blocks: &mut Vec<Block>) -> usize {
+    fn try_assign_n(&mut self, n: usize, dest: &mut Vec<Block>) -> usize {
         let mut assigned = 0;
+
         // Use released blocks first
         let released_n = n.min(self.released_blocks.len());
-        blocks.extend(self.released_blocks.drain(0..released_n));
+        dest.extend(self.released_blocks.drain(0..released_n));
         assigned += released_n;
 
         // Assign remaining from unassigned blocks
         while assigned < n {
             if let Some(block) = self.unassigned_blocks.next() {
-                blocks.push(block);
+                dest.push(block);
                 assigned += 1;
             } else {
                 break;
