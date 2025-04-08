@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use std::{
-    collections::{BTreeSet, HashMap, HashSet, hash_map::Entry},
+    collections::{BTreeSet, HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
 };
@@ -11,6 +11,12 @@ use crate::{
     message::Block,
     peer::{Download, blocks::Blocks},
 };
+
+enum PieceState<'a> {
+    Orphan,
+    Available(&'a mut AvailablePiece),
+    Active(&'a mut ActivePiece),
+}
 
 /// The scheduler only keeps track of pieces the client still doesn't have
 pub struct Scheduler {
@@ -77,6 +83,13 @@ impl Scheduler {
         piece.downloaded_blocks += 1;
         if piece.is_complete() {
             self.active_pieces.remove(&block.piece);
+            //for addr in piece.peers_with_piece {
+            //    let peer = self.peers.get_mut(&addr).expect("invalid peer");
+            //    peer.has_pieces.remove(piece.index);
+            //    if peer.has_pieces.is_empty() {
+            //        // Remove peer
+            //    }
+            //}
         }
 
         self.try_assign(addr)
@@ -113,10 +126,10 @@ impl Scheduler {
             return HaveResult::None;
         }
 
-        let (peer, interested) = match self.peers.entry(addr) {
-            Entry::Occupied(entry) => (entry.into_mut(), false),
-            Entry::Vacant(entry) => (entry.insert(Peer::default()), true),
-        };
+        // Send "Interested" the first time the peer has piece we want
+        let interested = !self.peers.contains_key(&addr);
+        let peer = self.peers.entry(addr).or_default();
+        peer.has_pieces.insert(piece);
         if peer.choking {
             return if interested {
                 HaveResult::Interested
@@ -130,16 +143,21 @@ impl Scheduler {
 
     /// Returns peers that are no longer interesting (don't have any piece we don't already have)
     pub fn client_has_piece(&mut self, piece: usize) -> HashSet<SocketAddr> {
+        let piece = self.active_pieces.remove(&piece).expect("invalid piece");
+        for peer in piece.peers_with_piece {
+            // Check if peer has any more pieces we want
+        }
         HashSet::new()
     }
 
     pub fn peer_disconnected(&mut self, addr: &SocketAddr) {
-        if let Some(mut peer) = self.peers.remove(addr) {
-            for block in peer.assigned_blocks.drain() {
-                //let piece = self.pieces.get_mut(&block.piece).expect("invalid piece");
-                //piece.peer_disconnected(addr);
-                //piece.unassign(block);
-            }
+        let mut peer = self.peers.remove(addr).expect("invalid peer");
+        for block in peer.assigned_blocks.drain() {
+            let piece = self
+                .active_pieces
+                .get_mut(&block.piece)
+                .expect("invalid piece");
+            piece.unassign(block);
         }
     }
 
@@ -178,6 +196,19 @@ impl Scheduler {
         peer.assigned_blocks.extend(&blocks);
 
         blocks
+    }
+
+    // TODO: is this useful?
+    fn get_piece(&mut self, piece: usize) -> PieceState {
+        if self.orphan_pieces.contains(piece) {
+            return PieceState::Orphan;
+        }
+        self.available_pieces
+            .pieces
+            .get_mut(&piece)
+            .map(PieceState::Available)
+            .or_else(|| self.active_pieces.get_mut(&piece).map(PieceState::Active))
+            .expect("invalid piece")
     }
 }
 
@@ -330,13 +361,16 @@ struct Peer {
     choking: bool,
     /// Blocks assigned to be downloaded from the peer
     assigned_blocks: HashSet<Block>,
+    /// Pieces the peer has and client doesn't
+    has_pieces: BitSet,
 }
 
 impl Default for Peer {
     fn default() -> Self {
         Self {
             choking: true,
-            assigned_blocks: HashSet::default(),
+            assigned_blocks: HashSet::new(),
+            has_pieces: BitSet::new(),
         }
     }
 }
