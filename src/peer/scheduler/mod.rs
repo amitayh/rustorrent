@@ -55,7 +55,7 @@ impl Scheduler {
         let peer = self.peers.entry(addr).or_default();
         peer.choking = true;
         for block in peer.assigned_blocks.drain() {
-            let piece = self.active_pieces.get_mut(&block.piece);
+            let piece = self.active_pieces.get_mut(block.piece);
             piece.unassign(block);
         }
     }
@@ -77,7 +77,7 @@ impl Scheduler {
             "peer should have the block assigned"
         );
 
-        let piece = self.active_pieces.get_mut(&block.piece);
+        let piece = self.active_pieces.get_mut(block.piece);
 
         if piece.block_downloaded() {
             self.active_pieces.remove(&block.piece);
@@ -94,7 +94,7 @@ impl Scheduler {
     }
 
     pub fn release(&mut self, addr: &SocketAddr, block: Block) -> Vec<Block> {
-        self.active_pieces.get_mut(&block.piece).unassign(block);
+        self.active_pieces.get_mut(block.piece).unassign(block);
 
         if let Some(peer) = self.peers.get_mut(addr) {
             assert!(
@@ -114,8 +114,7 @@ impl Scheduler {
         } else if self.available_pieces.contains(&piece) {
             self.available_pieces.peer_has_piece(&piece, addr);
         } else if self.active_pieces.contains(&piece) {
-            let state = self.active_pieces.get_mut(&piece);
-            state.peer_has_piece(addr);
+            self.active_pieces.peer_has_piece(piece, addr);
         } else {
             // Ignore if client already has piece
             return HaveResult::None;
@@ -150,7 +149,7 @@ impl Scheduler {
 
         // Unassign all blocks assigned to peer
         for block in peer.assigned_blocks.drain() {
-            let piece = self.active_pieces.get_mut(&block.piece);
+            let piece = self.active_pieces.get_mut(block.piece);
             piece.unassign(block);
         }
 
@@ -161,7 +160,7 @@ impl Scheduler {
                     self.orphan_pieces.insert(piece);
                 }
             } else if self.active_pieces.contains(&piece) {
-                let active_piece = self.active_pieces.get_mut(&piece);
+                let active_piece = self.active_pieces.get_mut(piece);
                 if active_piece.peer_disconnected(addr) {
                     self.orphan_pieces.insert(piece);
                 }
@@ -181,22 +180,19 @@ impl Scheduler {
         let mut blocks_to_request = max_blocks - peer.assigned_blocks.len();
         let mut blocks = Vec::with_capacity(blocks_to_request);
 
-        // Check if there's an active piece to assign from
-        for piece in self.active_pieces.peer_pieces(addr) {
-            let assigned = piece.try_assign_n(blocks_to_request, &mut blocks);
-            blocks_to_request -= assigned;
-            if blocks_to_request == 0 {
-                break;
-            }
-        }
+        // Try to assign from active pieces first.
+        // This is meant for reducing fragmentation.
+        blocks_to_request -= self
+            .active_pieces
+            .try_assign_n(addr, blocks_to_request, &mut blocks);
 
         // Assign remaining blocks from available pieces the peer has
         while blocks_to_request > 0 {
-            if let Some(available_piece) = self.available_pieces.next(addr) {
-                let mut active_piece = ActivePiece::new(available_piece, &self.download);
-                let assigned = active_piece.try_assign_n(blocks_to_request, &mut blocks);
-                self.active_pieces.insert(active_piece.index, active_piece);
-                blocks_to_request -= assigned;
+            if let Some(piece) = self.available_pieces.next(addr) {
+                let piece_blocks = self.download.blocks(piece.index);
+                let mut piece = ActivePiece::new(piece, piece_blocks);
+                blocks_to_request -= piece.try_assign_n(blocks_to_request, &mut blocks);
+                self.active_pieces.insert(piece.index, piece);
             } else {
                 break;
             }
