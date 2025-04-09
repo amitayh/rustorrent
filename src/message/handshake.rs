@@ -16,14 +16,14 @@ const PROTOCOL: &str = "BitTorrent protocol";
 /// * **pstrlen**: string length of <pstr>, as a single raw byte
 /// * **pstr**: string identifier of the protocol
 /// * **reserved**: eight (8) reserved bytes. All current implementations use all zeroes. Each bit
-/// in these bytes can be used to change the behavior of the protocol. _An email from Bram suggests
-/// that trailing bits should be used first, so that leading bits may be used to change the meaning
-/// of trailing bits._
+///   in these bytes can be used to change the behavior of the protocol. _An email from Bram
+///   suggests that trailing bits should be used first, so that leading bits may be used to change
+///   the meaning of trailing bits._
 /// * **info\_hash**: 20-byte SHA1 hash of the info key in the metainfo file. This is the same
-/// info\_hash that is transmitted in tracker requests.
+///   info\_hash that is transmitted in tracker requests.
 /// * **peer\_id**: 20-byte string used as a unique ID for the client. This is usually the same
-/// peer\_id that is transmitted in tracker requests (but not always e.g. an anonymity option in
-/// Azureus).
+///   peer\_id that is transmitted in tracker requests (but not always e.g. an anonymity option in
+///   Azureus).
 ///
 /// In version 1.0 of the BitTorrent protocol, pstrlen = 19, and pstr = "BitTorrent protocol".
 ///

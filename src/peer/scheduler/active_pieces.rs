@@ -17,7 +17,7 @@ impl ActivePieces {
         self.0.insert(index, piece);
     }
 
-    pub fn get_mut<'a>(&'a mut self, piece: usize) -> &'a mut ActivePiece {
+    pub fn get_mut(&mut self, piece: usize) -> &mut ActivePiece {
         self.0.get_mut(&piece).expect("invalid piece")
     }
 
@@ -44,10 +44,7 @@ impl ActivePieces {
         assigned
     }
 
-    fn peer_pieces<'a>(
-        &'a mut self,
-        addr: &SocketAddr,
-    ) -> impl Iterator<Item = &'a mut ActivePiece> {
+    fn peer_pieces(&mut self, addr: &SocketAddr) -> impl Iterator<Item = &mut ActivePiece> {
         self.0
             .values_mut()
             .filter(|piece| piece.peers_with_piece.contains(addr))
@@ -76,7 +73,7 @@ impl ActivePiece {
         }
     }
 
-    pub fn iter_peers<'a>(&'a self) -> impl Iterator<Item = &'a SocketAddr> {
+    pub fn iter_peers(&self) -> impl Iterator<Item = &SocketAddr> {
         self.peers_with_piece.iter()
     }
 
