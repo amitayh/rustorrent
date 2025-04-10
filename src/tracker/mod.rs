@@ -5,8 +5,8 @@ use std::io::{Error, ErrorKind};
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
+use log::error;
 use log::info;
-use log::{debug, error};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
