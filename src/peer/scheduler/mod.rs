@@ -22,7 +22,7 @@ pub struct Scheduler {
     /// Maintains state for connected peers
     peers: HashMap<SocketAddr, Peer>,
 
-    /// Pieces that no peer has announced to have yet (with Have / Bitfield messages)
+    /// Pieces that no peer has announced to have yet (with a Have / Bitfield messages)
     orphan_pieces: BitSet,
 
     /// Pieces that are known to be available by at least one peer
@@ -100,19 +100,17 @@ impl Scheduler {
             return HaveResult::None;
         }
 
-        // Send "Interested" the first time the peer has piece we want
-        let interested = !self.peers.contains_key(&addr);
         let peer = self.peers.entry(addr).or_default();
+        // Send "Interested" the first time the peer has piece we want
+        let interested = peer.has_pieces.is_empty();
         peer.has_pieces.insert(piece);
-        if peer.choking {
-            return if interested {
-                HaveResult::Interested
-            } else {
-                HaveResult::None
-            };
-        }
 
-        HaveResult::InterestedAndRequest(self.try_assign(&addr))
+        match (peer.choking, interested) {
+            (true, false) => HaveResult::None,
+            (true, true) => HaveResult::Interested,
+            (false, false) => HaveResult::Request(self.try_assign(&addr)),
+            (false, true) => HaveResult::InterestedAndRequest(self.try_assign(&addr)),
+        }
     }
 
     /// Returns peers that are no longer interesting (don't have any piece we don't already have)
@@ -237,7 +235,10 @@ impl Default for Peer {
 mod tests {
     use size::Size;
 
-    use crate::peer::tests::{test_config, test_torrent};
+    use crate::peer::{
+        Config,
+        tests::{test_config, test_torrent},
+    };
 
     use super::*;
 
@@ -276,6 +277,28 @@ mod tests {
         assert_eq!(
             scheduler.peer_has_piece(addr, 0),
             HaveResult::InterestedAndRequest(vec![Block::new(0, 0, 8)])
+        );
+    }
+
+    #[test]
+    fn show_interest_only_once() {
+        let config = test_config("/tmp")
+            .with_block_size(Size::from_kib(16))
+            .with_max_concurrent_requests_per_peer(3);
+        let mut scheduler = test_scheduler_with_config(config, &[]);
+        let addr = "127.0.0.1:6881".parse().unwrap();
+
+        assert!(scheduler.peer_unchoked(addr).is_empty());
+        assert_eq!(
+            scheduler.peer_has_piece(addr, 0),
+            HaveResult::InterestedAndRequest(vec![
+                Block::new(0, 0, 16384),
+                Block::new(0, 16384, 16384)
+            ])
+        );
+        assert_eq!(
+            scheduler.peer_has_piece(addr, 1),
+            HaveResult::Request(vec![Block::new(1, 0, 16384)])
         );
     }
 
@@ -376,12 +399,17 @@ mod tests {
         assert_eq!(scheduler.peer_unchoked(addr2), vec![block]);
     }
 
-    fn test_scheduler(has_pieces: &[usize]) -> Scheduler {
+    fn test_scheduler_with_config(config: Config, has_pieces: &[usize]) -> Scheduler {
         let torrent = test_torrent();
+        let download = Arc::new(Download { torrent, config });
+        let has_pieces = BitSet::from_iter(has_pieces.iter().copied());
+        Scheduler::new(download, &has_pieces)
+    }
+
+    fn test_scheduler(has_pieces: &[usize]) -> Scheduler {
         let config = test_config("/tmp")
             .with_block_size(Size::from_bytes(8))
             .with_max_concurrent_requests_per_peer(1);
-        let download = Arc::new(Download { torrent, config });
-        Scheduler::new(download, &BitSet::from_iter(has_pieces.iter().copied()))
+        test_scheduler_with_config(config, has_pieces)
     }
 }
