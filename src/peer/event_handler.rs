@@ -24,6 +24,7 @@ pub struct EventHandler {
     sweeper: Sweeper,
     stats: GlobalStats,
     has_pieces: BitSet,
+    download: Arc<Download>,
 }
 
 impl EventHandler {
@@ -40,6 +41,7 @@ impl EventHandler {
             ),
             stats,
             has_pieces,
+            download,
         }
     }
 
@@ -96,6 +98,7 @@ impl EventHandler {
             Event::PieceCompleted(piece) => {
                 self.stats.completed_pieces += 1;
                 self.has_pieces.insert(piece);
+                self.stats.downloaded += self.download.torrent.info.piece_size(piece);
                 let mut actions = vec![
                     Action::Broadcast(Message::Have(piece)),
                     Action::UpdateStats(self.stats.clone()),
@@ -147,6 +150,9 @@ impl EventHandler {
             trace!("action to perform: {:?}", &action);
             if let Action::Send(addr, Message::Request(block)) = action {
                 self.sweeper.block_requested(*addr, *block, now);
+            }
+            if let Action::Upload(_, block) = action {
+                self.stats.uploaded += self.download.torrent.info.piece_size(block.piece);
             }
         }
         actions

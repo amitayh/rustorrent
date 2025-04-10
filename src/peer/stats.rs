@@ -20,6 +20,8 @@ pub struct GlobalStats {
     pub total_pieces: usize,
     pub completed_pieces: usize,
     pub connected_peers: usize,
+    pub uploaded: usize,
+    pub downloaded: usize,
     pub upload_rate: TransferRate,
     pub download_rate: TransferRate,
 }
@@ -30,6 +32,8 @@ impl GlobalStats {
             total_pieces,
             completed_pieces,
             connected_peers: 0,
+            uploaded: 0,
+            downloaded: 0,
             upload_rate: TransferRate::EMPTY,
             download_rate: TransferRate::EMPTY,
         }

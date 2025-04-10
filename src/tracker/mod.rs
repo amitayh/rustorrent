@@ -5,8 +5,8 @@ use std::io::{Error, ErrorKind};
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use log::debug;
 use log::info;
+use log::{debug, error};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -56,7 +56,6 @@ impl Tracker {
                 };
 
                 info!("refreshing list of peers...");
-                debug!("request to tracker: {:?}", &request);
                 let mut response = send_request(request).await?;
                 info!("got {} peers from tracker", response.peers.len());
                 for peer in response.peers {
@@ -88,7 +87,9 @@ impl Tracker {
                                 tracker_id: tracker_id.clone(),
                             }
                         };
-                        send_request(request).await?;
+                        if let Err(err) = send_request(request).await {
+                            error!("error when shutting down tracker: {}", err);
+                        }
                         running = false;
                     }
                 }
@@ -103,8 +104,10 @@ impl Tracker {
     }
 
     pub fn update_progress(&self, downloaded: usize, uploaded: usize) -> anyhow::Result<()> {
-        let updated_progress = self.tx.borrow().update(downloaded, uploaded);
-        self.tx.send(updated_progress)?;
+        self.tx.send_modify(|progress| {
+            progress.downloaded = downloaded;
+            progress.uploaded = uploaded;
+        });
         Ok(())
     }
 
@@ -134,18 +137,12 @@ impl DownloadProgress {
     fn left(&self) -> usize {
         self.total - self.downloaded
     }
-
-    fn update(&self, downloaded: usize, uploaded: usize) -> Self {
-        Self {
-            total: self.total,
-            downloaded,
-            uploaded,
-        }
-    }
 }
 
 async fn send_request(request: TrackerRequest) -> Result<TrackerResponse> {
-    let response = reqwest::get(Url::from(request)).await?;
+    let url = Url::from(request);
+    info!("sending request to tracker {}", &url);
+    let response = reqwest::get(url).await?;
     if !response.status().is_success() {
         return Err(anyhow!("server returned status {}", response.status()));
     }

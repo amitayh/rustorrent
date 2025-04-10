@@ -157,10 +157,7 @@ impl Peer {
                     }
 
                     Action::UpdateStats(stats) => {
-                        tracker.update_progress(
-                            stats.download_rate.0.bytes() as usize,
-                            stats.upload_rate.0.bytes() as usize,
-                        )?;
+                        tracker.update_progress(stats.downloaded, stats.uploaded)?;
                         println!(
                             "Downloaded {}/{} pieces ({:.2}%) | Down: {} | Up: {} | Peers: {}",
                             stats.completed_pieces,
