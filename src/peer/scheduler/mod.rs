@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
@@ -34,7 +33,7 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(download: Arc<Download>, has_pieces: BitSet) -> Self {
+    pub fn new(download: Arc<Download>, has_pieces: &BitSet) -> Self {
         let total_pieces = download.torrent.info.total_pieces();
         let missing_pieces = (0..total_pieces).filter(|piece| !has_pieces.contains(*piece));
         let orphan_pieces = BitSet::from_iter(missing_pieces);
@@ -76,13 +75,12 @@ impl Scheduler {
     }
 
     pub fn release(&mut self, addr: &SocketAddr, block: Block) -> Vec<Block> {
-        self.active_pieces.get_mut(block.piece).unassign(block);
+        if let Some(piece) = self.active_pieces.get_mut_safe(block.piece) {
+            piece.unassign(block);
+        }
 
         if let Some(peer) = self.peers.get_mut(addr) {
-            assert!(
-                peer.assigned_blocks.remove(&block),
-                "peer should have the block assigned"
-            );
+            peer.assigned_blocks.remove(&block);
             return self.try_assign(addr);
         }
 
@@ -121,7 +119,7 @@ impl Scheduler {
     pub fn client_has_piece(&mut self, piece: usize) -> HashSet<SocketAddr> {
         let mut not_interested = HashSet::new();
         // If a piece is completed it means it was active
-        let piece = self.active_pieces.remove(&piece);
+        let piece = self.active_pieces.remove(piece);
         for addr in piece.peers() {
             let peer = self.peers.get_mut(addr).expect("invalid peer");
             assert!(
@@ -136,27 +134,38 @@ impl Scheduler {
         not_interested
     }
 
+    pub fn invalidate(&mut self, piece: usize) {
+        let active_piece = self.active_pieces.remove(piece);
+        let available_piece = AvailablePiece::from(active_piece);
+        self.available_pieces.insert(available_piece);
+    }
+
+    pub fn block_in_flight(&self, addr: &SocketAddr, block: &Block) -> bool {
+        let peer = self.peers.get(addr).expect("invalid peer");
+        peer.assigned_blocks.contains(block)
+    }
+
     pub fn peer_disconnected(&mut self, addr: &SocketAddr) {
-        let mut peer = self.peers.remove(addr).expect("invalid peer");
+        if let Some(mut peer) = self.peers.remove(addr) {
+            // Unassign all blocks assigned to peer
+            for block in peer.assigned_blocks.drain() {
+                let piece = self.active_pieces.get_mut(block.piece);
+                piece.unassign(block);
+            }
 
-        // Unassign all blocks assigned to peer
-        for block in peer.assigned_blocks.drain() {
-            let piece = self.active_pieces.get_mut(block.piece);
-            piece.unassign(block);
-        }
-
-        // Remove peer association form its pieces
-        for piece in &peer.has_pieces {
-            if self.available_pieces.contains(piece) {
-                if self.available_pieces.peer_disconnected(piece, addr) == PieceState::Orphan {
-                    self.orphan_pieces.insert(piece);
+            // Remove peer association form its pieces
+            for piece in &peer.has_pieces {
+                if self.available_pieces.contains(piece) {
+                    if self.available_pieces.peer_disconnected(piece, addr) == PieceState::Orphan {
+                        self.orphan_pieces.insert(piece);
+                    }
+                } else if self.active_pieces.contains(piece) {
+                    if self.active_pieces.peer_disconnected(piece, addr) == PieceState::Orphan {
+                        self.orphan_pieces.insert(piece);
+                    }
+                } else {
+                    panic!("peer piece must be either active or available");
                 }
-            } else if self.active_pieces.contains(piece) {
-                if self.active_pieces.peer_disconnected(piece, addr) == PieceState::Orphan {
-                    self.orphan_pieces.insert(piece);
-                }
-            } else {
-                panic!("peer piece must be either active or available");
             }
         }
     }
@@ -172,18 +181,18 @@ impl Scheduler {
         let mut blocks = Vec::with_capacity(blocks_to_request);
 
         // Try to assign from active pieces first.
-        // This is meant for reducing fragmentation.
+        // This is meant to reduce fragmentation.
         blocks_to_request -= self
             .active_pieces
             .try_assign_n(addr, blocks_to_request, &mut blocks);
 
         // Assign remaining blocks from available pieces the peer has
         while blocks_to_request > 0 {
-            if let Some(piece) = self.available_pieces.take_next(addr) {
-                let piece_blocks = self.download.blocks(piece.index);
-                let mut piece = ActivePiece::new(piece, piece_blocks);
-                blocks_to_request -= piece.try_assign_n(blocks_to_request, &mut blocks);
-                self.active_pieces.insert(piece.index, piece);
+            if let Some(available_piece) = self.available_pieces.take_next(addr) {
+                let piece_blocks = self.download.blocks(available_piece.index);
+                let mut active_piece = ActivePiece::new(available_piece, piece_blocks);
+                blocks_to_request -= active_piece.try_assign_n(blocks_to_request, &mut blocks);
+                self.active_pieces.insert(active_piece.index, active_piece);
             } else {
                 break;
             }
@@ -204,8 +213,6 @@ pub enum HaveResult {
     Request(Vec<Block>),
 }
 
-// -------------------------------------------------------------------------------------------------
-
 #[derive(Debug)]
 struct Peer {
     /// If the peer is choking the clinet
@@ -225,8 +232,6 @@ impl Default for Peer {
         }
     }
 }
-
-// -------------------------------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -377,6 +382,6 @@ mod tests {
             .with_block_size(Size::from_bytes(8))
             .with_max_concurrent_requests_per_peer(1);
         let download = Arc::new(Download { torrent, config });
-        Scheduler::new(download, BitSet::from_iter(has_pieces.iter().copied()))
+        Scheduler::new(download, &BitSet::from_iter(has_pieces.iter().copied()))
     }
 }

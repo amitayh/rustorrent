@@ -25,10 +25,10 @@ pub struct GlobalStats {
 }
 
 impl GlobalStats {
-    pub fn new(total_pieces: usize) -> Self {
+    pub fn new(total_pieces: usize, completed_pieces: usize) -> Self {
         Self {
             total_pieces,
-            completed_pieces: 0,
+            completed_pieces,
             connected_peers: 0,
             upload_rate: TransferRate::EMPTY,
             download_rate: TransferRate::EMPTY,

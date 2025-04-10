@@ -18,8 +18,12 @@ impl ActivePieces {
         self.0.insert(index, piece);
     }
 
+    pub fn get_mut_safe(&mut self, piece: usize) -> Option<&mut ActivePiece> {
+        self.0.get_mut(&piece)
+    }
+
     pub fn get_mut(&mut self, piece: usize) -> &mut ActivePiece {
-        self.0.get_mut(&piece).expect("invalid piece")
+        self.get_mut_safe(piece).expect("invalid piece")
     }
 
     pub fn peer_has_piece(&mut self, piece: usize, addr: SocketAddr) {
@@ -43,8 +47,8 @@ impl ActivePieces {
         self.0.contains_key(&piece)
     }
 
-    pub fn remove(&mut self, piece: &usize) -> ActivePiece {
-        self.0.remove(piece).expect("invalid piece")
+    pub fn remove(&mut self, piece: usize) -> ActivePiece {
+        self.0.remove(&piece).expect("invalid piece")
     }
 
     pub fn try_assign_n(&mut self, addr: &SocketAddr, n: usize, blocks: &mut Vec<Block>) -> usize {
@@ -68,9 +72,9 @@ impl ActivePieces {
 #[derive(Debug)]
 pub struct ActivePiece {
     pub index: usize,
+    pub peers_with_piece: HashSet<SocketAddr>,
     unassigned_blocks: Blocks,
     released_blocks: Vec<Block>,
-    peers_with_piece: HashSet<SocketAddr>,
 }
 
 impl ActivePiece {

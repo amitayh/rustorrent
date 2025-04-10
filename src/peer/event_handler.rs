@@ -9,33 +9,37 @@ use tokio::time::Instant;
 
 use crate::message::{Block, BlockData, Message};
 
+use crate::peer::choke::Choker;
 use crate::peer::event::Event;
+use crate::peer::scheduler::Scheduler;
 use crate::peer::stats::GlobalStats;
 use crate::peer::sweeper::Sweeper;
-use crate::peer::{choke::Choker, piece::Allocator};
 
 use super::Download;
+use super::scheduler::HaveResult;
 
 pub struct EventHandler {
     choker: Choker,
-    allocator: Allocator,
+    scheduler: Scheduler,
     sweeper: Sweeper,
     stats: GlobalStats,
+    has_pieces: BitSet,
 }
 
 impl EventHandler {
     pub fn new(download: Arc<Download>, has_pieces: BitSet) -> Self {
         // TODO: is this needed?
-        let stats = GlobalStats::new(download.torrent.info.pieces.len());
-        let allocator = Allocator::new(Arc::clone(&download), has_pieces);
+        let stats = GlobalStats::new(download.torrent.info.pieces.len(), has_pieces.len());
+        let scheduler = Scheduler::new(Arc::clone(&download), &has_pieces);
         Self {
             choker: Choker::new(download.config.optimistic_choking_cycle),
-            allocator,
+            scheduler,
             sweeper: Sweeper::new(
                 download.config.idle_peer_timeout,
                 download.config.block_timeout,
             ),
             stats,
+            has_pieces,
         }
     }
 
@@ -64,13 +68,13 @@ impl EventHandler {
                 for addr in result.peers {
                     warn!("peer {} has been idle for too long", &addr);
                     self.choker.peer_disconnected(&addr);
-                    self.allocator.peer_disconnected(&addr);
+                    self.scheduler.peer_disconnected(&addr);
                     self.stats.connected_peers -= 1;
                     actions.push(Action::RemovePeer(addr));
                 }
                 for (addr, block) in result.blocks {
                     warn!("block requet timed out: {} - {:?}", &addr, &block);
-                    for next_block in self.allocator.release(&addr, block) {
+                    for next_block in self.scheduler.release(&addr, block) {
                         actions.push(Action::Send(addr, Message::Request(next_block)));
                     }
                 }
@@ -91,18 +95,19 @@ impl EventHandler {
 
             Event::PieceCompleted(piece) => {
                 self.stats.completed_pieces += 1;
+                self.has_pieces.insert(piece);
                 let mut actions = vec![
                     Action::Broadcast(Message::Have(piece)),
                     Action::UpdateStats(self.stats.clone()),
                 ];
-                for not_interesting in self.allocator.client_has_piece(piece) {
+                for not_interesting in self.scheduler.client_has_piece(piece) {
                     actions.push(Action::Send(not_interesting, Message::NotInterested));
                 }
                 actions
             }
 
             Event::PieceInvalid(piece) => {
-                self.allocator.invalidate(piece);
+                self.scheduler.invalidate(piece);
                 Vec::new()
             }
 
@@ -110,8 +115,8 @@ impl EventHandler {
                 self.stats.connected_peers += 1;
                 let mut actions = Vec::with_capacity(2);
                 actions.push(Action::EstablishConnection(addr, None));
-                if !self.allocator.has_pieces.is_empty() {
-                    let pieces = self.allocator.has_pieces.clone();
+                if !self.has_pieces.is_empty() {
+                    let pieces = self.has_pieces.clone();
                     actions.push(Action::Send(addr, Message::Bitfield(pieces)));
                 }
                 actions
@@ -119,16 +124,18 @@ impl EventHandler {
 
             Event::AcceptConnection(addr, socket) => {
                 self.stats.connected_peers += 1;
-                let pieces = self.allocator.has_pieces.clone();
-                vec![
-                    Action::EstablishConnection(addr, Some(socket)),
-                    Action::Send(addr, Message::Bitfield(pieces)),
-                ]
+                let mut actions = Vec::with_capacity(2);
+                actions.push(Action::EstablishConnection(addr, Some(socket)));
+                if !self.has_pieces.is_empty() {
+                    let pieces = self.has_pieces.clone();
+                    actions.push(Action::Send(addr, Message::Bitfield(pieces)));
+                }
+                actions
             }
 
             Event::Disconnect(addr) => {
                 self.choker.peer_disconnected(&addr);
-                self.allocator.peer_disconnected(&addr);
+                self.scheduler.peer_disconnected(&addr);
                 self.sweeper.peer_disconnected(&addr);
                 self.stats.connected_peers -= 1;
                 vec![Action::RemovePeer(addr)]
@@ -150,12 +157,12 @@ impl EventHandler {
             Message::KeepAlive => Vec::new(),
 
             Message::Choke => {
-                self.allocator.peer_choked(addr);
+                self.scheduler.peer_choked(addr);
                 Vec::new()
             }
 
             Message::Unchoke => self
-                .allocator
+                .scheduler
                 .peer_unchoked(addr)
                 .into_iter()
                 .map(|block| Action::Send(addr, Message::Request(block)))
@@ -171,30 +178,34 @@ impl EventHandler {
                 Vec::new()
             }
 
-            Message::Have(piece) => {
-                let pieces = BitSet::from_iter([piece]);
-                self.handle_message(addr, Message::Bitfield(pieces))
-            }
-
-            Message::Bitfield(pieces) => {
-                let (became_interesting, next_blocks) =
-                    self.allocator.peer_has_pieces(addr, &pieces);
-                let mut actions = Vec::with_capacity(next_blocks.len() + 1);
-                if became_interesting {
+            Message::Have(piece) => match self.scheduler.peer_has_piece(addr, piece) {
+                HaveResult::None => Vec::new(),
+                HaveResult::Interested => vec![Action::Send(addr, Message::Interested)],
+                HaveResult::InterestedAndRequest(blocks) => {
+                    let mut actions = Vec::with_capacity(blocks.len() + 1);
                     actions.push(Action::Send(addr, Message::Interested));
+                    for block in blocks {
+                        actions.push(Action::Send(addr, Message::Request(block)));
+                    }
+                    actions
                 }
-                for block in next_blocks {
-                    actions.push(Action::Send(addr, Message::Request(block)));
-                }
-                actions
-            }
+                HaveResult::Request(blocks) => blocks
+                    .into_iter()
+                    .map(|block| Action::Send(addr, Message::Request(block)))
+                    .collect(),
+            },
+
+            Message::Bitfield(pieces) => pieces
+                .iter()
+                .flat_map(|piece| self.handle_message(addr, Message::Have(piece)))
+                .collect(),
 
             Message::Request(block) => {
                 if !self.choker.is_unchoked(&addr) {
                     warn!("{} requested block while being choked", addr);
                     return Vec::new();
                 }
-                if !self.allocator.is_available(block.piece) {
+                if !self.has_pieces.contains(block.piece) {
                     warn!("{} requested block which is not available", addr);
                     return Vec::new();
                 }
@@ -203,13 +214,13 @@ impl EventHandler {
 
             Message::Piece(block_data) => {
                 let block = Block::from(&block_data);
-                if !self.allocator.block_in_flight(&addr, &block) {
+                if !self.scheduler.block_in_flight(&addr, &block) {
                     warn!("{} sent block {:?} which was not requested", &addr, &block);
                     return Vec::new();
                 }
                 self.sweeper.block_downloaded(addr, block);
                 let mut actions = vec![Action::IntegrateBlock(block_data)];
-                for next_block in self.allocator.block_downloaded(&addr, &block) {
+                for next_block in self.scheduler.block_downloaded(&addr, &block) {
                     actions.push(Action::Send(addr, Message::Request(next_block)));
                 }
                 actions

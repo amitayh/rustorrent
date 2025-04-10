@@ -5,6 +5,8 @@ use std::{
 
 use crate::peer::scheduler::piece_state::PieceState;
 
+use super::active_pieces::ActivePiece;
+
 pub struct AvailablePieces {
     pieces: HashMap<usize, AvailablePiece>,
     priorities: BTreeSet<(usize, usize)>,
@@ -96,6 +98,13 @@ impl AvailablePiece {
         Self {
             index,
             peers_with_piece: HashSet::from_iter([addr]),
+        }
+    }
+
+    pub fn from(piece: ActivePiece) -> Self {
+        Self {
+            index: piece.index,
+            peers_with_piece: piece.peers_with_piece,
         }
     }
 
