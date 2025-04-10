@@ -399,6 +399,69 @@ mod tests {
         assert_eq!(scheduler.peer_unchoked(addr2), vec![block]);
     }
 
+    #[test]
+    fn assign_abandoned_block_to_other_peer_if_needed() {
+        let mut scheduler = test_scheduler(&[]);
+
+        let block = Block::new(0, 0, 8);
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+
+        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_unchoked(addr1), vec![block]);
+
+        // Peer 1 choked before completing the block, assign to peer 2
+        scheduler.peer_choked(addr1);
+
+        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_unchoked(addr2), vec![block]);
+    }
+
+    #[test]
+    fn do_not_reassign_downloaded_block() {
+        let mut scheduler = test_scheduler(&[]);
+
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        let block1 = Block::new(0, 0, 8);
+        let block2 = Block::new(0, 8, 8);
+
+        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_unchoked(addr1), vec![block1]);
+
+        // Peer 1 completed downloading block #1 and choked. Assign next block to peer 2
+        assert_eq!(scheduler.block_downloaded(&addr1, &block1), vec![block2]);
+        scheduler.peer_choked(addr1);
+
+        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_unchoked(addr2), vec![block2]);
+    }
+
+    #[test]
+    fn find_all_peers_that_are_no_longer_interesting() {
+        let config = test_config("/tmp").with_block_size(Size::from_kib(16));
+        let mut scheduler = test_scheduler_with_config(config, &[]);
+
+        // Peer 1 has pieces #0 and #1
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_has_piece(addr1, 1), HaveResult::None);
+
+        // Peer 2 has only piece #0
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+
+        // Peer #1 downloads all blocks
+        for block in scheduler.peer_unchoked(addr1) {
+            scheduler.block_downloaded(&addr1, &block);
+        }
+
+        // Once piece #0 is downloaded, we're no longer interested in peer 2
+        let not_interesting = scheduler.client_has_piece(0);
+        assert_eq!(not_interesting.len(), 1);
+        assert!(not_interesting.contains(&addr2));
+    }
+
     fn test_scheduler_with_config(config: Config, has_pieces: &[usize]) -> Scheduler {
         let torrent = test_torrent();
         let download = Arc::new(Download { torrent, config });
