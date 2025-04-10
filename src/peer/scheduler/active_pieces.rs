@@ -83,7 +83,7 @@ impl ActivePiece {
         }
     }
 
-    pub fn iter_peers(&self) -> impl Iterator<Item = &SocketAddr> {
+    pub fn peers(&self) -> impl Iterator<Item = &SocketAddr> {
         self.peers_with_piece.iter()
     }
 

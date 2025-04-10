@@ -58,13 +58,19 @@ impl AvailablePieces {
         }
     }
 
-    pub fn next(&mut self, addr: &SocketAddr) -> Option<AvailablePiece> {
+    pub fn take_next(&mut self, addr: &SocketAddr) -> Option<AvailablePiece> {
         let piece = self
             .priorities
             .iter()
-            .map(|(_, piece)| self.pieces.get(piece).expect("invalid piece"))
-            .find(|piece| piece.peers_with_piece.contains(addr))
-            .map(|piece| piece.index)?;
+            .filter_map(|(_, index)| {
+                let piece = self.pieces.get(index).expect("invalid piece");
+                if piece.peers_with_piece.contains(addr) {
+                    Some(*index)
+                } else {
+                    None
+                }
+            })
+            .next()?;
 
         Some(self.remove(&piece))
     }
@@ -79,6 +85,7 @@ impl AvailablePieces {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvailablePiece {
     pub index: usize,
     pub peers_with_piece: HashSet<SocketAddr>,
@@ -99,8 +106,95 @@ impl AvailablePiece {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn foo() {
-        todo!()
+    fn no_available_pieces() {
+        let mut available_pieces = AvailablePieces::new();
+        let addr = "127.0.0.1:6881".parse().unwrap();
+
+        assert_eq!(available_pieces.take_next(&addr), None);
+    }
+
+    #[test]
+    fn no_available_pieces_for_peer() {
+        let mut available_pieces = AvailablePieces::new();
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+
+        available_pieces.insert(AvailablePiece::new(0, addr1));
+
+        assert_eq!(available_pieces.take_next(&addr2), None);
+    }
+
+    #[test]
+    fn take_next_piece_for_peer() {
+        let mut available_pieces = AvailablePieces::new();
+        let addr = "127.0.0.1:6881".parse().unwrap();
+
+        let piece = AvailablePiece::new(0, addr);
+        available_pieces.insert(piece.clone());
+
+        assert_eq!(available_pieces.take_next(&addr), Some(piece));
+        assert_eq!(available_pieces.take_next(&addr), None);
+    }
+
+    #[test]
+    fn select_rarest_pieces_first() {
+        let mut available_pieces = AvailablePieces::new();
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+
+        // Peer #1 has both pieces 0 and 1
+        let piece0 = AvailablePiece::new(0, addr1);
+        available_pieces.insert(piece0.clone());
+
+        let piece1 = AvailablePiece::new(1, addr1);
+        available_pieces.insert(piece1.clone());
+
+        // Peer #2 has piece 0
+        available_pieces.peer_has_piece(0, addr2);
+
+        // Piece 1 is rarest, select it first
+        assert_eq!(available_pieces.take_next(&addr1).unwrap().index, 1);
+        assert_eq!(available_pieces.take_next(&addr1).unwrap().index, 0);
+        assert_eq!(available_pieces.take_next(&addr1), None);
+        assert_eq!(available_pieces.take_next(&addr2), None);
+    }
+
+    #[test]
+    fn peer_disconnection_updates_priority() {
+        let mut available_pieces = AvailablePieces::new();
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        let addr3 = "127.0.0.3:6881".parse().unwrap();
+
+        // Peer #1 has pieces 0, 1 and 2
+        let piece0 = AvailablePiece::new(0, addr1);
+        available_pieces.insert(piece0.clone());
+
+        let piece1 = AvailablePiece::new(1, addr1);
+        available_pieces.insert(piece1.clone());
+
+        let piece2 = AvailablePiece::new(2, addr1);
+        available_pieces.insert(piece2.clone());
+
+        // Peer #2 has pieces 0 and 1
+        available_pieces.peer_has_piece(0, addr2);
+        available_pieces.peer_has_piece(1, addr2);
+
+        // Peer #3 has piece 1
+        available_pieces.peer_has_piece(1, addr3);
+
+        // Peer #1 disconnected
+        available_pieces.peer_disconnected(0, &addr1);
+        available_pieces.peer_disconnected(1, &addr1);
+        available_pieces.peer_disconnected(2, &addr1);
+
+        // Now piece 1 is rarest
+        assert_eq!(available_pieces.take_next(&addr2).unwrap().index, 0);
+        assert_eq!(available_pieces.take_next(&addr2).unwrap().index, 1);
+        assert_eq!(available_pieces.take_next(&addr2), None);
+        assert_eq!(available_pieces.take_next(&addr3), None);
     }
 }

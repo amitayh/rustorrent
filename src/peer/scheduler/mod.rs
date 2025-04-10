@@ -119,14 +119,21 @@ impl Scheduler {
 
     /// Returns peers that are no longer interesting (don't have any piece we don't already have)
     pub fn client_has_piece(&mut self, piece: usize) -> HashSet<SocketAddr> {
+        let mut not_interested = HashSet::new();
         // If a piece is completed it means it was active
         let piece = self.active_pieces.remove(&piece);
-        for peer in piece.iter_peers() {
-            let peer = self.peers.get_mut(peer).expect("invalid peer");
-            peer.has_pieces.remove(piece.index);
-            // Check if peer has any more pieces we want
+        for addr in piece.peers() {
+            let peer = self.peers.get_mut(addr).expect("invalid peer");
+            assert!(
+                peer.has_pieces.remove(piece.index),
+                "peer should have piece"
+            );
+            if peer.has_pieces.is_empty() {
+                // Peer doesn't have any more piece we need, send NotInterested
+                not_interested.insert(*addr);
+            }
         }
-        HashSet::new()
+        not_interested
     }
 
     pub fn peer_disconnected(&mut self, addr: &SocketAddr) {
@@ -172,7 +179,7 @@ impl Scheduler {
 
         // Assign remaining blocks from available pieces the peer has
         while blocks_to_request > 0 {
-            if let Some(piece) = self.available_pieces.next(addr) {
+            if let Some(piece) = self.available_pieces.take_next(addr) {
                 let piece_blocks = self.download.blocks(piece.index);
                 let mut piece = ActivePiece::new(piece, piece_blocks);
                 blocks_to_request -= piece.try_assign_n(blocks_to_request, &mut blocks);
