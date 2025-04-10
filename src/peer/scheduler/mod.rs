@@ -6,6 +6,7 @@ use std::{
 };
 
 use bit_set::BitSet;
+use piece_state::PieceState;
 
 use crate::{message::Block, peer::Download};
 use active_pieces::*;
@@ -13,12 +14,7 @@ use available_pieces::*;
 
 mod active_pieces;
 mod available_pieces;
-
-enum PieceState<'a> {
-    Orphan,
-    Available(&'a mut AvailablePiece),
-    Active(&'a mut ActivePiece),
-}
+mod piece_state;
 
 /// The scheduler only keeps track of pieces the client still doesn't have
 pub struct Scheduler {
@@ -76,20 +72,6 @@ impl Scheduler {
             peer.assigned_blocks.remove(block),
             "peer should have the block assigned"
         );
-
-        let piece = self.active_pieces.get_mut(block.piece);
-
-        if piece.block_downloaded() {
-            self.active_pieces.remove(&block.piece);
-            //for addr in piece.peers_with_piece {
-            //    let peer = self.peers.get_mut(&addr).expect("invalid peer");
-            //    peer.has_pieces.remove(piece.index);
-            //    if peer.has_pieces.is_empty() {
-            //        // Remove peer
-            //    }
-            //}
-        }
-
         self.try_assign(addr)
     }
 
@@ -111,9 +93,9 @@ impl Scheduler {
         if self.orphan_pieces.remove(piece) {
             self.available_pieces
                 .insert(AvailablePiece::new(piece, addr));
-        } else if self.available_pieces.contains(&piece) {
-            self.available_pieces.peer_has_piece(&piece, addr);
-        } else if self.active_pieces.contains(&piece) {
+        } else if self.available_pieces.contains(piece) {
+            self.available_pieces.peer_has_piece(piece, addr);
+        } else if self.active_pieces.contains(piece) {
             self.active_pieces.peer_has_piece(piece, addr);
         } else {
             // Ignore if client already has piece
@@ -137,8 +119,11 @@ impl Scheduler {
 
     /// Returns peers that are no longer interesting (don't have any piece we don't already have)
     pub fn client_has_piece(&mut self, piece: usize) -> HashSet<SocketAddr> {
+        // If a piece is completed it means it was active
         let piece = self.active_pieces.remove(&piece);
         for peer in piece.iter_peers() {
+            let peer = self.peers.get_mut(peer).expect("invalid peer");
+            peer.has_pieces.remove(piece.index);
             // Check if peer has any more pieces we want
         }
         HashSet::new()
@@ -155,13 +140,12 @@ impl Scheduler {
 
         // Remove peer association form its pieces
         for piece in &peer.has_pieces {
-            if self.available_pieces.contains(&piece) {
-                if self.available_pieces.peer_disconnected(&piece, addr) {
+            if self.available_pieces.contains(piece) {
+                if self.available_pieces.peer_disconnected(piece, addr) == PieceState::Orphan {
                     self.orphan_pieces.insert(piece);
                 }
-            } else if self.active_pieces.contains(&piece) {
-                let active_piece = self.active_pieces.get_mut(piece);
-                if active_piece.peer_disconnected(addr) {
+            } else if self.active_pieces.contains(piece) {
+                if self.active_pieces.peer_disconnected(piece, addr) == PieceState::Orphan {
                     self.orphan_pieces.insert(piece);
                 }
             } else {

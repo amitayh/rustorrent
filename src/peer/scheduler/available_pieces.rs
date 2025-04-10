@@ -3,6 +3,8 @@ use std::{
     net::SocketAddr,
 };
 
+use crate::peer::scheduler::piece_state::PieceState;
+
 pub struct AvailablePieces {
     pieces: HashMap<usize, AvailablePiece>,
     priorities: BTreeSet<(usize, usize)>,
@@ -21,12 +23,12 @@ impl AvailablePieces {
         self.pieces.insert(piece.index, piece);
     }
 
-    pub fn contains(&self, piece: &usize) -> bool {
-        self.pieces.contains_key(piece)
+    pub fn contains(&self, piece: usize) -> bool {
+        self.pieces.contains_key(&piece)
     }
 
-    pub fn peer_has_piece(&mut self, index: &usize, addr: SocketAddr) {
-        let piece = self.pieces.get_mut(index).expect("invalid piece");
+    pub fn peer_has_piece(&mut self, index: usize, addr: SocketAddr) {
+        let piece = self.pieces.get_mut(&index).expect("invalid piece");
         assert!(
             self.priorities.remove(&piece.priority()),
             "piece priority should be present"
@@ -35,21 +37,24 @@ impl AvailablePieces {
         self.priorities.insert(piece.priority());
     }
 
-    pub fn peer_disconnected(&mut self, index: &usize, addr: &SocketAddr) -> bool {
-        let piece = self.pieces.get_mut(index).expect("invalid piece");
+    pub fn peer_disconnected(&mut self, index: usize, addr: &SocketAddr) -> PieceState {
+        let piece = self.pieces.get_mut(&index).expect("invalid piece");
         assert!(
             self.priorities.remove(&piece.priority()),
             "piece priority should be present"
         );
-        piece.peer_disconnected(addr);
+        assert!(
+            piece.peers_with_piece.remove(addr),
+            "peer should have piece"
+        );
         if piece.peers_with_piece.is_empty() {
             // No more peers have this piece, it should no longer be considered "available"
-            self.pieces.remove(index).unwrap();
-            true
+            self.pieces.remove(&index).expect("piece should be present");
+            PieceState::Orphan
         } else {
             // Update priority after peer-set change
             self.priorities.insert(piece.priority());
-            false
+            PieceState::Available
         }
     }
 
@@ -90,8 +95,12 @@ impl AvailablePiece {
     fn priority(&self) -> (usize, usize) {
         (self.peers_with_piece.len(), self.index)
     }
+}
 
-    fn peer_disconnected(&mut self, addr: &SocketAddr) {
-        assert!(self.peers_with_piece.remove(addr), "peer should have piece");
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn foo() {
+        todo!()
     }
 }

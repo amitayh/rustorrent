@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::peer::scheduler::available_pieces::AvailablePiece;
+use crate::peer::scheduler::piece_state::PieceState;
 use crate::{message::Block, peer::blocks::Blocks};
 
 pub struct ActivePieces(HashMap<usize, ActivePiece>);
@@ -25,8 +26,21 @@ impl ActivePieces {
         self.get_mut(piece).peers_with_piece.insert(addr);
     }
 
-    pub fn contains(&self, piece: &usize) -> bool {
-        self.0.contains_key(piece)
+    pub fn peer_disconnected(&mut self, index: usize, addr: &SocketAddr) -> PieceState {
+        let piece = self.get_mut(index);
+        assert!(
+            piece.peers_with_piece.remove(addr),
+            "peer should have piece"
+        );
+        if piece.peers_with_piece.is_empty() {
+            PieceState::Orphan
+        } else {
+            PieceState::Active
+        }
+    }
+
+    pub fn contains(&self, piece: usize) -> bool {
+        self.0.contains_key(&piece)
     }
 
     pub fn remove(&mut self, piece: &usize) -> ActivePiece {
@@ -54,8 +68,6 @@ impl ActivePieces {
 #[derive(Debug)]
 pub struct ActivePiece {
     pub index: usize,
-    total_blocks: usize,
-    downloaded_blocks: usize,
     unassigned_blocks: Blocks,
     released_blocks: Vec<Block>,
     peers_with_piece: HashSet<SocketAddr>,
@@ -65,8 +77,6 @@ impl ActivePiece {
     pub fn new(piece: AvailablePiece, blocks: Blocks) -> Self {
         Self {
             index: piece.index,
-            total_blocks: blocks.len(),
-            downloaded_blocks: 0,
             unassigned_blocks: blocks,
             released_blocks: Vec::new(),
             peers_with_piece: piece.peers_with_piece,
@@ -77,19 +87,8 @@ impl ActivePiece {
         self.peers_with_piece.iter()
     }
 
-    /// Mark block as downloaded. Returns `true` if piece is completed
-    pub fn block_downloaded(&mut self) -> bool {
-        self.downloaded_blocks += 1;
-        self.downloaded_blocks == self.total_blocks
-    }
-
-    /// Returns `true` is there are no more connected peers with this piece
-    pub fn peer_disconnected(&mut self, addr: &SocketAddr) -> bool {
-        self.peers_with_piece.remove(addr);
-        self.peers_with_piece.is_empty()
-    }
-
     pub fn unassign(&mut self, block: Block) {
+        assert_eq!(block.piece, self.index, "piece mismatch");
         self.released_blocks.push(block);
     }
 
