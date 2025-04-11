@@ -9,6 +9,7 @@ use crate::peer::stats::PeerStats;
 pub enum Event {
     KeepAliveTick,
     ChokeTick,
+    StatsTick,
     SweepTick(Instant),
     Message(SocketAddr, Message),
     Stats(SocketAddr, PeerStats),

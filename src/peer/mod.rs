@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bit_set::BitSet;
-use log::{info, warn};
+use log::{info, trace, warn};
 use tokio::fs::OpenOptions;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -91,6 +91,7 @@ impl Peer {
         let mut keep_alive = interval_with_delay(config.keep_alive_interval);
         let mut choke = interval_with_delay(config.choking_interval);
         let mut sweep = interval_with_delay(config.sweep_interval);
+        let mut stats = interval_with_delay(config.update_stats_interval);
 
         let tracker = Tracker::spawn(Arc::clone(&self.download), self.tx.clone());
 
@@ -100,6 +101,7 @@ impl Peer {
                 _ = tokio::signal::ctrl_c() => Event::Shutdown,
                 _ = keep_alive.tick() => Event::KeepAliveTick,
                 _ = choke.tick() => Event::ChokeTick,
+                _ = stats.tick() => Event::StatsTick,
                 now = sweep.tick() => Event::SweepTick(now),
                 Some(event) = self.rx.recv() => event,
                 Ok((socket, addr)) = self.listener.accept() => {
@@ -108,6 +110,7 @@ impl Peer {
             };
 
             for action in self.event_handler.handle(event) {
+                trace!("action to perform: {:?}", &action);
                 match action {
                     Action::EstablishConnection(addr, socket)
                         if !self.peers.contains_key(&addr) =>

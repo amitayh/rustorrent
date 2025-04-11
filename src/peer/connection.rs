@@ -119,16 +119,13 @@ async fn run(
     // always have size of `config.block_size` + 9
     let max_size = (config.block_size.bytes() as usize) + 9;
     let mut messages = Framed::new(socket, MessageCodec::new(max_size));
-    let mut update_stats = tokio::time::interval(Duration::from_secs(1));
+    let mut update_stats = tokio::time::interval(config.update_stats_interval);
     let mut stats = PeerStats::default();
     let mut running = true;
 
     while running {
         let start = Instant::now();
         tokio::select! {
-            _ = update_stats.tick() => {
-                events_tx.send(Event::Stats(addr, stats.clone())).await?;
-            },
             Some(message) = rx.recv() => {
                 debug!("[{}] > sending {:?}", &addr, &message);
                 let message_size = Size::from_bytes(message.transport_bytes());
@@ -152,6 +149,9 @@ async fn run(
                         running = false;
                     }
                 }
+            },
+            _ = update_stats.tick() => {
+                events_tx.send(Event::Stats(addr, stats.clone())).await?;
             },
         }
     }
