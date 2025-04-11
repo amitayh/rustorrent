@@ -29,15 +29,15 @@ pub struct EventHandler {
 
 impl EventHandler {
     pub fn new(download: Arc<Download>, has_pieces: BitSet) -> Self {
+        let config = &download.config;
         let stats = GlobalStats::new(download.torrent.info.pieces.len(), has_pieces.len());
+        let choker = Choker::new(config.optimistic_choking_cycle);
         let scheduler = Scheduler::new(Arc::clone(&download), &has_pieces);
+        let sweeper = Sweeper::new(config.idle_peer_timeout, config.block_timeout);
         Self {
-            choker: Choker::new(download.config.optimistic_choking_cycle),
+            choker,
             scheduler,
-            sweeper: Sweeper::new(
-                download.config.idle_peer_timeout,
-                download.config.block_timeout,
-            ),
+            sweeper,
             stats,
             has_pieces,
             download,
@@ -139,6 +139,25 @@ impl EventHandler {
         Action::RemovePeer(addr)
     }
 
+    fn have(&mut self, addr: SocketAddr, piece: usize, now: Instant) -> Vec<Action> {
+        match self.scheduler.peer_has_piece(addr, piece) {
+            HaveResult::None => Vec::new(),
+            HaveResult::Interested => vec![Action::Send(addr, Message::Interested)],
+            HaveResult::InterestedAndRequest(blocks) => {
+                let mut actions = Vec::with_capacity(blocks.len() + 1);
+                actions.push(Action::Send(addr, Message::Interested));
+                for block in blocks {
+                    actions.push(self.request(addr, block, now));
+                }
+                actions
+            }
+            HaveResult::Request(blocks) => blocks
+                .into_iter()
+                .map(|block| self.request(addr, block, now))
+                .collect(),
+        }
+    }
+
     fn handle_message(&mut self, addr: SocketAddr, message: Message, now: Instant) -> Vec<Action> {
         match message {
             Message::KeepAlive => Vec::new(),
@@ -165,26 +184,11 @@ impl EventHandler {
                 Vec::new()
             }
 
-            Message::Have(piece) => match self.scheduler.peer_has_piece(addr, piece) {
-                HaveResult::None => Vec::new(),
-                HaveResult::Interested => vec![Action::Send(addr, Message::Interested)],
-                HaveResult::InterestedAndRequest(blocks) => {
-                    let mut actions = Vec::with_capacity(blocks.len() + 1);
-                    actions.push(Action::Send(addr, Message::Interested));
-                    for block in blocks {
-                        actions.push(self.request(addr, block, now));
-                    }
-                    actions
-                }
-                HaveResult::Request(blocks) => blocks
-                    .into_iter()
-                    .map(|block| self.request(addr, block, now))
-                    .collect(),
-            },
+            Message::Have(piece) => self.have(addr, piece, now),
 
             Message::Bitfield(pieces) => pieces
                 .iter()
-                .flat_map(|piece| self.handle_message(addr, Message::Have(piece), now))
+                .flat_map(|piece| self.have(addr, piece, now))
                 .collect(),
 
             Message::Request(block) => {
