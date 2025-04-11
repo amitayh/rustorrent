@@ -1,4 +1,4 @@
-use std::cmp::{Ordering, Reverse};
+use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::SocketAddr;
 
@@ -85,14 +85,12 @@ impl Choker {
                 .transfer_rates
                 .get(peer)
                 .unwrap_or(&TransferRate::EMPTY);
-            top_peers.push(Reverse(PeerByTransferRate(*peer, *transfer_rate)));
+            top_peers.push((Reverse(*transfer_rate), *peer));
             if top_peers.len() > TOP_PEERS {
                 top_peers.pop();
             }
         }
-        top_peers
-            .into_iter()
-            .map(|Reverse(PeerByTransferRate(peer, _))| peer)
+        top_peers.into_iter().map(|(_, peer)| peer)
     }
 
     fn random_interested_peer(&self) -> Option<SocketAddr> {
@@ -105,28 +103,6 @@ impl Choker {
 pub struct ChokeDecision {
     pub peers_to_choke: HashSet<SocketAddr>,
     pub peers_to_unchoke: HashSet<SocketAddr>,
-}
-
-struct PeerByTransferRate(SocketAddr, TransferRate);
-
-impl Eq for PeerByTransferRate {}
-
-impl PartialEq for PeerByTransferRate {
-    fn eq(&self, other: &Self) -> bool {
-        self.1.eq(&other.1)
-    }
-}
-
-impl Ord for PeerByTransferRate {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.1.cmp(&other.1)
-    }
-}
-
-impl PartialOrd for PeerByTransferRate {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 #[cfg(test)]

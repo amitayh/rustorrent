@@ -29,7 +29,6 @@ pub struct EventHandler {
 
 impl EventHandler {
     pub fn new(download: Arc<Download>, has_pieces: BitSet) -> Self {
-        // TODO: is this needed?
         let stats = GlobalStats::new(download.torrent.info.pieces.len(), has_pieces.len());
         let scheduler = Scheduler::new(Arc::clone(&download), &has_pieces);
         Self {
@@ -69,10 +68,7 @@ impl EventHandler {
                 let mut actions = Vec::with_capacity(result.peers.len());
                 for addr in result.peers {
                     warn!("peer {} has been idle for too long", &addr);
-                    self.choker.peer_disconnected(&addr);
-                    self.scheduler.peer_disconnected(&addr);
-                    self.stats.connected_peers -= 1;
-                    actions.push(Action::RemovePeer(addr));
+                    actions.extend(self.handle(Event::Disconnect(addr)));
                 }
                 for (addr, block) in result.blocks {
                     warn!("block requet timed out: {} - {:?}", &addr, &block);
