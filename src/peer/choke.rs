@@ -8,11 +8,28 @@ use crate::peer::transfer_rate::TransferRate;
 
 const TOP_PEERS: usize = 3;
 
+/// Manages peer choking/unchoking decisions using a simple tit-for-tat strategy.
+///
+/// The choker maintains sets of interested and unchoked peers, along with their transfer rates.
+/// Every choking interval, it:
+/// - Unchokes the top N peers by transfer rate (regular unchoke slots)
+/// - Periodically unchokes a random peer (optimistic unchoking)
+///
+/// This helps find better peers while rewarding those that provide good transfer rates.
 pub struct Choker {
+    /// Set of peers that are interested in downloading from us
     interested_peers: HashSet<SocketAddr>,
+
+    /// Set of peers that we are currently not choking (allowing them to download)
     unchoked_peers: HashSet<SocketAddr>,
+
+    /// Map of peer addresses to their transfer rates
     transfer_rates: HashMap<SocketAddr, TransferRate>,
+
+    /// Number of ticks between optimistic unchoking decisions
     optimistic_choking_cycle: usize,
+
+    /// Current tick count used for optimistic unchoking timing
     tick: usize,
 }
 

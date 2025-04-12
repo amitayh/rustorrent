@@ -7,8 +7,18 @@ use crate::peer::scheduler::piece_state::PieceState;
 
 use super::active_pieces::ActivePiece;
 
+/// Tracks pieces that are available from peers but not yet selected for download.
+///
+/// This struct maintains two key pieces of information:
+/// - A mapping of piece indices to their availability state (`AvailablePiece`)
+/// - A priority queue of pieces ordered by rarity (number of peers that have the piece)
+///
+/// The priority queue is used to implement the rarest-first piece selection strategy,
+/// where pieces that are available from fewer peers are prioritized for download.
 pub struct AvailablePieces {
+    /// Maps piece indices to their availability state
     pieces: HashMap<usize, AvailablePiece>,
+    /// Priority queue of (peer_count, piece_index) tuples ordered by rarity
     priorities: BTreeSet<(usize, usize)>,
 }
 
@@ -205,5 +215,38 @@ mod tests {
         assert_eq!(available_pieces.take_next(&addr2).unwrap().index, 1);
         assert_eq!(available_pieces.take_next(&addr2), None);
         assert_eq!(available_pieces.take_next(&addr3), None);
+    }
+
+    #[test]
+    fn peer_without_pieces_returns_none() {
+        let mut available_pieces = AvailablePieces::new();
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+
+        let piece = AvailablePiece::new(0, addr1);
+        available_pieces.insert(piece);
+
+        assert_eq!(available_pieces.take_next(&addr2), None);
+    }
+
+    #[test]
+    fn last_peer_disconnection_makes_piece_orphan() {
+        let mut available_pieces = AvailablePieces::new();
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+
+        let piece = AvailablePiece::new(0, addr1);
+        available_pieces.insert(piece);
+        available_pieces.peer_has_piece(0, addr2);
+
+        assert_eq!(
+            available_pieces.peer_disconnected(0, &addr1),
+            PieceState::Available
+        );
+        assert_eq!(
+            available_pieces.peer_disconnected(0, &addr2),
+            PieceState::Orphan
+        );
+        assert!(!available_pieces.contains(0));
     }
 }

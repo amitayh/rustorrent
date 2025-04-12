@@ -15,8 +15,20 @@ mod active_pieces;
 mod available_pieces;
 mod piece_state;
 
-/// The scheduler only keeps track of pieces the client still doesn't have
+/// Manages piece selection and block assignment for downloading pieces from peers.
+///
+/// The scheduler is responsible for:
+/// - Tracking which pieces are available from which peers
+/// - Selecting pieces to download based on availability and rarity
+/// - Assigning blocks to peers for downloading
+/// - Handling peer choke/unchoke events and connection state
+/// - Maintaining the state of active piece downloads
+///
+/// It uses a rarest-first piece selection strategy to prioritize downloading pieces
+/// that are less available in the swarm. This helps ensure rare pieces get downloaded
+/// and improves overall piece availability.
 pub struct Scheduler {
+    /// Download metadata and configuration
     download: Arc<Download>,
 
     /// Maintains state for connected peers
@@ -467,6 +479,49 @@ mod tests {
         let download = Arc::new(Download { torrent, config });
         let has_pieces = BitSet::from_iter(has_pieces.iter().copied());
         Scheduler::new(download, &has_pieces)
+    }
+
+    #[test]
+    fn peer_disconnection_releases_blocks() {
+        let mut scheduler = test_scheduler(&[]);
+        let addr = "127.0.0.1:6881".parse().unwrap();
+
+        // Peer gets a block assigned
+        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::Interested);
+        let blocks = scheduler.peer_unchoked(addr);
+        assert_eq!(blocks.len(), 1);
+
+        // When peer disconnects, block should be available again
+        scheduler.peer_disconnected(&addr);
+
+        // New peer should get the same block
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(scheduler.peer_unchoked(addr2), blocks);
+    }
+
+    #[test]
+    fn multiple_peers_get_different_blocks() {
+        let config = test_config("/tmp")
+            .with_block_size(Size::from_bytes(8))
+            .with_max_concurrent_requests_per_peer(2);
+        let mut scheduler = test_scheduler_with_config(config, &[]);
+
+        let addr1 = "127.0.0.1:6881".parse().unwrap();
+        let addr2 = "127.0.0.2:6881".parse().unwrap();
+
+        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        let blocks1 = scheduler.peer_unchoked(addr1);
+        assert_eq!(blocks1.len(), 2);
+
+        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        let blocks2 = scheduler.peer_unchoked(addr2);
+        assert_eq!(blocks2.len(), 2);
+
+        // Verify blocks are different
+        for b1 in &blocks1 {
+            assert!(!blocks2.contains(b1));
+        }
     }
 
     fn test_scheduler(has_pieces: &[usize]) -> Scheduler {

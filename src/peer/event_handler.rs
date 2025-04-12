@@ -18,12 +18,31 @@ use crate::peer::sweeper::Sweeper;
 use super::Download;
 use super::scheduler::HaveResult;
 
+/// Handles events from peers and maintains the state of the download.
+///
+/// The `EventHandler` is responsible for:
+/// - Managing peer choking/unchoking decisions through the `Choker`
+/// - Scheduling piece downloads and tracking piece availability via the `Scheduler`
+/// - Handling timeouts for idle peers and stalled block requests with the `Sweeper`
+/// - Tracking global download statistics
+/// - Maintaining the set of pieces this peer has
 pub struct EventHandler {
+    /// Manages peer choking/unchoking decisions
     choker: Choker,
+
+    /// Schedules piece downloads and tracks piece availability
     scheduler: Scheduler,
+
+    /// Handles timeouts for idle peers and stalled block requests
     sweeper: Sweeper,
+
+    /// Tracks global download statistics
     stats: GlobalStats,
+
+    /// Set of pieces that this peer has
     has_pieces: BitSet,
+
+    /// Download metadata and configuration
     download: Arc<Download>,
 }
 

@@ -7,6 +7,13 @@ use crate::peer::scheduler::available_pieces::AvailablePiece;
 use crate::peer::scheduler::piece_state::PieceState;
 use crate::{message::Block, peer::blocks::Blocks};
 
+/// Tracks pieces that are currently being downloaded.
+///
+/// This struct maintains a mapping of piece indices to their active download state (`ActivePiece`).
+/// An active piece is one that has been selected for download and has blocks assigned to peers.
+///
+/// The active pieces are tracked separately from available pieces to manage the state of ongoing
+/// downloads, including block assignments, peer availability, and download progress.
 pub struct ActivePieces(HashMap<usize, ActivePiece>);
 
 impl ActivePieces {

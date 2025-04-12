@@ -40,12 +40,19 @@ use crate::peer::event_handler::EventHandler;
 use crate::tracker::Tracker;
 
 pub struct Peer {
+    /// TCP listener for accepting incoming peer connections
     listener: TcpListener,
+    /// Download metadata and configuration
     download: Arc<Download>,
+    /// Map of peer socket addresses to their connections
     peers: HashMap<SocketAddr, Connection>,
+    /// Handles peer events and maintains download state
     event_handler: EventHandler,
+    /// Handles reading and writing pieces to disk
     file_reader_writer: Arc<Mutex<FileReaderWriter>>,
+    /// Channel sender for peer events
     tx: Sender<Event>,
+    /// Channel receiver for peer events
     rx: Receiver<Event>,
 }
 
@@ -182,20 +189,23 @@ impl Peer {
         }
 
         info!("shutting down...");
-        if timeout(self.download.config.shutdown_timeout, self.shutdown())
-            .await
-            .is_err()
+        if timeout(
+            self.download.config.shutdown_timeout,
+            self.shutdown(tracker),
+        )
+        .await
+        .is_err()
         {
             warn!("timeout for graceful shutdown expired");
         }
-        tracker.shutdown().await?;
         info!("done");
 
         Ok(())
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
+    async fn shutdown(&mut self, tracker: Tracker) -> Result<()> {
         let mut join_set = JoinSet::new();
+        join_set.spawn(async move { tracker.shutdown().await });
         for (_, peer) in self.peers.drain() {
             join_set.spawn(async move { peer.shutdown().await });
         }
@@ -211,8 +221,8 @@ fn interval_with_delay(period: Duration) -> Interval {
 
 #[cfg(test)]
 mod tests {
-
     use std::time::Duration;
+    use tokio::io::AsyncReadExt;
 
     use tokio::{task::JoinSet, time::timeout};
     use url::Url;
@@ -283,25 +293,22 @@ mod tests {
 
         let seeder_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let leecher_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let leecher2_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 
         let seeder_addr = seeder_listener.local_addr().unwrap();
-        let leecher1_addr = seeder_listener.local_addr().unwrap();
-        let leecher2_addr = seeder_listener.local_addr().unwrap();
+        let leecher_addr = leecher_listener.local_addr().unwrap();
         let mock_tracker = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/announce"))
             .respond_with(move |_: &Request| {
                 let response = Value::dictionary()
                     .with_entry("complete", Value::Integer(1))
-                    .with_entry("incomplete", Value::Integer(2))
+                    .with_entry("incomplete", Value::Integer(1))
                     .with_entry("interval", Value::Integer(600))
                     .with_entry(
                         "peers",
                         Value::list()
                             .with_value(peer_entry(&seeder_addr))
-                            .with_value(peer_entry(&leecher1_addr))
-                            .with_value(peer_entry(&leecher2_addr)),
+                            .with_value(peer_entry(&leecher_addr)),
                     );
 
                 let mut responses_bytes = Vec::new();
@@ -328,18 +335,8 @@ mod tests {
         let mut leecher = Peer::new(
             leecher_listener,
             Arc::new(Download {
-                torrent: test_torrent_with_announce_url(announce_url.clone()),
-                config: test_config("/tmp/foo"),
-            }),
-            false,
-        )
-        .await;
-
-        let mut leecher2 = Peer::new(
-            leecher2_listener,
-            Arc::new(Download {
                 torrent: test_torrent_with_announce_url(announce_url),
-                config: test_config("/tmp/bar"),
+                config: test_config("/tmp/foo"),
             }),
             false,
         )
@@ -348,13 +345,31 @@ mod tests {
         let mut set = JoinSet::new();
         set.spawn(async move { seeder.start().await });
         set.spawn(async move { leecher.start().await });
-        set.spawn(async move { leecher2.start().await });
 
-        let result = timeout(Duration::from_secs(120), set.join_all()).await;
+        let result = timeout(Duration::from_secs(5), set.join_all()).await;
 
-        dbg!(&result);
+        // Verify the leecher downloaded the file by comparing MD5 checksums
+        let downloaded_md5 = compute_md5("/tmp/foo").await;
+        let source_md5 = compute_md5("assets/alice_in_wonderland.txt").await;
 
-        // assert leecher has file
-        assert!(result.is_ok());
+        assert_eq!(downloaded_md5, source_md5);
+    }
+
+    async fn compute_md5(path: &str) -> md5::Digest {
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .expect("Failed to open file");
+        let mut md5 = md5::Context::new();
+        let mut buf = [0u8; 4096];
+
+        loop {
+            let len = file.read(&mut buf).await.expect("Failed to read file");
+            if len == 0 {
+                break;
+            }
+            md5.consume(&buf[..len]);
+        }
+
+        md5.compute()
     }
 }
