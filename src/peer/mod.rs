@@ -6,8 +6,8 @@ mod download;
 mod event;
 mod event_handler;
 mod fs;
+mod joiner;
 mod peer_id;
-mod piece;
 mod scheduler;
 mod stats;
 mod sweeper;
@@ -17,6 +17,7 @@ pub use config::*;
 pub use download::*;
 pub use event::Event;
 use fs::FileReaderWriter;
+pub use joiner::{Joiner, Status};
 pub use peer_id::*;
 use tokio::sync::Mutex;
 
