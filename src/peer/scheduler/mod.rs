@@ -99,7 +99,7 @@ impl Scheduler {
         Vec::new()
     }
 
-    pub fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) -> HaveResult {
+    pub fn peer_has_piece(&mut self, addr: SocketAddr, piece: usize) -> PeerPieceResponse {
         if self.orphan_pieces.remove(piece) {
             self.available_pieces
                 .insert(AvailablePiece::new(piece, addr));
@@ -109,7 +109,7 @@ impl Scheduler {
             self.active_pieces.peer_has_piece(piece, addr);
         } else {
             // Ignore if client already has piece
-            return HaveResult::None;
+            return PeerPieceResponse::NoAction;
         }
 
         let peer = self.peers.entry(addr).or_default();
@@ -118,10 +118,10 @@ impl Scheduler {
         peer.has_pieces.insert(piece);
 
         match (peer.choking, interested) {
-            (true, false) => HaveResult::None,
-            (true, true) => HaveResult::Interested,
-            (false, false) => HaveResult::Request(self.try_assign(&addr)),
-            (false, true) => HaveResult::InterestedAndRequest(self.try_assign(&addr)),
+            (true, false) => PeerPieceResponse::NoAction,
+            (true, true) => PeerPieceResponse::ExpressInterest,
+            (false, false) => PeerPieceResponse::RequestBlocks(self.try_assign(&addr)),
+            (false, true) => PeerPieceResponse::ExpressInterestAndRequest(self.try_assign(&addr)),
         }
     }
 
@@ -214,13 +214,16 @@ impl Scheduler {
     }
 }
 
-// TODO: rename
 #[derive(Debug, PartialEq, Eq)]
-pub enum HaveResult {
-    None,
-    Interested,
-    InterestedAndRequest(Vec<Block>),
-    Request(Vec<Block>),
+pub enum PeerPieceResponse {
+    /// No action needed (either we already have the piece or peer is choking)
+    NoAction,
+    /// Need to express interest in the peer's pieces
+    ExpressInterest,
+    /// Need to express interest and request blocks from the peer
+    ExpressInterestAndRequest(Vec<Block>),
+    /// Only need to request blocks from the peer (already interested)
+    RequestBlocks(Vec<Block>),
 }
 
 #[derive(Debug)]
@@ -267,7 +270,10 @@ mod tests {
         let mut scheduler = test_scheduler(&[0]);
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::None);
+        assert_eq!(
+            scheduler.peer_has_piece(addr, 0),
+            PeerPieceResponse::NoAction
+        );
         assert!(scheduler.peer_unchoked(addr).is_empty());
     }
 
@@ -276,7 +282,10 @@ mod tests {
         let mut scheduler = test_scheduler(&[]);
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         assert_eq!(scheduler.peer_unchoked(addr), vec![Block::new(0, 0, 8)]);
     }
 
@@ -288,7 +297,7 @@ mod tests {
         assert!(scheduler.peer_unchoked(addr).is_empty());
         assert_eq!(
             scheduler.peer_has_piece(addr, 0),
-            HaveResult::InterestedAndRequest(vec![Block::new(0, 0, 8)])
+            PeerPieceResponse::ExpressInterestAndRequest(vec![Block::new(0, 0, 8)])
         );
     }
 
@@ -303,14 +312,14 @@ mod tests {
         assert!(scheduler.peer_unchoked(addr).is_empty());
         assert_eq!(
             scheduler.peer_has_piece(addr, 0),
-            HaveResult::InterestedAndRequest(vec![
+            PeerPieceResponse::ExpressInterestAndRequest(vec![
                 Block::new(0, 0, 16384),
                 Block::new(0, 16384, 16384)
             ])
         );
         assert_eq!(
             scheduler.peer_has_piece(addr, 1),
-            HaveResult::Request(vec![Block::new(1, 0, 16384)])
+            PeerPieceResponse::RequestBlocks(vec![Block::new(1, 0, 16384)])
         );
     }
 
@@ -319,10 +328,16 @@ mod tests {
         let mut scheduler = test_scheduler(&[]);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr1, 0),
+            PeerPieceResponse::ExpressInterest
+        );
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 0),
+            PeerPieceResponse::ExpressInterest
+        );
 
         // Both peers have piece #0. Distribute its blocks among them.
         assert_eq!(scheduler.peer_unchoked(addr1), vec![Block::new(0, 0, 8)]);
@@ -334,11 +349,20 @@ mod tests {
         let mut scheduler = test_scheduler(&[]);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr1, 0),
+            PeerPieceResponse::ExpressInterest
+        );
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
-        assert_eq!(scheduler.peer_has_piece(addr2, 1), HaveResult::None);
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 0),
+            PeerPieceResponse::ExpressInterest
+        );
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 1),
+            PeerPieceResponse::NoAction
+        );
 
         // Peer 2 has both piece #0 and #1. Since piece #1 is rarer, select it first.
         assert_eq!(scheduler.peer_unchoked(addr2), vec![Block::new(1, 0, 8)]);
@@ -352,11 +376,20 @@ mod tests {
         let mut scheduler = test_scheduler(&[]);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr1, 0),
+            PeerPieceResponse::ExpressInterest
+        );
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
-        assert_eq!(scheduler.peer_has_piece(addr2, 1), HaveResult::None);
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 0),
+            PeerPieceResponse::ExpressInterest
+        );
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 1),
+            PeerPieceResponse::NoAction
+        );
 
         // Peer 1 only has piece #0, select it.
         assert_eq!(scheduler.peer_unchoked(addr1), vec![Block::new(0, 0, 8)]);
@@ -374,7 +407,10 @@ mod tests {
         let block1 = Block::new(0, 0, 8);
         let block2 = Block::new(0, 8, 8);
 
-        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         assert_eq!(scheduler.peer_unchoked(addr), vec![block1]);
 
         // Continue with next block once previous one completes
@@ -387,7 +423,10 @@ mod tests {
         let addr = "127.0.0.1:6881".parse().unwrap();
         let block = Block::new(0, 0, 8);
 
-        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         assert_eq!(scheduler.peer_unchoked(addr), vec![block]);
 
         // Block abandoned, mark it as unassigned and re-assigns the same abandoned block
@@ -400,14 +439,20 @@ mod tests {
         let block = Block::new(0, 0, 8);
 
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr1, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         assert_eq!(scheduler.peer_unchoked(addr1), vec![block]);
 
         scheduler.peer_disconnected(&addr1);
         assert!(scheduler.release(&addr1, block).is_empty());
 
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         assert_eq!(scheduler.peer_unchoked(addr2), vec![block]);
     }
 
@@ -419,13 +464,19 @@ mod tests {
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let addr2 = "127.0.0.2:6881".parse().unwrap();
 
-        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr1, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         assert_eq!(scheduler.peer_unchoked(addr1), vec![block]);
 
         // Peer 1 choked before completing the block, assign to peer 2
         scheduler.peer_choked(addr1);
 
-        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         assert_eq!(scheduler.peer_unchoked(addr2), vec![block]);
     }
 
@@ -438,14 +489,20 @@ mod tests {
         let block1 = Block::new(0, 0, 8);
         let block2 = Block::new(0, 8, 8);
 
-        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr1, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         assert_eq!(scheduler.peer_unchoked(addr1), vec![block1]);
 
         // Peer 1 completed downloading block #1 and choked. Assign next block to peer 2
         assert_eq!(scheduler.block_downloaded(&addr1, &block1), vec![block2]);
         scheduler.peer_choked(addr1);
 
-        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         assert_eq!(scheduler.peer_unchoked(addr2), vec![block2]);
     }
 
@@ -456,12 +513,21 @@ mod tests {
 
         // Peer 1 has pieces #0 and #1
         let addr1 = "127.0.0.1:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
-        assert_eq!(scheduler.peer_has_piece(addr1, 1), HaveResult::None);
+        assert_eq!(
+            scheduler.peer_has_piece(addr1, 0),
+            PeerPieceResponse::ExpressInterest
+        );
+        assert_eq!(
+            scheduler.peer_has_piece(addr1, 1),
+            PeerPieceResponse::NoAction
+        );
 
         // Peer 2 has only piece #0
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 0),
+            PeerPieceResponse::ExpressInterest
+        );
 
         // Peer #1 downloads all blocks
         for block in scheduler.peer_unchoked(addr1) {
@@ -487,7 +553,10 @@ mod tests {
         let addr = "127.0.0.1:6881".parse().unwrap();
 
         // Peer gets a block assigned
-        assert_eq!(scheduler.peer_has_piece(addr, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         let blocks = scheduler.peer_unchoked(addr);
         assert_eq!(blocks.len(), 1);
 
@@ -496,7 +565,10 @@ mod tests {
 
         // New peer should get the same block
         let addr2 = "127.0.0.2:6881".parse().unwrap();
-        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         assert_eq!(scheduler.peer_unchoked(addr2), blocks);
     }
 
@@ -510,11 +582,17 @@ mod tests {
         let addr1 = "127.0.0.1:6881".parse().unwrap();
         let addr2 = "127.0.0.2:6881".parse().unwrap();
 
-        assert_eq!(scheduler.peer_has_piece(addr1, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr1, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         let blocks1 = scheduler.peer_unchoked(addr1);
         assert_eq!(blocks1.len(), 2);
 
-        assert_eq!(scheduler.peer_has_piece(addr2, 0), HaveResult::Interested);
+        assert_eq!(
+            scheduler.peer_has_piece(addr2, 0),
+            PeerPieceResponse::ExpressInterest
+        );
         let blocks2 = scheduler.peer_unchoked(addr2);
         assert_eq!(blocks2.len(), 2);
 

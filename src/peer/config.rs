@@ -4,6 +4,7 @@ use size::Size;
 
 use crate::peer::PeerId;
 
+/// Configuration settings for the peer
 #[derive(Clone, Debug)]
 pub struct Config {
     pub client_id: PeerId,

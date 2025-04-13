@@ -16,7 +16,7 @@ use crate::peer::stats::GlobalStats;
 use crate::peer::sweeper::Sweeper;
 
 use super::Download;
-use super::scheduler::HaveResult;
+use super::scheduler::PeerPieceResponse;
 
 /// Handles events from peers and maintains the state of the download.
 ///
@@ -160,9 +160,9 @@ impl EventHandler {
 
     fn have(&mut self, addr: SocketAddr, piece: usize, now: Instant) -> Vec<Action> {
         match self.scheduler.peer_has_piece(addr, piece) {
-            HaveResult::None => Vec::new(),
-            HaveResult::Interested => vec![Action::Send(addr, Message::Interested)],
-            HaveResult::InterestedAndRequest(blocks) => {
+            PeerPieceResponse::NoAction => Vec::new(),
+            PeerPieceResponse::ExpressInterest => vec![Action::Send(addr, Message::Interested)],
+            PeerPieceResponse::ExpressInterestAndRequest(blocks) => {
                 let mut actions = Vec::with_capacity(blocks.len() + 1);
                 actions.push(Action::Send(addr, Message::Interested));
                 for block in blocks {
@@ -170,7 +170,7 @@ impl EventHandler {
                 }
                 actions
             }
-            HaveResult::Request(blocks) => blocks
+            PeerPieceResponse::RequestBlocks(blocks) => blocks
                 .into_iter()
                 .map(|block| self.request(addr, block, now))
                 .collect(),
