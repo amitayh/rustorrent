@@ -39,7 +39,11 @@ impl GlobalStats {
         }
     }
 
-    pub fn completed(&self) -> f64 {
+    pub fn download_complete(&self) -> bool {
+        self.completed_pieces == self.total_pieces
+    }
+
+    pub fn completed_percentage(&self) -> f64 {
         100f64 * (self.completed_pieces as f64) / (self.total_pieces as f64)
     }
 }

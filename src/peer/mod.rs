@@ -19,6 +19,7 @@ pub use event::Event;
 use fs::FileReaderWriter;
 pub use joiner::{Joiner, Status};
 pub use peer_id::*;
+use stats::GlobalStats;
 use tokio::sync::Mutex;
 
 use std::collections::HashMap;
@@ -28,191 +29,189 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bit_set::BitSet;
-use log::{info, trace, warn};
+use log::{trace, warn};
 use tokio::fs::OpenOptions;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::task::JoinHandle;
 use tokio::task::JoinSet;
-use tokio::time::{self, Instant, Interval, timeout};
+use tokio::time::{self, Instant, Interval};
+use tokio_util::sync::CancellationToken;
 
 use crate::peer::connection::Connection;
 use crate::peer::event_handler::Action;
 use crate::peer::event_handler::EventHandler;
 use crate::tracker::Tracker;
 
-pub struct Peer {
-    /// TCP listener for accepting incoming peer connections
-    listener: TcpListener,
-    /// Download metadata and configuration
-    download: Arc<Download>,
-    /// Map of peer socket addresses to their connections
-    peers: HashMap<SocketAddr, Connection>,
-    /// Handles peer events and maintains download state
-    event_handler: EventHandler,
-    /// Handles reading and writing pieces to disk
-    file_reader_writer: Arc<Mutex<FileReaderWriter>>,
-    /// Channel sender for peer events
-    tx: Sender<Event>,
-    /// Channel receiver for peer events
-    rx: Receiver<Event>,
+#[derive(Debug)]
+pub enum Notification {
+    DownloadComplete,
+    Stats(GlobalStats),
 }
 
-impl Peer {
-    pub async fn new(listener: TcpListener, download: Arc<Download>, seeding: bool) -> Self {
-        let total_pieces = download.torrent.info.pieces.len();
-        let has_pieces = if seeding {
-            BitSet::from_iter(0..total_pieces)
-        } else {
-            BitSet::with_capacity(total_pieces)
+pub struct Client {
+    pub notifications: Receiver<Notification>,
+    join_handle: JoinHandle<anyhow::Result<()>>,
+    cancellation_token: CancellationToken,
+}
+
+impl Client {
+    pub async fn spawn(listener: TcpListener, download: Arc<Download>, seeding: bool) -> Self {
+        let has_pieces = {
+            let total_pieces = download.torrent.info.total_pieces();
+            if seeding {
+                BitSet::from_iter(0..total_pieces)
+            } else {
+                BitSet::with_capacity(total_pieces)
+            }
         };
-        let event_handler = EventHandler::new(Arc::clone(&download), has_pieces);
-        let file_reader_writer = Arc::new(Mutex::new(FileReaderWriter::new(Arc::clone(&download))));
-
         if !seeding {
-            let file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&download.config.download_path)
-                .await
-                .unwrap();
-
-            file.set_len(download.torrent.info.total_size() as u64)
-                .await
-                .unwrap();
+            create_empty_file(&download).await.unwrap();
         }
 
-        let (tx, rx) = mpsc::channel(1024);
+        let (tx, rx) = mpsc::channel(download.config.channel_buffer);
+        let cancellation_token = CancellationToken::new();
+        let token_clone = cancellation_token.clone();
+        let join_handle = tokio::spawn(async move {
+            run(listener, download, has_pieces, tx, token_clone).await?;
+            Ok(())
+        });
+
         Self {
-            listener,
-            download,
-            peers: HashMap::new(),
-            event_handler,
-            file_reader_writer,
-            tx: tx.clone(),
-            rx,
+            notifications: rx,
+            join_handle,
+            cancellation_token,
         }
     }
 
-    pub async fn start(&mut self) -> Result<()> {
-        let config = &self.download.config;
-        let mut keep_alive = interval_with_delay(config.keep_alive_interval);
-        let mut choke = interval_with_delay(config.choking_interval);
-        let mut sweep = interval_with_delay(config.sweep_interval);
-        let mut stats = interval_with_delay(config.update_stats_interval);
+    pub async fn shutdown(self) -> anyhow::Result<()> {
+        self.cancellation_token.cancel();
+        self.join_handle.await??;
+        Ok(())
+    }
+}
 
-        let tracker = Tracker::spawn(Arc::clone(&self.download), self.tx.clone());
+async fn run(
+    listener: TcpListener,
+    download: Arc<Download>,
+    has_pieces: BitSet,
+    notificaitons: Sender<Notification>,
+    cancellation_token: CancellationToken,
+) -> Result<()> {
+    let config = &download.config;
+    let file_reader_writer = Arc::new(Mutex::new(FileReaderWriter::new(Arc::clone(&download))));
+    let mut event_handler = EventHandler::new(Arc::clone(&download), has_pieces);
+    let (tx, mut rx) = mpsc::channel(config.events_buffer);
+    let tracker = Tracker::spawn(Arc::clone(&download), tx.clone());
+    let mut peers = HashMap::new();
 
-        let mut running = true;
-        while running {
-            let event = tokio::select! {
-                _ = tokio::signal::ctrl_c() => Event::Shutdown,
-                _ = keep_alive.tick() => Event::KeepAliveTick,
-                _ = choke.tick() => Event::ChokeTick,
-                _ = stats.tick() => Event::StatsTick,
-                now = sweep.tick() => Event::SweepTick(now),
-                Some(event) = self.rx.recv() => event,
-                Ok((socket, addr)) = self.listener.accept() => {
-                    Event::AcceptConnection(addr, socket)
+    let mut keep_alive = interval_with_delay(config.keep_alive_interval);
+    let mut choke = interval_with_delay(config.choking_interval);
+    let mut sweep = interval_with_delay(config.sweep_interval);
+    let mut stats = interval_with_delay(config.update_stats_interval);
+
+    let mut running = true;
+    while running {
+        let event = tokio::select! {
+            _ = cancellation_token.cancelled() => Event::Shutdown,
+            _ = keep_alive.tick() => Event::KeepAliveTick,
+            _ = choke.tick() => Event::ChokeTick,
+            _ = stats.tick() => Event::StatsTick,
+            now = sweep.tick() => Event::SweepTick(now),
+            Some(event) = rx.recv() => event,
+            Ok((socket, addr)) = listener.accept() => {
+                Event::AcceptConnection(addr, socket)
+            }
+        };
+
+        for action in event_handler.handle(event) {
+            trace!("action to perform: {:?}", &action);
+            match action {
+                Action::EstablishConnection(addr, socket) if !peers.contains_key(&addr) => {
+                    let conn = Connection::spawn(addr, socket, tx.clone(), Arc::clone(&download));
+                    peers.insert(addr, conn);
                 }
-            };
 
-            for action in self.event_handler.handle(event) {
-                trace!("action to perform: {:?}", &action);
-                match action {
-                    Action::EstablishConnection(addr, socket)
-                        if !self.peers.contains_key(&addr) =>
-                    {
-                        self.peers.insert(
-                            addr,
-                            Connection::spawn(
-                                addr,
-                                socket,
-                                self.tx.clone(),
-                                Arc::clone(&self.download),
-                            ),
-                        );
-                    }
-
-                    Action::Send(addr, message) => {
-                        let peer = self.peers.get(&addr).expect("invalid peer");
-                        peer.send(message);
-                    }
-
-                    Action::Broadcast(message) => {
-                        for peer in self.peers.values() {
-                            peer.send(message.clone());
-                        }
-                    }
-
-                    Action::Upload(addr, block) => {
-                        let peer = self.peers.get(&addr).expect("invalid peer");
-                        let file_reader_writer = Arc::clone(&self.file_reader_writer);
-                        let tx = peer.tx.clone();
-                        tokio::spawn(async move {
-                            file_reader_writer.lock().await.read(block, tx).await
-                        });
-                    }
-
-                    Action::IntegrateBlock(block_data) => {
-                        let file_reader_writer = Arc::clone(&self.file_reader_writer);
-                        let tx = self.tx.clone();
-                        tokio::spawn(async move {
-                            file_reader_writer.lock().await.write(block_data, tx).await
-                        });
-                    }
-
-                    Action::RemovePeer(addr) => {
-                        let peer = self.peers.remove(&addr).expect("invalid peer");
-                        peer.abort();
-                    }
-
-                    Action::UpdateStats(stats) => {
-                        tracker.update_progress(stats.downloaded, stats.uploaded)?;
-                        println!(
-                            "Downloaded {}/{} pieces ({:.2}%) | Down: {} | Up: {} | Peers: {}",
-                            stats.completed_pieces,
-                            stats.total_pieces,
-                            stats.completed(),
-                            stats.download_rate,
-                            stats.upload_rate,
-                            stats.connected_peers
-                        );
-                    }
-
-                    Action::Shutdown => {
-                        running = false;
-                    }
-
-                    action => warn!("unhandled action: {:?}", action),
+                Action::Send(addr, message) => {
+                    let peer = peers.get(&addr).expect("invalid peer");
+                    peer.send(message);
                 }
+
+                Action::Broadcast(message) => {
+                    for peer in peers.values() {
+                        peer.send(message.clone());
+                    }
+                }
+
+                Action::Upload(addr, block) => {
+                    let peer = peers.get(&addr).expect("invalid peer");
+                    let file_reader_writer = Arc::clone(&file_reader_writer);
+                    let tx = peer.tx.clone();
+                    tokio::spawn(
+                        async move { file_reader_writer.lock().await.read(block, tx).await },
+                    );
+                }
+
+                Action::IntegrateBlock(block_data) => {
+                    let file_reader_writer = Arc::clone(&file_reader_writer);
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        file_reader_writer.lock().await.write(block_data, tx).await
+                    });
+                }
+
+                Action::RemovePeer(addr) => {
+                    let peer = peers.remove(&addr).expect("invalid peer");
+                    peer.abort();
+                }
+
+                Action::UpdateStats(stats) => {
+                    tracker.update_progress(stats.downloaded, stats.uploaded)?;
+                    let result = notificaitons.try_send(if stats.download_complete() {
+                        Notification::DownloadComplete
+                    } else {
+                        Notification::Stats(stats)
+                    });
+                    if result.is_err() {
+                        warn!("failed sending notification");
+                    }
+                }
+
+                Action::Shutdown => {
+                    running = false;
+                }
+
+                action => warn!("unhandled action: {:?}", action),
             }
         }
-
-        info!("shutting down...");
-        if timeout(
-            self.download.config.shutdown_timeout,
-            self.shutdown(tracker),
-        )
-        .await
-        .is_err()
-        {
-            warn!("timeout for graceful shutdown expired");
-        }
-        info!("done");
-
-        Ok(())
     }
 
-    async fn shutdown(&mut self, tracker: Tracker) -> Result<()> {
-        let mut join_set = JoinSet::new();
-        join_set.spawn(async move { tracker.shutdown().await });
-        for (_, peer) in self.peers.drain() {
-            join_set.spawn(async move { peer.shutdown().await });
-        }
-        join_set.join_all().await;
-        Ok(())
+    shutdown(peers, tracker).await?;
+    Ok(())
+}
+
+async fn create_empty_file(download: &Download) -> anyhow::Result<()> {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&download.config.download_path)
+        .await?;
+
+    file.set_len(download.torrent.info.total_size() as u64)
+        .await?;
+
+    Ok(())
+}
+
+async fn shutdown(mut peers: HashMap<SocketAddr, Connection>, tracker: Tracker) -> Result<()> {
+    let mut join_set = JoinSet::new();
+    join_set.spawn(async move { tracker.shutdown().await });
+    for (_, peer) in peers.drain() {
+        join_set.spawn(async move { peer.shutdown().await });
     }
+    join_set.join_all().await;
+    Ok(())
 }
 
 fn interval_with_delay(period: Duration) -> Interval {
@@ -225,7 +224,6 @@ mod tests {
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
 
-    use tokio::{task::JoinSet, time::timeout};
     use url::Url;
     use wiremock::{
         Mock, MockServer, Request, ResponseTemplate,
@@ -290,13 +288,12 @@ mod tests {
 
     #[tokio::test]
     async fn one_seeder_one_leecher() {
-        env_logger::init();
+        let _ = env_logger::try_init();
 
         let seeder_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let leecher_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 
         let seeder_addr = seeder_listener.local_addr().unwrap();
-        let leecher_addr = leecher_listener.local_addr().unwrap();
         let mock_tracker = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/announce"))
@@ -305,12 +302,7 @@ mod tests {
                     .with_entry("complete", Value::Integer(1))
                     .with_entry("incomplete", Value::Integer(1))
                     .with_entry("interval", Value::Integer(600))
-                    .with_entry(
-                        "peers",
-                        Value::list()
-                            .with_value(peer_entry(&seeder_addr))
-                            .with_value(peer_entry(&leecher_addr)),
-                    );
+                    .with_entry("peers", Value::list().with_value(peer_entry(&seeder_addr)));
 
                 let mut responses_bytes = Vec::new();
                 response.encode(&mut responses_bytes).unwrap();
@@ -322,7 +314,7 @@ mod tests {
 
         let announce_url = Url::parse(&format!("{}/announce", mock_tracker.uri())).unwrap();
 
-        let mut seeder = Peer::new(
+        let seeder_handle = Client::spawn(
             seeder_listener,
             Arc::new(Download {
                 torrent: test_torrent_with_announce_url(announce_url.clone()),
@@ -333,7 +325,7 @@ mod tests {
         )
         .await;
 
-        let mut leecher = Peer::new(
+        let mut leecher_handle = Client::spawn(
             leecher_listener,
             Arc::new(Download {
                 torrent: test_torrent_with_announce_url(announce_url),
@@ -343,13 +335,18 @@ mod tests {
         )
         .await;
 
-        let mut set = JoinSet::new();
-        set.spawn(async move { seeder.start().await });
-        set.spawn(async move { leecher.start().await });
+        loop {
+            // Wait for leecher to finish downloading
+            let notification = leecher_handle.notifications.recv().await;
+            if let Some(Notification::DownloadComplete) = notification {
+                break;
+            }
+        }
 
-        let result = timeout(Duration::from_secs(5), set.join_all()).await;
+        seeder_handle.shutdown().await.unwrap();
+        leecher_handle.shutdown().await.unwrap();
 
-        // Verify the leecher downloaded the file by comparing MD5 checksums
+        // // Verify the leecher downloaded the file by comparing MD5 checksums
         let downloaded_md5 = compute_md5("/tmp/foo").await;
         let source_md5 = compute_md5("assets/alice_in_wonderland.txt").await;
 

@@ -19,7 +19,7 @@ pub struct Config {
     pub connect_timeout: Duration,
     pub idle_peer_timeout: Duration,
     pub block_timeout: Duration,
-    pub shutdown_timeout: Duration,
+    pub events_buffer: usize,
     pub channel_buffer: usize,
     pub max_concurrent_requests_per_peer: usize,
 }
@@ -67,7 +67,7 @@ impl Config {
             connect_timeout: Duration::from_secs(5),
             idle_peer_timeout: Duration::from_secs(30),
             block_timeout: Duration::from_secs(10),
-            shutdown_timeout: Duration::from_secs(10),
+            events_buffer: 128,
             channel_buffer: 16,
             max_concurrent_requests_per_peer: 10,
         }
