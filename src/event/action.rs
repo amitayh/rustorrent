@@ -42,3 +42,27 @@ impl std::fmt::Debug for Action {
         }
     }
 }
+
+impl PartialEq for Action {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::EstablishConnection(addr1, _), Self::EstablishConnection(addr2, _)) => {
+                addr1 == addr2
+            }
+            (Self::Send(addr1, message1), Self::Send(addr2, message2)) => {
+                addr1 == addr2 && message1 == message2
+            }
+            (Self::Broadcast(message1), Self::Broadcast(message2)) => message1 == message2,
+            (Self::Upload(addr1, block1), Self::Upload(addr2, block2)) => {
+                addr1 == addr2 && block1 == block2
+            }
+            (Self::IntegrateBlock(block1), Self::IntegrateBlock(block2)) => block1 == block2,
+            (Self::RemovePeer(addr1), Self::RemovePeer(addr2)) => addr1 == addr2,
+            (Self::UpdateStats(stats1), Self::UpdateStats(stats2)) => stats1 == stats2,
+            (Self::Shutdown, Self::Shutdown) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Action {}

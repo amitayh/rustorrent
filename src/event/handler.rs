@@ -245,8 +245,6 @@ impl EventHandler {
 
 #[cfg(test)]
 mod tests {
-    use log::info;
-
     use crate::{message::BlockData, peer::tests::create_download};
 
     use super::*;
@@ -255,51 +253,58 @@ mod tests {
     fn keep_alive() {
         let mut event_handler = create_event_handler();
 
-        let actions = event_handler.handle(Event::KeepAliveTick);
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], Action::Broadcast(Message::KeepAlive)));
+        assert_eq!(
+            event_handler.handle(Event::KeepAliveTick),
+            vec![Action::Broadcast(Message::KeepAlive)]
+        );
     }
 
     #[test]
     fn sequence() {
         env_logger::init();
 
-        let mut event_handler = create_event_handler();
+        let mut handler = create_event_handler();
 
         let addr = "127.0.0.1:6881".parse().unwrap();
 
-        run(
-            &mut event_handler,
-            vec![
-                Event::Message(addr, Message::Have(0)),
-                Event::Message(addr, Message::Unchoke),
-                Event::Message(
-                    addr,
-                    Message::Piece(BlockData {
-                        piece: 0,
-                        offset: 0,
-                        data: vec![0; 16384],
-                    }),
-                ),
-                Event::Message(
-                    addr,
-                    Message::Piece(BlockData {
-                        piece: 0,
-                        offset: 16384,
-                        data: vec![1; 16384],
-                    }),
-                ),
-            ],
+        assert_eq!(
+            handler.handle(Event::Connect(addr)),
+            vec![Action::EstablishConnection(addr, None)]
         );
-    }
 
-    fn run(event_handler: &mut EventHandler, events: Vec<Event>) {
-        for event in events {
-            info!(target: "<<<", "{:?}", &event);
-            for _action in event_handler.handle(event) {
-                //info!(target: ">>>", "{:?}", &action);
-            }
-        }
+        assert_eq!(
+            handler.handle(Event::Message(addr, Message::Have(0))),
+            vec![Action::Send(addr, Message::Interested)]
+        );
+
+        assert_eq!(
+            handler.handle(Event::Message(addr, Message::Unchoke)),
+            vec![
+                Action::Send(addr, Message::Request(Block::new(0, 0, 16384))),
+                Action::Send(addr, Message::Request(Block::new(0, 16384, 16384))),
+            ]
+        );
+
+        let block_data = BlockData {
+            piece: 0,
+            offset: 0,
+            data: vec![0; 16384],
+        };
+        assert_eq!(
+            handler.handle(Event::Message(addr, Message::Piece(block_data.clone()))),
+            vec![Action::IntegrateBlock(block_data)]
+        );
+
+        #[rustfmt::skip]
+        assert_eq!(
+            handler.handle(Event::Message(addr, Message::Have(5))),
+            vec![Action::Send(addr, Message::Request(Block::new(5, 0, 10517)))]
+        );
+
+        assert_eq!(
+            handler.handle(Event::Disconnect(addr)),
+            vec![Action::RemovePeer(addr)]
+        );
     }
 
     fn create_event_handler() -> EventHandler {

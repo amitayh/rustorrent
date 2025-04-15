@@ -19,7 +19,7 @@ impl Block {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct BlockData {
     pub piece: usize,
     pub offset: usize,

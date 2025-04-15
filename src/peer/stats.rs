@@ -15,7 +15,7 @@ impl AddAssign for PeerStats {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct GlobalStats {
     pub total_pieces: usize,
     pub completed_pieces: usize,
