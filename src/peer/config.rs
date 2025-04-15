@@ -7,21 +7,47 @@ use crate::peer::PeerId;
 /// Configuration settings for the peer
 #[derive(Clone, Debug)]
 pub struct Config {
+    // Identity and Network Settings
+    /// Unique identifier for this peer in the swarm
     pub client_id: PeerId,
-    pub port: u16,
+    /// Path where downloaded files will be stored
     pub download_path: PathBuf,
-    pub sweep_interval: Duration,
-    pub keep_alive_interval: Duration,
-    pub choking_interval: Duration,
-    pub update_stats_interval: Duration,
-    pub optimistic_choking_cycle: usize,
-    pub block_size: Size,
-    pub connect_timeout: Duration,
-    pub idle_peer_timeout: Duration,
-    pub block_timeout: Duration,
-    pub events_buffer: usize,
-    pub channel_buffer: usize,
+    /// Port number to listen for incoming connections
+    pub port: u16,
+
+    // Scheduler Settings
+    /// Maximum number of concurrent block requests per peer
     pub max_concurrent_requests_per_peer: usize,
+    /// Size of data blocks for piece transfers
+    pub block_size: Size,
+
+    // Choker Settings
+    /// Interval between choking algorithm runs
+    pub choking_interval: Duration,
+    /// Number of choking cycles between optimistic unchoking attempts
+    pub optimistic_choking_cycle: usize,
+
+    // Sweeper Settings
+    /// Interval between sweeps for idle peers and abandoned blocks
+    pub sweep_interval: Duration,
+    /// Time after which an idle peer is disconnected
+    pub idle_peer_timeout: Duration,
+    /// Time after which a block request is considered abandoned
+    pub block_timeout: Duration,
+
+    // Event System Settings
+    /// Interval between keep-alive messages
+    pub keep_alive_interval: Duration,
+    /// Interval between statistics updates
+    pub update_stats_interval: Duration,
+    /// Size of the event queue buffer
+    pub events_buffer: usize,
+    /// Size of the channel buffer for peer communication
+    pub channel_buffer: usize,
+
+    // Connection Settings
+    /// Timeout for establishing new connections
+    pub connect_timeout: Duration,
 }
 
 #[allow(dead_code)]
