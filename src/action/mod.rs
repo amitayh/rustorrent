@@ -1,3 +1,5 @@
+mod runner;
+
 use std::fmt::Formatter;
 use std::net::SocketAddr;
 
@@ -6,13 +8,12 @@ use tokio::net::TcpStream;
 use crate::message::{Block, BlockData, Message};
 use crate::peer::stats::GlobalStats;
 
+pub use runner::*;
+
 pub enum Action {
     EstablishConnection(SocketAddr, Option<TcpStream>),
-    /// Send a message to a specific peer
     Send(SocketAddr, Message),
-    /// Send a message to all connected peers
     Broadcast(Message),
-    /// Upload block to peer
     Upload(SocketAddr, Block),
     IntegrateBlock(BlockData),
     RemovePeer(SocketAddr),

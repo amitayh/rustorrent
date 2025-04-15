@@ -1,9 +1,9 @@
 pub mod blocks;
 pub mod choke;
 mod config;
-mod connection;
+pub mod connection;
 mod download;
-mod fs;
+pub mod fs;
 mod joiner;
 mod peer_id;
 pub mod stats;
@@ -12,31 +12,25 @@ pub mod transfer_rate;
 
 pub use config::*;
 pub use download::*;
-use fs::FileReaderWriter;
 pub use joiner::{Joiner, Status};
 pub use peer_id::*;
 use stats::GlobalStats;
-use tokio::sync::Mutex;
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use bit_set::BitSet;
-use log::{trace, warn};
+use log::trace;
 use tokio::fs::OpenOptions;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinHandle;
-use tokio::task::JoinSet;
 use tokio::time::{self, Instant, Interval};
 use tokio_util::sync::CancellationToken;
 
-use crate::event::{Action, Event, EventHandler};
-use crate::peer::connection::Connection;
-use crate::tracker::Tracker;
+use crate::action::ActionRunner;
+use crate::event::{Event, EventHandler};
 
 #[derive(Debug)]
 pub enum Notification {
@@ -94,11 +88,9 @@ async fn run(
     cancellation_token: CancellationToken,
 ) -> Result<()> {
     let config = &download.config;
-    let file_reader_writer = Arc::new(Mutex::new(FileReaderWriter::new(Arc::clone(&download))));
-    let mut event_handler = EventHandler::new(Arc::clone(&download), has_pieces);
     let (tx, mut rx) = mpsc::channel(config.events_buffer);
-    let tracker = Tracker::spawn(Arc::clone(&download), tx.clone());
-    let mut peers = HashMap::new();
+    let mut event_handler = EventHandler::new(Arc::clone(&download), has_pieces);
+    let mut action_runner = ActionRunner::new(Arc::clone(&download), tx, notificaitons);
 
     let mut keep_alive = interval_with_delay(config.keep_alive_interval);
     let mut choke = interval_with_delay(config.choking_interval);
@@ -118,70 +110,15 @@ async fn run(
                 Event::AcceptConnection(addr, socket)
             }
         };
-
         for action in event_handler.handle(event) {
             trace!("action to perform: {:?}", &action);
-            match action {
-                Action::EstablishConnection(addr, socket) if !peers.contains_key(&addr) => {
-                    let conn = Connection::spawn(addr, socket, tx.clone(), Arc::clone(&download));
-                    peers.insert(addr, conn);
-                }
-
-                Action::Send(addr, message) => {
-                    let peer = peers.get(&addr).expect("invalid peer");
-                    peer.send(message);
-                }
-
-                Action::Broadcast(message) => {
-                    for peer in peers.values() {
-                        peer.send(message.clone());
-                    }
-                }
-
-                Action::Upload(addr, block) => {
-                    let peer = peers.get(&addr).expect("invalid peer");
-                    let file_reader_writer = Arc::clone(&file_reader_writer);
-                    let tx = peer.tx.clone();
-                    tokio::spawn(
-                        async move { file_reader_writer.lock().await.read(block, tx).await },
-                    );
-                }
-
-                Action::IntegrateBlock(block_data) => {
-                    let file_reader_writer = Arc::clone(&file_reader_writer);
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        file_reader_writer.lock().await.write(block_data, tx).await
-                    });
-                }
-
-                Action::RemovePeer(addr) => {
-                    let peer = peers.remove(&addr).expect("invalid peer");
-                    peer.abort();
-                }
-
-                Action::UpdateStats(stats) => {
-                    tracker.update_progress(stats.downloaded, stats.uploaded)?;
-                    let result = notificaitons.try_send(if stats.download_complete() {
-                        Notification::DownloadComplete
-                    } else {
-                        Notification::Stats(stats)
-                    });
-                    if result.is_err() {
-                        warn!("failed sending notification");
-                    }
-                }
-
-                Action::Shutdown => {
-                    running = false;
-                }
-
-                action => warn!("unhandled action: {:?}", action),
+            if !action_runner.run(action)? {
+                running = false;
             }
         }
     }
 
-    shutdown(peers, tracker).await?;
+    action_runner.shutdown().await?;
     Ok(())
 }
 
@@ -199,16 +136,6 @@ async fn create_empty_file(download: &Download) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn shutdown(mut peers: HashMap<SocketAddr, Connection>, tracker: Tracker) -> Result<()> {
-    let mut join_set = JoinSet::new();
-    join_set.spawn(async move { tracker.shutdown().await });
-    for (_, peer) in peers.drain() {
-        join_set.spawn(async move { peer.shutdown().await });
-    }
-    join_set.join_all().await;
-    Ok(())
-}
-
 fn interval_with_delay(period: Duration) -> Interval {
     let start = Instant::now() + period;
     time::interval_at(start, period)
@@ -216,7 +143,7 @@ fn interval_with_delay(period: Duration) -> Interval {
 
 #[cfg(test)]
 pub mod tests {
-    use std::time::Duration;
+    use std::{net::SocketAddr, time::Duration};
     use tokio::io::AsyncReadExt;
 
     use url::Url;

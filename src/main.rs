@@ -10,6 +10,7 @@ use tokio::{fs::File, net::TcpListener};
 use crate::codec::AsyncDecoder;
 use crate::torrent::Torrent;
 
+mod action;
 mod bencoding;
 mod codec;
 mod crypto;

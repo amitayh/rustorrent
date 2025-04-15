@@ -1,4 +1,3 @@
-mod action;
 mod handler;
 
 use std::net::SocketAddr;
@@ -8,7 +7,6 @@ use tokio::{net::TcpStream, time::Instant};
 use crate::message::Message;
 use crate::peer::stats::PeerStats;
 
-pub use action::*;
 pub use handler::*;
 
 /// Events that can occur in the peer system

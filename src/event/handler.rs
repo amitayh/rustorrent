@@ -6,8 +6,8 @@ use log::{trace, warn};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
+use crate::action::Action;
 use crate::event::Event;
-use crate::event::action::Action;
 use crate::message::{Block, Message};
 use crate::peer::Download;
 use crate::peer::choke::Choker;
