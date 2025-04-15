@@ -5,8 +5,8 @@ use tokio::{net::TcpStream, time::Instant};
 use crate::message::Message;
 use crate::peer::stats::PeerStats;
 
-#[derive(Debug)]
 /// Events that can occur in the peer system
+#[derive(Debug)]
 pub enum Event {
     /// Periodic tick to send keep-alive messages to peers
     KeepAliveTick,

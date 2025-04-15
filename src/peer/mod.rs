@@ -280,6 +280,29 @@ mod tests {
         }
     }
 
+    async fn mock_tracker(peers: &[SocketAddr]) -> Url {
+        let mock_tracker = MockServer::start().await;
+        let peers = Value::List(peers.iter().map(|addr| peer_entry(addr)).collect());
+        Mock::given(method("GET"))
+            .and(path("/announce"))
+            .respond_with(move |_: &Request| {
+                let response = Value::dictionary()
+                    .with_entry("complete", Value::Integer(1))
+                    .with_entry("incomplete", Value::Integer(1))
+                    .with_entry("interval", Value::Integer(600))
+                    .with_entry("peers", peers.clone());
+
+                let mut responses_bytes = Vec::new();
+                response.encode(&mut responses_bytes).unwrap();
+
+                ResponseTemplate::new(200).set_body_bytes(responses_bytes)
+            })
+            .mount(&mock_tracker)
+            .await;
+
+        Url::parse(&format!("{}/announce", mock_tracker.uri())).unwrap()
+    }
+
     fn peer_entry(addr: &SocketAddr) -> Value {
         Value::dictionary()
             .with_entry("ip", Value::string(&addr.ip().to_string()))
@@ -294,42 +317,25 @@ mod tests {
         let leecher_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 
         let seeder_addr = seeder_listener.local_addr().unwrap();
-        let mock_tracker = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/announce"))
-            .respond_with(move |_: &Request| {
-                let response = Value::dictionary()
-                    .with_entry("complete", Value::Integer(1))
-                    .with_entry("incomplete", Value::Integer(1))
-                    .with_entry("interval", Value::Integer(600))
-                    .with_entry("peers", Value::list().with_value(peer_entry(&seeder_addr)));
+        let announce_url = mock_tracker(&[seeder_addr]).await;
 
-                let mut responses_bytes = Vec::new();
-                response.encode(&mut responses_bytes).unwrap();
-
-                ResponseTemplate::new(200).set_body_bytes(responses_bytes)
-            })
-            .mount(&mock_tracker)
-            .await;
-
-        let announce_url = Url::parse(&format!("{}/announce", mock_tracker.uri())).unwrap();
-
+        let source_path = "assets/alice_in_wonderland.txt";
         let seeder_handle = Client::spawn(
             seeder_listener,
             Arc::new(Download {
                 torrent: test_torrent_with_announce_url(announce_url.clone()),
-                config: test_config("assets/alice_in_wonderland.txt")
-                    .with_unchoking_interval(Duration::from_secs(2)),
+                config: test_config(source_path).with_unchoking_interval(Duration::from_secs(2)),
             }),
             true,
         )
         .await;
 
+        let download_path = "/tmp/download.txt";
         let mut leecher_handle = Client::spawn(
             leecher_listener,
             Arc::new(Download {
                 torrent: test_torrent_with_announce_url(announce_url),
-                config: test_config("/tmp/foo"),
+                config: test_config(download_path),
             }),
             false,
         )
@@ -343,17 +349,18 @@ mod tests {
             }
         }
 
+        // Shutdown the swarm
         seeder_handle.shutdown().await.unwrap();
         leecher_handle.shutdown().await.unwrap();
 
-        // // Verify the leecher downloaded the file by comparing MD5 checksums
-        let downloaded_md5 = compute_md5("/tmp/foo").await;
-        let source_md5 = compute_md5("assets/alice_in_wonderland.txt").await;
-
-        assert_eq!(downloaded_md5, source_md5);
+        // Verify the leecher downloaded the file by comparing MD5 checksums
+        let source_md5 = md5sum(source_path).await;
+        let downloaded_md5 = md5sum(download_path).await;
+        tokio::fs::remove_file(download_path).await.unwrap();
+        assert_eq!(source_md5, downloaded_md5);
     }
 
-    async fn compute_md5(path: &str) -> md5::Digest {
+    async fn md5sum(path: &str) -> md5::Digest {
         let mut file = tokio::fs::File::open(path)
             .await
             .expect("Failed to open file");

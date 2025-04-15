@@ -40,8 +40,7 @@ impl FileReaderWriter {
 
     pub async fn write(&mut self, block_data: BlockData, tx: Sender<Event>) -> anyhow::Result<()> {
         let piece = block_data.piece;
-        let add = self.joiner.add(block_data);
-        match add {
+        match self.joiner.add(block_data) {
             Status::Incomplete => (), // Noting to do, wait for next block
             Status::Invalid => {
                 warn!("piece {} sha1 mismatch", piece);

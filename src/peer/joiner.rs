@@ -95,26 +95,32 @@ impl PieceState {
 
 #[cfg(test)]
 mod tests {
-    /*
     use super::*;
 
-    use size::Size;
+    use crate::peer::tests::{test_config, test_torrent};
 
-    fn sizes() -> Sizes {
-        Sizes::new(
-            Size::from_bytes(8),
-            Size::from_bytes(12),
-            Size::from_bytes(4),
-        )
+    fn test_download() -> Download {
+        let config = test_config("/tmp");
+        let torrent = test_torrent();
+        Download { config, torrent }
     }
 
     #[test]
     fn piece_incomplete() {
-        let mut joiner = Joiner::new(&sizes(), vec![Sha1([0; 20]), Sha1([0; 20])]);
+        let download = test_download();
+        let mut joiner = Joiner::new(&download);
 
-        assert_eq!(joiner.add(BlockData(0, 0, vec![0; 4])), Status::Incomplete);
+        assert_eq!(
+            joiner.add(BlockData {
+                piece: 0,
+                offset: 0,
+                data: vec![0; 4]
+            }),
+            Status::Incomplete
+        );
     }
 
+    /*
     #[test]
     fn piece_complete() {
         let mut joiner = Joiner::new(

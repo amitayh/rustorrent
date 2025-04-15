@@ -9,8 +9,6 @@ pub use info::*;
 
 use crate::bencoding::Value;
 
-// https://wiki.theory.org/BitTorrentSpecification#Byte_Strings
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Torrent {
     pub announce: Url,
@@ -31,6 +29,12 @@ impl TryFrom<Value> for Torrent {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::{io::Write, os::unix::ffi::OsStrExt, path::Path};
+
+    use anyhow::Result;
+    use sha1::Digest;
+    use size::KiB;
+    use tokio::io::AsyncReadExt;
 
     use crate::{
         bencoding::Value,
@@ -155,7 +159,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_torrent_info_from_file() {
-        let info = Info::load("assets/alice_in_wonderland.txt").await.unwrap();
+        let info = load("assets/alice_in_wonderland.txt").await.unwrap();
 
         assert_eq!(
             info,
@@ -177,5 +181,48 @@ mod tests {
                 },
             }
         );
+    }
+
+    pub async fn load(path: impl AsRef<Path>) -> Result<Info> {
+        let mut file = tokio::fs::File::open(&path).await?;
+        let file_size = file.metadata().await?.len();
+        // TODO: make piece length dynamic by file size
+        let piece_length = (32 * KiB) as usize;
+        let num_pieces = ((file_size as f64) / (piece_length as f64)).ceil() as usize;
+        let mut pieces: Vec<u8> = Vec::with_capacity(num_pieces * 20);
+
+        let mut file_hasher = md5::Context::new();
+        for piece in 0..num_pieces {
+            let mut offset = piece * piece_length;
+            let piece_end = (offset + piece_length).min(file_size as usize);
+            let mut piece_hasher = sha1::Sha1::new();
+            let mut buf = [0; 4096];
+            while offset < piece_end {
+                let len = file.read(&mut buf).await?;
+                piece_hasher.write_all(&buf[0..len])?;
+                file_hasher.write_all(&buf[0..len])?;
+                offset += len;
+            }
+            let sha1 = piece_hasher.finalize();
+            pieces.extend_from_slice(&sha1);
+        }
+
+        let md5::Digest(digest) = file_hasher.compute();
+        let md5sum = hex::encode(digest);
+
+        let file_name = path
+            .as_ref()
+            .file_name()
+            .map(|name| name.as_bytes().to_vec())
+            .unwrap_or_default();
+
+        let value = Value::dictionary()
+            .with_entry("piece length", Value::Integer(piece_length as i64))
+            .with_entry("pieces", Value::String(pieces))
+            .with_entry("name", Value::String(file_name))
+            .with_entry("length", Value::Integer(file_size as i64))
+            .with_entry("md5sum", Value::String(md5sum.into_bytes()));
+
+        Info::try_from(value)
     }
 }
