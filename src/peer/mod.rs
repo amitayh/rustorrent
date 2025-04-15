@@ -1,20 +1,17 @@
 pub mod blocks;
-mod choke;
+pub mod choke;
 mod config;
 mod connection;
 mod download;
-mod event;
-mod event_handler;
 mod fs;
 mod joiner;
 mod peer_id;
-mod stats;
-mod sweeper;
-mod transfer_rate;
+pub mod stats;
+pub mod sweeper;
+pub mod transfer_rate;
 
 pub use config::*;
 pub use download::*;
-pub use event::Event;
 use fs::FileReaderWriter;
 pub use joiner::{Joiner, Status};
 pub use peer_id::*;
@@ -37,9 +34,8 @@ use tokio::task::JoinSet;
 use tokio::time::{self, Instant, Interval};
 use tokio_util::sync::CancellationToken;
 
+use crate::event::{Action, Event, EventHandler};
 use crate::peer::connection::Connection;
-use crate::peer::event_handler::Action;
-use crate::peer::event_handler::EventHandler;
 use crate::tracker::Tracker;
 
 #[derive(Debug)]

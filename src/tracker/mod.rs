@@ -17,7 +17,8 @@ use url::Url;
 
 use crate::bencoding::Value;
 use crate::codec::AsyncDecoder;
-use crate::peer::{self, Download};
+use crate::event::Event;
+use crate::peer::Download;
 use crate::tracker::request::{Mode, TrackerRequest};
 use crate::tracker::response::TrackerResponse;
 
@@ -28,7 +29,7 @@ pub struct Tracker {
 }
 
 impl Tracker {
-    pub fn spawn(download: Arc<Download>, events_tx: mpsc::Sender<peer::Event>) -> Self {
+    pub fn spawn(download: Arc<Download>, events_tx: mpsc::Sender<Event>) -> Self {
         let (tx, mut rx) =
             watch::channel(DownloadProgress::new(download.torrent.info.total_size()));
         let cancellation_token = CancellationToken::new();
@@ -59,7 +60,7 @@ impl Tracker {
                 let mut response = send_request(request).await?;
                 info!("got {} peers from tracker", response.peers.len());
                 for peer in response.peers {
-                    events_tx.send(peer::Event::Connect(peer.address)).await?;
+                    events_tx.send(Event::Connect(peer.address)).await?;
                 }
 
                 event = None;
