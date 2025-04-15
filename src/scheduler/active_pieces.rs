@@ -3,9 +3,10 @@ use std::{
     net::SocketAddr,
 };
 
-use crate::peer::scheduler::available_pieces::AvailablePiece;
-use crate::peer::scheduler::piece_state::PieceState;
-use crate::{message::Block, peer::blocks::Blocks};
+use crate::message::Block;
+use crate::peer::blocks::Blocks;
+use crate::scheduler::available_pieces::AvailablePiece;
+use crate::scheduler::piece_state::PieceState;
 
 /// Tracks pieces that are currently being downloaded.
 ///

@@ -8,15 +8,13 @@ use tokio::net::TcpStream;
 use tokio::time::Instant;
 
 use crate::message::{Block, BlockData, Message};
-
+use crate::peer::Download;
 use crate::peer::choke::Choker;
 use crate::peer::event::Event;
-use crate::peer::scheduler::Scheduler;
 use crate::peer::stats::GlobalStats;
 use crate::peer::sweeper::Sweeper;
-
-use super::Download;
-use super::scheduler::PeerPieceResponse;
+use crate::scheduler::PeerPieceResponse;
+use crate::scheduler::Scheduler;
 
 /// Handles events from peers and maintains the state of the download.
 ///

@@ -15,6 +15,7 @@ mod codec;
 mod crypto;
 mod message;
 mod peer;
+mod scheduler;
 mod torrent;
 mod tracker;
 

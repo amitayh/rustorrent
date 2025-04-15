@@ -3,9 +3,8 @@ use std::{
     net::SocketAddr,
 };
 
-use crate::peer::scheduler::piece_state::PieceState;
-
-use super::active_pieces::ActivePiece;
+use crate::scheduler::active_pieces::ActivePiece;
+use crate::scheduler::piece_state::PieceState;
 
 /// Tracks pieces that are available from peers but not yet selected for download.
 ///

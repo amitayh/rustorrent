@@ -1,4 +1,4 @@
-mod blocks;
+pub mod blocks;
 mod choke;
 mod config;
 mod connection;
@@ -8,7 +8,6 @@ mod event_handler;
 mod fs;
 mod joiner;
 mod peer_id;
-mod scheduler;
 mod stats;
 mod sweeper;
 mod transfer_rate;
