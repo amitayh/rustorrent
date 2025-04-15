@@ -11,9 +11,9 @@ const TOP_PEERS: usize = 3;
 /// Manages peer choking/unchoking decisions using a simple tit-for-tat strategy.
 ///
 /// The choker maintains sets of interested and unchoked peers, along with their transfer rates.
-/// Every choking interval, it:
-/// - Unchokes the top N peers by transfer rate (regular unchoke slots)
-/// - Periodically unchokes a random peer (optimistic unchoking)
+/// Every choking interval (usually 10 seconds), it:
+/// - Unchokes the top 3 peers by transfer rate (regular unchoke slots)
+/// - Periodically (usually every 30 seconds) unchokes an additional random peer (optimistic unchoking)
 ///
 /// This helps find better peers while rewarding those that provide good transfer rates.
 pub struct Choker {
@@ -64,8 +64,11 @@ impl Choker {
     }
 
     pub fn run(&mut self) -> ChokeDecision {
-        // TODO: test take
-        let mut peers_to_choke = std::mem::take(&mut self.unchoked_peers);
+        // Start by choking all unchoked peers
+        let mut peers_to_choke = std::mem::replace(
+            &mut self.unchoked_peers,
+            HashSet::with_capacity(TOP_PEERS + 1),
+        );
         let mut peers_to_unchoke = HashSet::with_capacity(TOP_PEERS + 1);
         for peer in self.top_peers_by_transfer_rate() {
             self.unchoked_peers.insert(peer);

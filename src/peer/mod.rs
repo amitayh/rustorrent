@@ -219,7 +219,7 @@ fn interval_with_delay(period: Duration) -> Interval {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
 
