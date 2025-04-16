@@ -13,13 +13,15 @@ use crate::event::Event;
 use crate::peer::Download;
 use crate::peer::Notification;
 use crate::peer::connection::Connection;
-use crate::storage::FileReaderWriter;
+use crate::storage::FileReader;
+use crate::storage::FileWriter;
 use crate::tracker::Tracker;
 
 pub struct ActionRunner {
     download: Arc<Download>,
     peers: HashMap<SocketAddr, Connection>,
-    file_reader_writer: Arc<Mutex<FileReaderWriter>>,
+    reader: Arc<FileReader>,
+    writer: Arc<Mutex<FileWriter>>,
     tracker: Tracker,
     events: Sender<Event>,
     notifications: Sender<Notification>,
@@ -31,13 +33,18 @@ impl ActionRunner {
         events: Sender<Event>,
         notifications: Sender<Notification>,
     ) -> Self {
-        let file_reader_writer = Arc::new(Mutex::new(FileReaderWriter::new(Arc::clone(&download))));
-        let tracker = Tracker::spawn(Arc::clone(&download), events.clone());
         let peers = HashMap::new();
+        let reader = Arc::new(FileReader::new(Arc::clone(&download)));
+        let writer = Arc::new(Mutex::new(FileWriter::new(
+            Arc::clone(&download),
+            events.clone(),
+        )));
+        let tracker = Tracker::spawn(Arc::clone(&download), events.clone());
         Self {
             peers,
             download,
-            file_reader_writer,
+            reader,
+            writer,
             tracker,
             events,
             notifications,
@@ -69,17 +76,14 @@ impl ActionRunner {
 
             Action::Upload(addr, block) => {
                 let peer = self.peers.get(&addr).expect("invalid peer");
-                let file_reader_writer = Arc::clone(&self.file_reader_writer);
+                let reader = Arc::clone(&self.reader);
                 let tx = peer.tx.clone();
-                tokio::spawn(async move { file_reader_writer.lock().await.read(block, tx).await });
+                tokio::spawn(async move { reader.read(block, tx).await });
             }
 
             Action::IntegrateBlock(block_data) => {
-                let file_reader_writer = Arc::clone(&self.file_reader_writer);
-                let tx = self.events.clone();
-                tokio::spawn(
-                    async move { file_reader_writer.lock().await.write(block_data, tx).await },
-                );
+                let writer = Arc::clone(&self.writer);
+                tokio::spawn(async move { writer.lock().await.write(block_data).await });
             }
 
             Action::RemovePeer(addr) => {
