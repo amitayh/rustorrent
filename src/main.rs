@@ -18,6 +18,7 @@ mod event;
 mod message;
 mod peer;
 mod scheduler;
+mod storage;
 mod torrent;
 mod tracker;
 

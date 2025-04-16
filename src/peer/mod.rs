@@ -3,8 +3,6 @@ pub mod choke;
 mod config;
 pub mod connection;
 mod download;
-pub mod fs;
-mod joiner;
 mod peer_id;
 pub mod stats;
 pub mod sweeper;
@@ -12,7 +10,6 @@ pub mod transfer_rate;
 
 pub use config::*;
 pub use download::*;
-pub use joiner::{Joiner, Status};
 pub use peer_id::*;
 use stats::GlobalStats;
 

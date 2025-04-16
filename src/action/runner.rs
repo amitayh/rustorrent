@@ -13,7 +13,7 @@ use crate::event::Event;
 use crate::peer::Download;
 use crate::peer::Notification;
 use crate::peer::connection::Connection;
-use crate::peer::fs::FileReaderWriter;
+use crate::storage::FileReaderWriter;
 use crate::tracker::Tracker;
 
 pub struct ActionRunner {

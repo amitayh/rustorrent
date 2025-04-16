@@ -7,10 +7,9 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::{fs::File, sync::mpsc::Sender};
 
 use crate::message::{BlockData, Message};
-use crate::peer::{Joiner, Status};
-use crate::{message::Block, peer::Event};
-
-use super::Download;
+use crate::peer::Download;
+use crate::storage::{Joiner, Status};
+use crate::{event::Event, message::Block};
 
 pub struct FileReaderWriter {
     download: Arc<Download>,
