@@ -107,6 +107,7 @@ async fn run(
                 Event::AcceptConnection(addr, socket)
             }
         };
+        trace!("handling event: {:?}", &event);
         for action in event_handler.handle(event) {
             trace!("action to perform: {:?}", &action);
             if !action_runner.run(action)? {

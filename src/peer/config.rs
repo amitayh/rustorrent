@@ -92,7 +92,7 @@ impl Config {
             block_size: Size::from_kibibytes(16),
             connect_timeout: Duration::from_secs(5),
             idle_peer_timeout: Duration::from_secs(30),
-            block_timeout: Duration::from_secs(10),
+            block_timeout: Duration::from_secs(30),
             events_buffer: 128,
             channel_buffer: 16,
             max_concurrent_requests_per_peer: 10,

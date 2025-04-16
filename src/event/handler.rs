@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bit_set::BitSet;
-use log::{trace, warn};
+use log::warn;
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
@@ -62,7 +62,6 @@ impl EventHandler {
     }
 
     pub fn handle(&mut self, event: Event) -> Vec<Action> {
-        trace!("handling event: {:?}", &event);
         let now = Instant::now();
         match event {
             Event::KeepAliveTick => vec![Action::Broadcast(Message::KeepAlive)],

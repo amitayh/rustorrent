@@ -49,19 +49,18 @@ impl Connection {
             download.config.client_id.clone(),
         );
         let join_handle = tokio::spawn(async move {
-            let result = tokio::select! {
-                _ = token_clone.cancelled() => Ok(()),
-                result = run(
-                    addr,
-                    socket,
-                    handshake,
-                    events_tx.clone(),
-                    rx,
-                    &download.config,
-                ) => result,
-            };
+            let result = run(
+                addr,
+                socket,
+                handshake,
+                events_tx.clone(),
+                rx,
+                &download.config,
+                token_clone,
+            )
+            .await;
             if let Err(err) = result {
-                warn!("[{}] error encountered run: {}", addr, err);
+                warn!("[{}] error encountered during run: {}", addr, err);
             }
             info!("peer {} disconnected", addr);
             events_tx
@@ -109,6 +108,7 @@ async fn run(
     events_tx: Sender<Event>,
     mut rx: Receiver<Message>,
     config: &Config,
+    cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
     let (mut socket, handshake_direction) =
         connect_if_needed(addr, socket, config.connect_timeout).await?;
@@ -126,6 +126,9 @@ async fn run(
     while running {
         let start = Instant::now();
         tokio::select! {
+            _ = cancellation_token.cancelled() => {
+                running = false;
+            }
             Some(message) = rx.recv() => {
                 debug!("[{}] > sending {:?}", &addr, &message);
                 let message_size = Size::from_bytes(message.transport_bytes());
