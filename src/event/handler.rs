@@ -6,7 +6,7 @@ use log::warn;
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
-use crate::action::Action;
+use crate::command::Command;
 use crate::event::Event;
 use crate::message::{Block, Message};
 use crate::peer::Download;
@@ -61,39 +61,39 @@ impl EventHandler {
         }
     }
 
-    pub fn handle(&mut self, event: Event) -> Vec<Action> {
+    pub fn handle(&mut self, event: Event) -> Vec<Command> {
         let now = Instant::now();
         match event {
-            Event::KeepAliveTick => vec![Action::Broadcast(Message::KeepAlive)],
-            Event::StatsTick => vec![Action::UpdateStats(self.stats.clone())],
+            Event::KeepAliveTick => vec![Command::Broadcast(Message::KeepAlive)],
+            Event::StatsTick => vec![Command::UpdateStats(self.stats.clone())],
 
             Event::ChokeTick => {
                 let decision = self.choker.run();
                 let choke = decision
                     .peers_to_choke
                     .into_iter()
-                    .map(|addr| Action::Send(addr, Message::Choke));
+                    .map(|addr| Command::Send(addr, Message::Choke));
                 let unchoke = decision
                     .peers_to_unchoke
                     .into_iter()
-                    .map(|addr| Action::Send(addr, Message::Unchoke));
+                    .map(|addr| Command::Send(addr, Message::Unchoke));
                 choke.chain(unchoke).collect()
             }
 
             Event::SweepTick(instant) => {
                 let result = self.sweeper.sweep(instant);
-                let mut actions = Vec::with_capacity(result.peers.len());
+                let mut commands = Vec::with_capacity(result.peers.len());
                 for addr in result.peers {
                     warn!("peer {} has been idle for too long", &addr);
-                    actions.push(self.disconnect(addr));
+                    commands.push(self.disconnect(addr));
                 }
                 for (addr, block) in result.blocks {
                     warn!("block requet timed out: {} - {:?}", &addr, &block);
                     for next_block in self.scheduler.release(&addr, block) {
-                        actions.push(self.request(addr, next_block, now));
+                        commands.push(self.request(addr, next_block, now));
                     }
                 }
-                actions
+                commands
             }
 
             Event::Message(addr, message) => {
@@ -112,11 +112,11 @@ impl EventHandler {
                 self.stats.completed_pieces += 1;
                 self.has_pieces.insert(piece);
                 self.stats.downloaded += self.download.torrent.info.piece_size(piece);
-                let mut actions = vec![Action::Broadcast(Message::Have(piece))];
+                let mut commands = vec![Command::Broadcast(Message::Have(piece))];
                 for not_interesting in self.scheduler.client_has_piece(piece) {
-                    actions.push(Action::Send(not_interesting, Message::NotInterested));
+                    commands.push(Command::Send(not_interesting, Message::NotInterested));
                 }
-                actions
+                commands
             }
 
             Event::PieceInvalid(piece) => {
@@ -127,45 +127,49 @@ impl EventHandler {
             Event::Connect(addr) => self.establish_connection(addr, None),
             Event::AcceptConnection(addr, socket) => self.establish_connection(addr, Some(socket)),
             Event::Disconnect(addr) => vec![self.disconnect(addr)],
-            Event::Shutdown => vec![Action::Shutdown],
+            Event::Shutdown => vec![Command::Shutdown],
         }
     }
 
-    fn establish_connection(&mut self, addr: SocketAddr, socket: Option<TcpStream>) -> Vec<Action> {
+    fn establish_connection(
+        &mut self,
+        addr: SocketAddr,
+        socket: Option<TcpStream>,
+    ) -> Vec<Command> {
         self.stats.connected_peers += 1;
-        let mut actions = Vec::with_capacity(2);
-        actions.push(Action::EstablishConnection(addr, socket));
+        let mut commands = Vec::with_capacity(2);
+        commands.push(Command::EstablishConnection(addr, socket));
         if !self.has_pieces.is_empty() {
             let pieces = self.has_pieces.clone();
-            actions.push(Action::Send(addr, Message::Bitfield(pieces)));
+            commands.push(Command::Send(addr, Message::Bitfield(pieces)));
         }
-        actions
+        commands
     }
 
-    fn request(&mut self, addr: SocketAddr, block: Block, now: Instant) -> Action {
+    fn request(&mut self, addr: SocketAddr, block: Block, now: Instant) -> Command {
         self.sweeper.block_requested(addr, block, now);
-        Action::Send(addr, Message::Request(block))
+        Command::Send(addr, Message::Request(block))
     }
 
-    fn disconnect(&mut self, addr: SocketAddr) -> Action {
+    fn disconnect(&mut self, addr: SocketAddr) -> Command {
         self.choker.peer_disconnected(&addr);
         self.scheduler.peer_disconnected(&addr);
         self.sweeper.peer_disconnected(&addr);
         self.stats.connected_peers -= 1;
-        Action::RemovePeer(addr)
+        Command::RemovePeer(addr)
     }
 
-    fn have(&mut self, addr: SocketAddr, piece: usize, now: Instant) -> Vec<Action> {
+    fn have(&mut self, addr: SocketAddr, piece: usize, now: Instant) -> Vec<Command> {
         match self.scheduler.peer_has_piece(addr, piece) {
             PeerPieceResponse::NoAction => Vec::new(),
-            PeerPieceResponse::ExpressInterest => vec![Action::Send(addr, Message::Interested)],
+            PeerPieceResponse::ExpressInterest => vec![Command::Send(addr, Message::Interested)],
             PeerPieceResponse::ExpressInterestAndRequest(blocks) => {
-                let mut actions = Vec::with_capacity(blocks.len() + 1);
-                actions.push(Action::Send(addr, Message::Interested));
+                let mut commands = Vec::with_capacity(blocks.len() + 1);
+                commands.push(Command::Send(addr, Message::Interested));
                 for block in blocks {
-                    actions.push(self.request(addr, block, now));
+                    commands.push(self.request(addr, block, now));
                 }
-                actions
+                commands
             }
             PeerPieceResponse::RequestBlocks(blocks) => blocks
                 .into_iter()
@@ -174,7 +178,7 @@ impl EventHandler {
         }
     }
 
-    fn handle_message(&mut self, addr: SocketAddr, message: Message, now: Instant) -> Vec<Action> {
+    fn handle_message(&mut self, addr: SocketAddr, message: Message, now: Instant) -> Vec<Command> {
         match message {
             Message::KeepAlive => Vec::new(),
 
@@ -217,7 +221,7 @@ impl EventHandler {
                     return Vec::new();
                 }
                 self.stats.uploaded += self.download.torrent.info.piece_size(block.piece);
-                vec![Action::Upload(addr, block)]
+                vec![Command::Upload(addr, block)]
             }
 
             Message::Piece(block_data) => {
@@ -227,11 +231,11 @@ impl EventHandler {
                     return Vec::new();
                 }
                 self.sweeper.block_downloaded(addr, block);
-                let mut actions = vec![Action::IntegrateBlock(block_data)];
+                let mut commands = vec![Command::IntegrateBlock(block_data)];
                 for next_block in self.scheduler.block_downloaded(&addr, &block) {
-                    actions.push(self.request(addr, next_block, now));
+                    commands.push(self.request(addr, next_block, now));
                 }
-                actions
+                commands
             }
 
             _ => {
@@ -254,7 +258,7 @@ mod tests {
 
         assert_eq!(
             event_handler.handle(Event::KeepAliveTick),
-            vec![Action::Broadcast(Message::KeepAlive)]
+            vec![Command::Broadcast(Message::KeepAlive)]
         );
     }
 
@@ -268,19 +272,19 @@ mod tests {
 
         assert_eq!(
             handler.handle(Event::Connect(addr)),
-            vec![Action::EstablishConnection(addr, None)]
+            vec![Command::EstablishConnection(addr, None)]
         );
 
         assert_eq!(
             handler.handle(Event::Message(addr, Message::Have(0))),
-            vec![Action::Send(addr, Message::Interested)]
+            vec![Command::Send(addr, Message::Interested)]
         );
 
         assert_eq!(
             handler.handle(Event::Message(addr, Message::Unchoke)),
             vec![
-                Action::Send(addr, Message::Request(Block::new(0, 0, 16384))),
-                Action::Send(addr, Message::Request(Block::new(0, 16384, 16384))),
+                Command::Send(addr, Message::Request(Block::new(0, 0, 16384))),
+                Command::Send(addr, Message::Request(Block::new(0, 16384, 16384))),
             ]
         );
 
@@ -291,18 +295,18 @@ mod tests {
         };
         assert_eq!(
             handler.handle(Event::Message(addr, Message::Piece(block_data.clone()))),
-            vec![Action::IntegrateBlock(block_data)]
+            vec![Command::IntegrateBlock(block_data)]
         );
 
         #[rustfmt::skip]
         assert_eq!(
             handler.handle(Event::Message(addr, Message::Have(5))),
-            vec![Action::Send(addr, Message::Request(Block::new(5, 0, 10517)))]
+            vec![Command::Send(addr, Message::Request(Block::new(5, 0, 10517)))]
         );
 
         assert_eq!(
             handler.handle(Event::Disconnect(addr)),
-            vec![Action::RemovePeer(addr)]
+            vec![Command::RemovePeer(addr)]
         );
     }
 

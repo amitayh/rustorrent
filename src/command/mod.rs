@@ -1,4 +1,4 @@
-mod runner;
+mod executor;
 
 use std::fmt::Formatter;
 use std::net::SocketAddr;
@@ -8,9 +8,9 @@ use tokio::net::TcpStream;
 use crate::message::{Block, BlockData, Message};
 use crate::peer::stats::GlobalStats;
 
-pub use runner::*;
+pub use executor::*;
 
-pub enum Action {
+pub enum Command {
     EstablishConnection(SocketAddr, Option<TcpStream>),
     Send(SocketAddr, Message),
     Broadcast(Message),
@@ -21,7 +21,7 @@ pub enum Action {
     Shutdown,
 }
 
-impl std::fmt::Debug for Action {
+impl std::fmt::Debug for Command {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EstablishConnection(addr, socket) => {
@@ -44,7 +44,7 @@ impl std::fmt::Debug for Action {
     }
 }
 
-impl PartialEq for Action {
+impl PartialEq for Command {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::EstablishConnection(addr1, _), Self::EstablishConnection(addr2, _)) => {
@@ -66,4 +66,4 @@ impl PartialEq for Action {
     }
 }
 
-impl Eq for Action {}
+impl Eq for Command {}

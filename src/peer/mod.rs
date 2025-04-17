@@ -26,7 +26,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{self, Instant, Interval};
 use tokio_util::sync::CancellationToken;
 
-use crate::action::ActionRunner;
+use crate::command::CommandExecutor;
 use crate::event::{Event, EventHandler};
 
 #[derive(Debug)]
@@ -86,8 +86,8 @@ async fn run(
 ) -> Result<()> {
     let config = &download.config;
     let (tx, mut rx) = mpsc::channel(config.events_buffer);
-    let mut event_handler = EventHandler::new(Arc::clone(&download), has_pieces);
-    let mut action_runner = ActionRunner::new(Arc::clone(&download), tx, notificaitons);
+    let mut handler = EventHandler::new(Arc::clone(&download), has_pieces);
+    let mut executor = CommandExecutor::new(Arc::clone(&download), tx, notificaitons);
 
     let mut keep_alive = interval_with_delay(config.keep_alive_interval);
     let mut choke = interval_with_delay(config.choking_interval);
@@ -108,15 +108,15 @@ async fn run(
             }
         };
         trace!("handling event: {:?}", &event);
-        for action in event_handler.handle(event) {
-            trace!("action to perform: {:?}", &action);
-            if !action_runner.run(action)? {
+        for command in handler.handle(event) {
+            trace!("command to perform: {:?}", &command);
+            if !executor.execute(command)? {
                 running = false;
             }
         }
     }
 
-    action_runner.shutdown().await?;
+    executor.shutdown().await?;
     Ok(())
 }
 

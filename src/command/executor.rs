@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
 
-use crate::action::Action;
+use crate::command::Command;
 use crate::event::Event;
 use crate::peer::Download;
 use crate::peer::Notification;
@@ -17,7 +17,7 @@ use crate::storage::FileReader;
 use crate::storage::FileWriter;
 use crate::tracker::Tracker;
 
-pub struct ActionRunner {
+pub struct CommandExecutor {
     download: Arc<Download>,
     peers: HashMap<SocketAddr, Connection>,
     reader: Arc<FileReader>,
@@ -27,7 +27,7 @@ pub struct ActionRunner {
     notifications: Sender<Notification>,
 }
 
-impl ActionRunner {
+impl CommandExecutor {
     pub fn new(
         download: Arc<Download>,
         events: Sender<Event>,
@@ -51,9 +51,9 @@ impl ActionRunner {
         }
     }
 
-    pub fn run(&mut self, action: Action) -> anyhow::Result<bool> {
-        match action {
-            Action::EstablishConnection(addr, socket) if !self.peers.contains_key(&addr) => {
+    pub fn execute(&mut self, command: Command) -> anyhow::Result<bool> {
+        match command {
+            Command::EstablishConnection(addr, socket) if !self.peers.contains_key(&addr) => {
                 let conn = Connection::spawn(
                     addr,
                     socket,
@@ -63,35 +63,35 @@ impl ActionRunner {
                 self.peers.insert(addr, conn);
             }
 
-            Action::Send(addr, message) => {
+            Command::Send(addr, message) => {
                 let peer = self.peers.get(&addr).expect("invalid peer");
                 peer.send(message);
             }
 
-            Action::Broadcast(message) => {
+            Command::Broadcast(message) => {
                 for peer in self.peers.values() {
                     peer.send(message.clone());
                 }
             }
 
-            Action::Upload(addr, block) => {
+            Command::Upload(addr, block) => {
                 let peer = self.peers.get(&addr).expect("invalid peer");
                 let reader = Arc::clone(&self.reader);
                 let tx = peer.tx.clone();
                 tokio::spawn(async move { reader.read(block, tx).await });
             }
 
-            Action::IntegrateBlock(block_data) => {
+            Command::IntegrateBlock(block_data) => {
                 let writer = Arc::clone(&self.writer);
                 tokio::spawn(async move { writer.lock().await.write(block_data).await });
             }
 
-            Action::RemovePeer(addr) => {
+            Command::RemovePeer(addr) => {
                 let peer = self.peers.remove(&addr).expect("invalid peer");
                 peer.abort();
             }
 
-            Action::UpdateStats(stats) => {
+            Command::UpdateStats(stats) => {
                 self.tracker
                     .update_progress(stats.downloaded, stats.uploaded)?;
                 let result = self.notifications.try_send(if stats.download_complete() {
@@ -104,11 +104,11 @@ impl ActionRunner {
                 }
             }
 
-            Action::Shutdown => {
+            Command::Shutdown => {
                 return Ok(false);
             }
 
-            action => warn!("unhandled action: {:?}", action),
+            command => warn!("unhandled command: {:?}", command),
         }
         Ok(true)
     }
