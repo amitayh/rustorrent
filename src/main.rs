@@ -3,14 +3,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bencoding::Value;
+use client::{Client, Notification};
 use log::{info, warn};
-use peer::{Client, Config, Download, Notification};
+use peer::{Config, Download};
 use tokio::{fs::File, net::TcpListener};
 
 use crate::codec::AsyncDecoder;
 use crate::torrent::Torrent;
 
 mod bencoding;
+mod client;
 mod codec;
 mod command;
 mod crypto;

@@ -252,10 +252,8 @@ impl Default for Peer {
 mod tests {
     use size::Size;
 
-    use crate::peer::{
-        Config,
-        tests::{test_config, test_torrent},
-    };
+    use crate::client::tests::{test_config, test_torrent};
+    use crate::peer::Config;
 
     use super::*;
 

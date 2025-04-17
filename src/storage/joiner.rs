@@ -97,7 +97,7 @@ impl PieceState {
 mod tests {
     use super::*;
 
-    use crate::peer::tests::{test_config, test_torrent};
+    use crate::client::tests::{test_config, test_torrent};
 
     fn test_download() -> Download {
         let config = test_config("/tmp");

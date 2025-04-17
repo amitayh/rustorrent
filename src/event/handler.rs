@@ -248,7 +248,7 @@ impl EventHandler {
 
 #[cfg(test)]
 mod tests {
-    use crate::{message::BlockData, peer::tests::create_download};
+    use crate::{client::tests::create_download, message::BlockData};
 
     use super::*;
 
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn sequence() {
-        env_logger::init();
+        let _ = env_logger::try_init();
 
         let mut handler = create_event_handler();
 
