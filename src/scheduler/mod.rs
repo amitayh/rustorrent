@@ -10,9 +10,11 @@ use piece_state::PieceState;
 use crate::{message::Block, peer::Download};
 use active_pieces::*;
 use available_pieces::*;
+use blocks::*;
 
 mod active_pieces;
 mod available_pieces;
+mod blocks;
 mod piece_state;
 
 /// Manages piece selection and block assignment for downloading pieces from peers.
@@ -199,7 +201,7 @@ impl Scheduler {
         // Assign remaining blocks from available pieces the peer has
         while blocks_to_request > 0 {
             if let Some(available_piece) = self.available_pieces.take_next(addr) {
-                let piece_blocks = self.download.blocks(available_piece.index);
+                let piece_blocks = Blocks::for_piece(&self.download, available_piece.index);
                 let mut active_piece = ActivePiece::new(available_piece, piece_blocks);
                 blocks_to_request -= active_piece.try_assign_n(blocks_to_request, &mut blocks);
                 self.active_pieces.insert(active_piece.index, active_piece);

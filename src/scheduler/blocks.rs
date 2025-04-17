@@ -1,4 +1,4 @@
-use crate::message::Block;
+use crate::{message::Block, peer::Download};
 
 #[derive(Debug)]
 pub struct Blocks {
@@ -16,6 +16,14 @@ impl Blocks {
             offset: 0,
             end: piece_size,
         }
+    }
+
+    pub fn for_piece(download: &Download, piece: usize) -> Blocks {
+        Blocks::new(
+            piece,
+            download.torrent.info.piece_size(piece),
+            download.config.block_size.bytes() as usize,
+        )
     }
 }
 

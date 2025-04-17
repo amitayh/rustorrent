@@ -1,5 +1,4 @@
 use crate::peer::Config;
-use crate::peer::blocks::Blocks;
 use crate::torrent::Torrent;
 
 /// Represents an active download of a torrent
@@ -13,14 +12,4 @@ pub struct Download {
     pub torrent: Torrent,
     /// Configuration settings for the download like block sizes and timeouts
     pub config: Config,
-}
-
-impl Download {
-    pub fn blocks(&self, piece: usize) -> Blocks {
-        Blocks::new(
-            piece,
-            self.torrent.info.piece_size(piece),
-            self.config.block_size.bytes() as usize,
-        )
-    }
 }

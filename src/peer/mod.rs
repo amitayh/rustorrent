@@ -1,4 +1,3 @@
-pub mod blocks;
 pub mod choke;
 mod config;
 pub mod connection;
