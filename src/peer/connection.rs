@@ -25,8 +25,6 @@ use crate::peer::Download;
 use crate::peer::stats::PeerStats;
 use crate::peer::transfer_rate::TransferRate;
 
-use super::Config;
-
 pub struct Connection {
     pub tx: Sender<Message>,
     join_handle: JoinHandle<anyhow::Result<()>>,
@@ -44,21 +42,8 @@ impl Connection {
         let (tx, rx) = mpsc::channel(download.config.channel_buffer);
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
-        let handshake = Handshake::new(
-            download.torrent.info.info_hash.clone(),
-            download.config.client_id.clone(),
-        );
         let join_handle = tokio::spawn(async move {
-            let result = run(
-                addr,
-                socket,
-                handshake,
-                events_tx.clone(),
-                rx,
-                &download.config,
-                token_clone,
-            )
-            .await;
+            let result = run(addr, socket, events_tx.clone(), rx, token_clone, &download).await;
             if let Err(err) = result {
                 warn!("[{}] error encountered during run: {}", addr, err);
             }
@@ -104,20 +89,20 @@ impl Connection {
 async fn run(
     addr: SocketAddr,
     socket: Option<TcpStream>,
-    handshake: Handshake,
     events_tx: Sender<Event>,
     mut rx: Receiver<Message>,
-    config: &Config,
     cancellation_token: CancellationToken,
+    download: &Download,
 ) -> anyhow::Result<()> {
-    let (mut socket, handshake_direction) =
-        connect_if_needed(addr, socket, config.connect_timeout).await?;
-
-    exchange_handshakes(&mut socket, handshake, handshake_direction).await?;
-
+    let handshake = Handshake::new(
+        download.torrent.info.info_hash.clone(),
+        download.config.client_id.clone(),
+    );
     // The largest message we should accept is a `Piece` message, which should
     // always have size of `config.block_size` + 9
+    let config = &download.config;
     let max_size = (config.block_size.bytes() as usize) + 9;
+    let socket = establish_connection(addr, socket, handshake, config.connect_timeout).await?;
     let mut messages = Framed::new(socket, MessageCodec::new(max_size));
     let mut update_stats = tokio::time::interval(config.update_stats_interval);
     let mut stats = PeerStats::default();
@@ -163,54 +148,41 @@ async fn run(
     Ok(())
 }
 
-async fn connect_if_needed(
+/// Establish connection with a peer and exchange handshakes.
+async fn establish_connection(
     addr: SocketAddr,
     socket: Option<TcpStream>,
+    handshake: Handshake,
     connect_timeout: Duration,
-) -> anyhow::Result<(TcpStream, HandshakeDirection)> {
-    match socket {
-        Some(socket) => {
+) -> anyhow::Result<TcpStream> {
+    let (socket, handshake_got) = match socket {
+        Some(mut socket) => {
             info!("accepted connection from {}", &addr);
-            Ok((socket, HandshakeDirection::PeerToClient))
+            // Wait for handshake from peer
+            let handshake_got = Handshake::decode(&mut socket).await?;
+            // Send handshake second
+            handshake.encode(&mut socket).await?;
+            (socket, handshake_got)
         }
         None => {
             info!("connecting to {}...", &addr);
-            let socket = timeout(connect_timeout, TcpStream::connect(addr)).await??;
+            let mut socket = timeout(connect_timeout, TcpStream::connect(addr)).await??;
+            // Send handshake first
+            handshake.encode(&mut socket).await?;
+            // Wait for handshake from peer
+            let handshake_got = Handshake::decode(&mut socket).await?;
             info!("connected to {}", &addr);
-            Ok((socket, HandshakeDirection::ClientToPeer))
+            (socket, handshake_got)
         }
-    }
-}
-
-async fn exchange_handshakes(
-    socket: &mut TcpStream,
-    handshake: Handshake,
-    direction: HandshakeDirection,
-) -> anyhow::Result<()> {
-    if direction == HandshakeDirection::ClientToPeer {
-        // Send handshake first
-        handshake.encode(socket).await?;
-    }
-    // Wait for handshhake from peer
-    let handshake_got = Handshake::decode(socket).await?;
-    if direction == HandshakeDirection::PeerToClient {
-        // Send handshake second
-        handshake.encode(socket).await?;
-    }
-    if handshake.info_hash != handshake_got.info_hash {
-        return Err(anyhow!("info hash mismatch"));
-    }
+    };
     if !handshake_got.is_standard_protocol() {
         return Err(anyhow!(
             "invalid handshake protocol: {}",
             handshake_got.protocol
         ));
     }
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum HandshakeDirection {
-    ClientToPeer,
-    PeerToClient,
+    if handshake.info_hash != handshake_got.info_hash {
+        return Err(anyhow!("info hash mismatch"));
+    }
+    Ok(socket)
 }

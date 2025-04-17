@@ -80,18 +80,19 @@ impl Config {
 
 impl Config {
     pub fn new(download_path: PathBuf) -> Self {
+        let keep_alive_interval = Duration::from_secs(120);
         Self {
             client_id: PeerId::random(),
             port: 6881,
             download_path,
             sweep_interval: Duration::from_secs(5),
-            keep_alive_interval: Duration::from_secs(120),
+            keep_alive_interval,
             choking_interval: Duration::from_secs(10),
             update_stats_interval: Duration::from_secs(1),
             optimistic_choking_cycle: 3,
             block_size: Size::from_kibibytes(16),
-            connect_timeout: Duration::from_secs(5),
-            idle_peer_timeout: Duration::from_secs(30),
+            connect_timeout: Duration::from_secs(10),
+            idle_peer_timeout: keep_alive_interval * 2,
             block_timeout: Duration::from_secs(30),
             events_buffer: 128,
             channel_buffer: 16,
