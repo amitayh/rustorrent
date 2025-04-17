@@ -49,7 +49,7 @@ impl Connection {
             }
             info!("peer {} disconnected", addr);
             events_tx
-                .send(Event::Disconnect(addr))
+                .send(Event::Disconnected(addr))
                 .await
                 .expect("channel should be open");
             Ok(())
@@ -127,7 +127,7 @@ async fn run(
                     let elapsed = Instant::now() - start;
                     let message_size = Size::from_bytes(message.transport_bytes());
                     stats.download += TransferRate(message_size, elapsed);
-                    let event = Event::Message(addr, message);
+                    let event = Event::MessageReceived(addr, message);
                     events_tx.send(event).await?;
                 }
                 Err(err) => {
@@ -139,7 +139,7 @@ async fn run(
                 }
             },
             _ = update_stats.tick() => {
-                events_tx.send(Event::Stats(addr, stats.clone())).await?;
+                events_tx.send(Event::StatsUpdated(addr, stats.clone())).await?;
             },
         }
     }

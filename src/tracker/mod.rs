@@ -60,7 +60,9 @@ impl Tracker {
                 let mut response = send_request(request).await?;
                 info!("got {} peers from tracker", response.peers.len());
                 for peer in response.peers {
-                    events_tx.send(Event::Connect(peer.address)).await?;
+                    events_tx
+                        .send(Event::ConnectionRequested(peer.address))
+                        .await?;
                 }
 
                 event = None;

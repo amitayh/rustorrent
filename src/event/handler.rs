@@ -64,10 +64,10 @@ impl EventHandler {
     pub fn handle(&mut self, event: Event) -> Vec<Command> {
         let now = Instant::now();
         match event {
-            Event::KeepAliveTick => vec![Command::Broadcast(Message::KeepAlive)],
-            Event::StatsTick => vec![Command::UpdateStats(self.stats.clone())],
+            Event::KeepAliveTicked => vec![Command::Broadcast(Message::KeepAlive)],
+            Event::StatsTicked => vec![Command::UpdateStats(self.stats.clone())],
 
-            Event::ChokeTick => {
+            Event::ChokeTicked => {
                 let decision = self.choker.run();
                 let choke = decision
                     .peers_to_choke
@@ -80,7 +80,7 @@ impl EventHandler {
                 choke.chain(unchoke).collect()
             }
 
-            Event::SweepTick(instant) => {
+            Event::SweepTicked(instant) => {
                 let result = self.sweeper.sweep(instant);
                 let mut commands = Vec::with_capacity(result.peers.len());
                 for addr in result.peers {
@@ -96,12 +96,12 @@ impl EventHandler {
                 commands
             }
 
-            Event::Message(addr, message) => {
+            Event::MessageReceived(addr, message) => {
                 self.sweeper.update_peer_activity(addr, now);
                 self.handle_message(addr, message, now)
             }
 
-            Event::Stats(addr, stats) => {
+            Event::StatsUpdated(addr, stats) => {
                 self.choker.update_peer_transfer_rate(addr, stats.download);
                 self.stats.upload_rate += stats.upload;
                 self.stats.download_rate += stats.download;
@@ -119,15 +119,17 @@ impl EventHandler {
                 commands
             }
 
-            Event::PieceInvalid(piece) => {
+            Event::PieceVerificationFailed(piece) => {
                 self.scheduler.invalidate(piece);
                 Vec::new()
             }
 
-            Event::Connect(addr) => self.establish_connection(addr, None),
-            Event::AcceptConnection(addr, socket) => self.establish_connection(addr, Some(socket)),
-            Event::Disconnect(addr) => vec![self.disconnect(addr)],
-            Event::Shutdown => vec![Command::Shutdown],
+            Event::ConnectionRequested(addr) => self.establish_connection(addr, None),
+            Event::ConnectionAccepted(addr, socket) => {
+                self.establish_connection(addr, Some(socket))
+            }
+            Event::Disconnected(addr) => vec![self.disconnect(addr)],
+            Event::ShutdownRequested => vec![Command::Shutdown],
         }
     }
 
@@ -257,7 +259,7 @@ mod tests {
         let mut event_handler = create_event_handler();
 
         assert_eq!(
-            event_handler.handle(Event::KeepAliveTick),
+            event_handler.handle(Event::KeepAliveTicked),
             vec![Command::Broadcast(Message::KeepAlive)]
         );
     }
@@ -271,17 +273,17 @@ mod tests {
         let addr = "127.0.0.1:6881".parse().unwrap();
 
         assert_eq!(
-            handler.handle(Event::Connect(addr)),
+            handler.handle(Event::ConnectionRequested(addr)),
             vec![Command::EstablishConnection(addr, None)]
         );
 
         assert_eq!(
-            handler.handle(Event::Message(addr, Message::Have(0))),
+            handler.handle(Event::MessageReceived(addr, Message::Have(0))),
             vec![Command::Send(addr, Message::Interested)]
         );
 
         assert_eq!(
-            handler.handle(Event::Message(addr, Message::Unchoke)),
+            handler.handle(Event::MessageReceived(addr, Message::Unchoke)),
             vec![
                 Command::Send(addr, Message::Request(Block::new(0, 0, 16384))),
                 Command::Send(addr, Message::Request(Block::new(0, 16384, 16384))),
@@ -294,18 +296,21 @@ mod tests {
             data: vec![0; 16384],
         };
         assert_eq!(
-            handler.handle(Event::Message(addr, Message::Piece(block_data.clone()))),
+            handler.handle(Event::MessageReceived(
+                addr,
+                Message::Piece(block_data.clone())
+            )),
             vec![Command::IntegrateBlock(block_data)]
         );
 
         #[rustfmt::skip]
         assert_eq!(
-            handler.handle(Event::Message(addr, Message::Have(5))),
+            handler.handle(Event::MessageReceived(addr, Message::Have(5))),
             vec![Command::Send(addr, Message::Request(Block::new(5, 0, 10517)))]
         );
 
         assert_eq!(
-            handler.handle(Event::Disconnect(addr)),
+            handler.handle(Event::Disconnected(addr)),
             vec![Command::RemovePeer(addr)]
         );
     }

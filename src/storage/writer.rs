@@ -33,7 +33,7 @@ impl FileWriter {
             Status::Incomplete => (), // Noting to do, wait for next block
             Status::Invalid => {
                 warn!("piece {} sha1 mismatch", piece);
-                self.tx.send(Event::PieceInvalid(piece)).await?;
+                self.tx.send(Event::PieceVerificationFailed(piece)).await?;
             }
             Status::Complete { offset, data } => {
                 let mut file = OpenOptions::new()

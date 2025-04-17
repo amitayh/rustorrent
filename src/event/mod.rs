@@ -13,27 +13,27 @@ pub use handler::*;
 #[derive(Debug)]
 pub enum Event {
     /// Periodic tick to send keep-alive messages to peers
-    KeepAliveTick,
+    KeepAliveTicked,
     /// Periodic tick to run the choking algorithm
-    ChokeTick,
+    ChokeTicked,
     /// Periodic tick to collect peer statistics
-    StatsTick,
+    StatsTicked,
     /// Periodic tick to sweep for idle peers and abandoned blocks, with current timestamp
-    SweepTick(Instant),
+    SweepTicked(Instant),
     /// Received a BitTorrent protocol message from a peer
-    Message(SocketAddr, Message),
+    MessageReceived(SocketAddr, Message),
     /// Received updated statistics for a peer
-    Stats(SocketAddr, PeerStats),
+    StatsUpdated(SocketAddr, PeerStats),
     /// A piece was successfully downloaded and verified
     PieceCompleted(usize),
     /// A downloaded piece failed hash verification
-    PieceInvalid(usize),
+    PieceVerificationFailed(usize),
     /// Initiate connection to a peer
-    Connect(SocketAddr),
+    ConnectionRequested(SocketAddr),
     /// Accept an incoming connection from a peer
-    AcceptConnection(SocketAddr, TcpStream),
+    ConnectionAccepted(SocketAddr, TcpStream),
     /// A peer connection was terminated
-    Disconnect(SocketAddr),
+    Disconnected(SocketAddr),
     /// Shut down the entire system
-    Shutdown,
+    ShutdownRequested,
 }

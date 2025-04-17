@@ -81,14 +81,14 @@ async fn run(
     let mut running = true;
     while running {
         let event = tokio::select! {
-            _ = cancellation_token.cancelled() => Event::Shutdown,
-            _ = keep_alive.tick() => Event::KeepAliveTick,
-            _ = choke.tick() => Event::ChokeTick,
-            _ = stats.tick() => Event::StatsTick,
-            now = sweep.tick() => Event::SweepTick(now),
+            _ = cancellation_token.cancelled() => Event::ShutdownRequested,
+            _ = keep_alive.tick() => Event::KeepAliveTicked,
+            _ = choke.tick() => Event::ChokeTicked,
+            _ = stats.tick() => Event::StatsTicked,
+            now = sweep.tick() => Event::SweepTicked(now),
             Some(event) = rx.recv() => event,
             Ok((socket, addr)) = listener.accept() => {
-                Event::AcceptConnection(addr, socket)
+                Event::ConnectionAccepted(addr, socket)
             }
         };
         trace!("handling event: {:?}", &event);
