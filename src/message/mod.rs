@@ -113,7 +113,7 @@ mod tests {
     use tokio_util::codec::Framed;
 
     use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
-    use crate::{core::Sha1, peer::PeerId};
+    use crate::core::{PeerId, Sha1};
 
     use super::*;
 

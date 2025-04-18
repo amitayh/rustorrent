@@ -2,7 +2,7 @@ use std::{path::PathBuf, time::Duration};
 
 use size::Size;
 
-use crate::peer::PeerId;
+use crate::core::PeerId;
 
 /// Configuration settings for the peer
 #[derive(Clone, Debug)]

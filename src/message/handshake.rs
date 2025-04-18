@@ -3,8 +3,7 @@ use std::io::{Error, ErrorKind, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::codec::{AsyncDecoder, AsyncEncoder};
-use crate::core::Sha1;
-use crate::peer::PeerId;
+use crate::core::{PeerId, Sha1};
 
 const PROTOCOL: &str = "BitTorrent protocol";
 
