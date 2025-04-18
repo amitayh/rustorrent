@@ -1,6 +1,6 @@
 use std::ops::AddAssign;
 
-use super::transfer_rate::TransferRate;
+use crate::core::TransferRate;
 
 #[derive(Debug, Clone, Default)]
 pub struct PeerStats {

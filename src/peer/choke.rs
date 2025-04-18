@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 use rand::seq::IteratorRandom;
 
-use crate::peer::transfer_rate::TransferRate;
+use crate::core::TransferRate;
 
 const TOP_PEERS: usize = 3;
 

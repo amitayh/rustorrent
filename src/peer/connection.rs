@@ -19,11 +19,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::Download;
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
+use crate::core::TransferRate;
 use crate::event::Event;
 use crate::message::MessageCodec;
 use crate::message::{Handshake, Message};
 use crate::peer::stats::PeerStats;
-use crate::peer::transfer_rate::TransferRate;
 
 pub struct Connection {
     pub tx: Sender<Message>,
