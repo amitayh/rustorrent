@@ -9,10 +9,10 @@ use tokio::time::Instant;
 use crate::client::Download;
 use crate::command::Command;
 use crate::event::Event;
+use crate::event::sweeper::Sweeper;
 use crate::message::{Block, Message};
 use crate::peer::choke::Choker;
 use crate::peer::stats::GlobalStats;
-use crate::peer::sweeper::Sweeper;
 use crate::scheduler::PeerPieceResponse;
 use crate::scheduler::Scheduler;
 
