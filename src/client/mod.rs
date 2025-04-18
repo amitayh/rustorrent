@@ -1,5 +1,7 @@
+mod config;
 mod notification;
 
+pub use config::*;
 pub use notification::*;
 
 use std::sync::Arc;
@@ -138,7 +140,6 @@ pub mod tests {
         bencoding::Value,
         codec::Encoder,
         crypto::{Md5, Sha1},
-        peer::Config,
         torrent::{DownloadType, Info, Torrent},
     };
 

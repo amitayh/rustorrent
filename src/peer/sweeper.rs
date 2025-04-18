@@ -5,10 +5,19 @@ use tokio::time::Instant;
 
 use crate::message::Block;
 
+/// The Sweeper tracks and manages peer activity and block download timeouts.
+///
+/// The Sweeper serves two main purposes:
+/// 1. Detecting and removing idle peers that haven't shown activity within a configured timeout
+/// 2. Tracking block download requests and identifying abandoned/stuck downloads
 pub struct Sweeper {
+    /// Duration after which a peer with no activity is considered idle
     idle_peer_timeout: Duration,
+    /// Duration after which a block download request is considered abandoned
     block_timeout: Duration,
+    /// Priority queue tracking the last activity timestamp for each peer
     peer_activity: PriorityQueue<SocketAddr, Reverse<Instant>>,
+    /// Priority queue tracking ongoing block download requests and their start times
     blocks_in_flight: PriorityQueue<(SocketAddr, Block), Reverse<Instant>>,
 }
 
@@ -31,7 +40,9 @@ impl Sweeper {
     }
 
     pub fn block_downloaded(&mut self, addr: SocketAddr, block: Block) {
-        self.blocks_in_flight.remove(&(addr, block));
+        self.blocks_in_flight
+            .remove(&(addr, block))
+            .expect("block not found");
     }
 
     pub fn sweep(&mut self, now: Instant) -> SweepResult {

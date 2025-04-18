@@ -1,4 +1,4 @@
-use crate::peer::Config;
+use crate::client::Config;
 use crate::torrent::Torrent;
 
 /// Represents an active download of a torrent

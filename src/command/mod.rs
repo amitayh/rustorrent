@@ -30,12 +30,12 @@ impl std::fmt::Debug for Command {
             Self::Send(addr, message) => write!(f, "Send({:?}, {:?})", addr, message),
             Self::Broadcast(message) => write!(f, "Broadcast({:?})", message),
             Self::Upload(addr, block) => write!(f, "Upload({:?}, {:?})", addr, block),
-            Self::IntegrateBlock(block_data) => write!(
+            Self::IntegrateBlock(block) => write!(
                 f,
                 "IntegrateBlock {{ piece: {}, offset: {}, data: <{} bytes> }}",
-                block_data.piece,
-                block_data.offset,
-                block_data.data.len()
+                block.piece,
+                block.offset,
+                block.data.len()
             ),
             Self::RemovePeer(addr) => write!(f, "RemovePeer({:?})", addr),
             Self::UpdateStats(stats) => write!(f, "UpdateStats({:?})", stats),
