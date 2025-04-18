@@ -16,9 +16,9 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::bencoding::Value;
+use crate::client::Download;
 use crate::codec::AsyncDecoder;
 use crate::event::Event;
-use crate::peer::Download;
 use crate::tracker::request::{Mode, TrackerRequest};
 use crate::tracker::response::TrackerResponse;
 

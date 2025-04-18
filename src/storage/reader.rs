@@ -4,9 +4,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::{fs::File, sync::mpsc::Sender};
 
-use crate::message::Block;
-use crate::message::{BlockData, Message};
-use crate::peer::Download;
+use crate::client::Download;
+use crate::message::{Block, BlockData, Message};
 
 pub struct FileReader {
     download: Arc<Download>,

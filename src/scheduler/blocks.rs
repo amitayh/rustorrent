@@ -1,4 +1,4 @@
-use crate::{message::Block, peer::Download};
+use crate::{client::Download, message::Block};
 
 #[derive(Debug)]
 pub struct Blocks {

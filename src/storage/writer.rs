@@ -6,9 +6,9 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc::Sender;
 
+use crate::client::Download;
 use crate::event::Event;
 use crate::message::BlockData;
-use crate::peer::Download;
 use crate::storage::{Joiner, Status};
 
 pub struct FileWriter {

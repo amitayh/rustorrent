@@ -6,10 +6,10 @@ use log::warn;
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
+use crate::client::Download;
 use crate::command::Command;
 use crate::event::Event;
 use crate::message::{Block, Message};
-use crate::peer::Download;
 use crate::peer::choke::Choker;
 use crate::peer::stats::GlobalStats;
 use crate::peer::sweeper::Sweeper;

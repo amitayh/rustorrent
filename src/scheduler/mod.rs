@@ -7,7 +7,7 @@ use std::{
 use bit_set::BitSet;
 use piece_state::PieceState;
 
-use crate::{message::Block, peer::Download};
+use crate::{client::Download, message::Block};
 use active_pieces::*;
 use available_pieces::*;
 use blocks::*;

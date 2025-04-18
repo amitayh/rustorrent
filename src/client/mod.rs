@@ -1,7 +1,9 @@
 mod config;
+mod download;
 mod notification;
 
 pub use config::*;
+pub use download::*;
 pub use notification::*;
 
 use std::sync::Arc;
@@ -19,7 +21,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::command::CommandExecutor;
 use crate::event::{Event, EventHandler};
-use crate::peer::Download;
 
 pub struct Client {
     pub notifications: Receiver<Notification>,

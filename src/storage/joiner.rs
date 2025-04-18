@@ -2,9 +2,9 @@ use core::f64;
 
 use sha1::Digest;
 
+use crate::client::Download;
 use crate::crypto::Sha1;
 use crate::message::BlockData;
-use crate::peer::Download;
 
 pub struct Joiner {
     block_size: usize,

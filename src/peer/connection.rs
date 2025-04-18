@@ -17,11 +17,11 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
+use crate::client::Download;
 use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
 use crate::event::Event;
 use crate::message::MessageCodec;
 use crate::message::{Handshake, Message};
-use crate::peer::Download;
 use crate::peer::stats::PeerStats;
 use crate::peer::transfer_rate::TransferRate;
 

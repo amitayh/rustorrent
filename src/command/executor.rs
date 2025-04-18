@@ -8,10 +8,10 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
 
+use crate::client::Download;
 use crate::client::Notification;
 use crate::command::Command;
 use crate::event::Event;
-use crate::peer::Download;
 use crate::peer::connection::Connection;
 use crate::storage::FileReader;
 use crate::storage::FileWriter;

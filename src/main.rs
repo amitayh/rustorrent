@@ -3,9 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bencoding::Value;
-use client::{Client, Config, Notification};
+use client::{Client, Config, Download, Notification};
 use log::{info, warn};
-use peer::Download;
 use tokio::{fs::File, net::TcpListener};
 
 use crate::codec::AsyncDecoder;
