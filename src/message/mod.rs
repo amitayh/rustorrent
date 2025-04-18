@@ -112,8 +112,7 @@ mod tests {
     use futures::{SinkExt, StreamExt};
     use tokio_util::codec::Framed;
 
-    use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
-    use crate::core::{PeerId, Sha1};
+    use crate::core::{AsyncDecoder, AsyncEncoder, PeerId, Sha1, TransportMessage};
 
     use super::*;
 

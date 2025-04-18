@@ -1,6 +1,6 @@
 use sha1::Digest;
 
-use crate::{bencoding::Value, codec::Encoder};
+use crate::{bencoding::Value, core::Encoder};
 
 #[derive(PartialEq, Clone)]
 pub struct Md5(pub [u8; 16]);

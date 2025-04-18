@@ -7,7 +7,7 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 
 use crate::bencoding::Value;
-use crate::codec::AsyncDecoder;
+use crate::core::AsyncDecoder;
 
 const BUFFER_SIZE: usize = 1024 * 8;
 

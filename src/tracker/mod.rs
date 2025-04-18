@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::bencoding::Value;
 use crate::client::Download;
-use crate::codec::AsyncDecoder;
+use crate::core::AsyncDecoder;
 use crate::event::Event;
 use crate::tracker::request::{Mode, TrackerRequest};
 use crate::tracker::response::TrackerResponse;

@@ -139,8 +139,7 @@ pub mod tests {
 
     use crate::{
         bencoding::Value,
-        codec::Encoder,
-        core::{Md5, Sha1},
+        core::{Encoder, Md5, Sha1},
         torrent::{DownloadType, Info, Torrent},
     };
 

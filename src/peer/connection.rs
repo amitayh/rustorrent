@@ -18,11 +18,9 @@ use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::Download;
-use crate::codec::{AsyncDecoder, AsyncEncoder, TransportMessage};
-use crate::core::TransferRate;
+use crate::core::{AsyncDecoder, AsyncEncoder, TransferRate, TransportMessage};
 use crate::event::Event;
-use crate::message::MessageCodec;
-use crate::message::{Handshake, Message};
+use crate::message::{Handshake, Message, MessageCodec};
 use crate::peer::stats::PeerStats;
 
 pub struct Connection {

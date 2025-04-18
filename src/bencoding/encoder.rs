@@ -1,6 +1,6 @@
 use std::io::{Result, Write};
 
-use crate::{bencoding::Value, codec::Encoder};
+use crate::{bencoding::Value, core::Encoder};
 
 impl Encoder for Value {
     fn encode(&self, dest: &mut impl Write) -> Result<()> {

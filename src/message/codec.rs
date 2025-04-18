@@ -5,10 +5,8 @@ use bit_set::BitSet;
 use tokio_util::bytes::{Buf, BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::codec::TransportMessage;
-use crate::message::Block;
-use crate::message::BlockData;
-use crate::message::Message;
+use crate::core::TransportMessage;
+use crate::message::{Block, BlockData, Message};
 
 const ID_CHOKE: u8 = 0;
 const ID_UNCHOKE: u8 = 1;

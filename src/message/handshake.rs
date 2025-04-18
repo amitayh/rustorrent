@@ -2,8 +2,7 @@ use std::io::{Error, ErrorKind, Result};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::codec::{AsyncDecoder, AsyncEncoder};
-use crate::core::{PeerId, Sha1};
+use crate::core::{AsyncDecoder, AsyncEncoder, PeerId, Sha1, TransportMessage};
 
 const PROTOCOL: &str = "BitTorrent protocol";
 
@@ -110,7 +109,7 @@ impl AsyncEncoder for Handshake {
     }
 }
 
-impl crate::codec::TransportMessage for Handshake {
+impl TransportMessage for Handshake {
     fn transport_bytes(&self) -> usize {
         1 + // pstr len
             self.protocol.bytes().len() + // pstr bytes

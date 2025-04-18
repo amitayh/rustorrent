@@ -7,12 +7,11 @@ use client::{Client, Config, Download, Notification};
 use log::{info, warn};
 use tokio::{fs::File, net::TcpListener};
 
-use crate::codec::AsyncDecoder;
+use crate::core::AsyncDecoder;
 use crate::torrent::Torrent;
 
 mod bencoding;
 mod client;
-mod codec;
 mod command;
 mod core;
 mod event;
