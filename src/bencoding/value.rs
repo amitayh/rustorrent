@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Error, Result, anyhow};
 
-use crate::crypto::Md5;
+use crate::core::Md5;
 
 #[derive(PartialEq, Clone)]
 pub enum Value {

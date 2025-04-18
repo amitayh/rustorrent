@@ -1,7 +1,7 @@
 use anyhow::{Error, Result, anyhow};
 
 use crate::torrent::DownloadType;
-use crate::{bencoding::Value, crypto::Sha1};
+use crate::{bencoding::Value, core::Sha1};
 
 const SHA1_LEN: usize = 20;
 

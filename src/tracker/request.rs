@@ -1,7 +1,7 @@
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
-use crate::{crypto::Sha1, peer::PeerId};
+use crate::{core::Sha1, peer::PeerId};
 
 #[allow(dead_code)]
 #[derive(Debug)]

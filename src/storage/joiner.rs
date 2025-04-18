@@ -3,7 +3,7 @@ use core::f64;
 use sha1::Digest;
 
 use crate::client::Download;
-use crate::crypto::Sha1;
+use crate::core::Sha1;
 use crate::message::BlockData;
 
 pub struct Joiner {

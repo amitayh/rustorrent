@@ -14,7 +14,7 @@ mod bencoding;
 mod client;
 mod codec;
 mod command;
-mod crypto;
+mod core;
 mod event;
 mod message;
 mod peer;

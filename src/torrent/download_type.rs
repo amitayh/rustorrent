@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Error, Result, anyhow};
 
-use crate::{bencoding::Value, crypto::Md5};
+use crate::{bencoding::Value, core::Md5};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum DownloadType {
