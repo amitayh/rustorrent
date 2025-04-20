@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::Result;
 use log::warn;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
@@ -17,13 +16,22 @@ use crate::storage::FileReader;
 use crate::storage::FileWriter;
 use crate::tracker::Tracker;
 
+/// Executes commands for managing peer connections, file I/O, and tracker communication
+/// in a BitTorrent download.
 pub struct CommandExecutor {
+    /// The download configuration and metadata
     download: Arc<Download>,
+    /// Active peer connections mapped by their socket addresses
     peers: HashMap<SocketAddr, Connection>,
+    /// Reader for accessing downloaded file data
     reader: Arc<FileReader>,
+    /// Writer for saving downloaded pieces to disk
     writer: Arc<Mutex<FileWriter>>,
+    /// Tracker connection for peer discovery and stats reporting
     tracker: Tracker,
+    /// Channel for sending events to the event handler
     events: Sender<Event>,
+    /// Channel for sending notifications about download progress
     notifications: Sender<Notification>,
 }
 
@@ -51,7 +59,7 @@ impl CommandExecutor {
         }
     }
 
-    pub fn execute(&mut self, command: Command) -> anyhow::Result<bool> {
+    pub fn execute(&mut self, command: Command) -> ExecutionResult {
         match command {
             Command::EstablishConnection(addr, socket) if !self.peers.contains_key(&addr) => {
                 let conn = Connection::spawn(
@@ -93,37 +101,46 @@ impl CommandExecutor {
 
             Command::UpdateStats(stats) => {
                 self.tracker
-                    .update_progress(stats.downloaded, stats.uploaded)?;
-                let result = self.notifications.try_send(if stats.download_complete() {
+                    .update_progress(stats.downloaded, stats.uploaded);
+                self.send_notification(if stats.download_complete() {
                     Notification::DownloadComplete
                 } else {
                     Notification::Stats(stats)
                 });
-                if result.is_err() {
-                    warn!("failed sending notification");
-                }
             }
 
             Command::Shutdown => {
-                return Ok(false);
+                self.send_notification(Notification::ShuttingDown);
+                return ExecutionResult::Stop;
             }
 
             command => warn!("unhandled command: {:?}", command),
         }
-        Ok(true)
+        ExecutionResult::Continue
     }
 
-    pub async fn shutdown(mut self) -> Result<()> {
+    pub async fn shutdown(mut self) {
         let mut join_set = JoinSet::new();
         join_set.spawn(async move { self.tracker.shutdown().await });
         for (_, peer) in self.peers.drain() {
             join_set.spawn(async move { peer.shutdown().await });
         }
         while let Some(result) = join_set.join_next().await {
-            if let Err(e) = result {
-                warn!("error encountered while shutting down: {:?}", e);
+            if let Err(err) = result {
+                warn!("error encountered while shutting down: {:?}", err);
             }
         }
-        Ok(())
     }
+
+    fn send_notification(&self, notification: Notification) {
+        if let Err(err) = self.notifications.try_send(notification) {
+            warn!("failed sending notification: {:?}", err);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionResult {
+    Continue,
+    Stop,
 }

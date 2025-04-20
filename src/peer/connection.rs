@@ -104,13 +104,12 @@ async fn run(
     let mut messages = Framed::new(socket, MessageCodec::new(max_size));
     let mut update_stats = tokio::time::interval(config.update_stats_interval);
     let mut stats = PeerStats::default();
-    let mut running = true;
 
-    while running {
+    loop {
         let start = Instant::now();
         tokio::select! {
             _ = cancellation_token.cancelled() => {
-                running = false;
+                break;
             }
             Some(message) = rx.recv() => {
                 debug!("[{}] > sending {:?}", &addr, &message);
@@ -132,7 +131,7 @@ async fn run(
                     warn!("[{}] failed to decode message: {}", &addr, err);
                     if err.kind() == ErrorKind::UnexpectedEof {
                         info!("[{}] socket closed, shutting down...", &addr);
-                        running = false;
+                        break;
                     }
                 }
             },

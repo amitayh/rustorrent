@@ -7,24 +7,22 @@ pub use download::*;
 pub use notification::*;
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use anyhow::Result;
 use bit_set::BitSet;
 use log::trace;
 use tokio::fs::OpenOptions;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinHandle;
-use tokio::time::{self, Instant, Interval};
+use tokio::time;
 use tokio_util::sync::CancellationToken;
 
-use crate::command::CommandExecutor;
+use crate::command::{CommandExecutor, ExecutionResult};
 use crate::event::{Event, EventHandler};
 
 pub struct Client {
     pub notifications: Receiver<Notification>,
-    join_handle: JoinHandle<anyhow::Result<()>>,
+    join_handle: JoinHandle<()>,
     cancellation_token: CancellationToken,
 }
 
@@ -45,10 +43,8 @@ impl Client {
         let (tx, rx) = mpsc::channel(download.config.channel_buffer);
         let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
-        let join_handle = tokio::spawn(async move {
-            run(listener, download, has_pieces, tx, token_clone).await?;
-            Ok(())
-        });
+        let join_handle =
+            tokio::spawn(async move { run(listener, download, has_pieces, tx, token_clone).await });
 
         Self {
             notifications: rx,
@@ -59,7 +55,7 @@ impl Client {
 
     pub async fn shutdown(self) -> anyhow::Result<()> {
         self.cancellation_token.cancel();
-        self.join_handle.await??;
+        self.join_handle.await?;
         Ok(())
     }
 }
@@ -70,16 +66,16 @@ async fn run(
     has_pieces: BitSet,
     notificaitons: Sender<Notification>,
     cancellation_token: CancellationToken,
-) -> Result<()> {
+) {
     let config = &download.config;
     let (tx, mut rx) = mpsc::channel(config.events_buffer);
     let mut handler = EventHandler::new(Arc::clone(&download), has_pieces);
     let mut executor = CommandExecutor::new(Arc::clone(&download), tx, notificaitons);
 
-    let mut keep_alive = interval_with_delay(config.keep_alive_interval);
-    let mut choke = interval_with_delay(config.choking_interval);
-    let mut sweep = interval_with_delay(config.sweep_interval);
-    let mut stats = interval_with_delay(config.update_stats_interval);
+    let mut keep_alive = time::interval(config.keep_alive_interval);
+    let mut choke = time::interval(config.choking_interval);
+    let mut sweep = time::interval(config.sweep_interval);
+    let mut stats = time::interval(config.update_stats_interval);
 
     let mut running = true;
     while running {
@@ -97,14 +93,13 @@ async fn run(
         trace!("handling event: {:?}", &event);
         for command in handler.handle(event) {
             trace!("command to perform: {:?}", &command);
-            if !executor.execute(command)? {
+            if executor.execute(command) == ExecutionResult::Stop {
                 running = false;
             }
         }
     }
 
-    executor.shutdown().await?;
-    Ok(())
+    executor.shutdown().await;
 }
 
 async fn create_empty_file(download: &Download) -> anyhow::Result<()> {
@@ -119,11 +114,6 @@ async fn create_empty_file(download: &Download) -> anyhow::Result<()> {
         .await?;
 
     Ok(())
-}
-
-fn interval_with_delay(period: Duration) -> Interval {
-    let start = Instant::now() + period;
-    time::interval_at(start, period)
 }
 
 #[cfg(test)]

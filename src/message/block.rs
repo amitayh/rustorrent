@@ -13,10 +13,6 @@ impl Block {
             length,
         }
     }
-
-    pub fn global_offset(&self, piece_size: usize) -> usize {
-        (self.piece * piece_size) + self.offset
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

@@ -4,4 +4,5 @@ use crate::peer::stats::GlobalStats;
 pub enum Notification {
     DownloadComplete,
     Stats(GlobalStats),
+    ShuttingDown,
 }

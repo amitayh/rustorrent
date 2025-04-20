@@ -14,22 +14,6 @@ pub struct Info {
 }
 
 impl Info {
-    fn build_pieces(pieces: &[u8]) -> Result<Vec<Sha1>> {
-        if pieces.len() % SHA1_LEN != 0 {
-            return Err(anyhow!(
-                "invalid length {}. must be a multiple of SHA1_LEN",
-                pieces.len()
-            ));
-        }
-        let mut all = Vec::with_capacity(pieces.len() / SHA1_LEN);
-        for i in (0..pieces.len()).step_by(SHA1_LEN) {
-            let mut bytes = [0; SHA1_LEN];
-            bytes.copy_from_slice(&pieces[i..(i + SHA1_LEN)]);
-            all.push(Sha1(bytes));
-        }
-        Ok(all)
-    }
-
     pub fn total_pieces(&self) -> usize {
         self.pieces.len()
     }
@@ -59,7 +43,7 @@ impl TryFrom<Value> for Info {
         let info_hash = Sha1::from(&value);
         let piece_length = value.remove_entry("piece length")?.try_into()?;
         let pieces: Vec<_> = value.remove_entry("pieces")?.try_into()?;
-        let pieces = Info::build_pieces(&pieces)?;
+        let pieces = build_pieces(&pieces)?;
         let download_type = value.try_into()?;
         Ok(Info {
             info_hash,
@@ -68,4 +52,20 @@ impl TryFrom<Value> for Info {
             download_type,
         })
     }
+}
+
+fn build_pieces(pieces: &[u8]) -> Result<Vec<Sha1>> {
+    if pieces.len() % SHA1_LEN != 0 {
+        return Err(anyhow!(
+            "invalid length {}. must be a multiple of SHA1_LEN",
+            pieces.len()
+        ));
+    }
+    let mut all = Vec::with_capacity(pieces.len() / SHA1_LEN);
+    for i in (0..pieces.len()).step_by(SHA1_LEN) {
+        let mut bytes = [0; SHA1_LEN];
+        bytes.copy_from_slice(&pieces[i..(i + SHA1_LEN)]);
+        all.push(Sha1(bytes));
+    }
+    Ok(all)
 }

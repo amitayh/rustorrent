@@ -37,24 +37,14 @@ impl Tracker {
         let join_handle = tokio::spawn(async move {
             let mut event = Some(request::Event::Started);
             let mut tracker_id = None;
-            let mut running = true;
 
-            while running {
-                let request = {
-                    let download_progress = rx.borrow_and_update();
-                    TrackerRequest {
-                        announce: download.torrent.announce.clone(),
-                        info_hash: download.torrent.info.info_hash.clone(),
-                        peer_id: download.config.client_id.clone(),
-                        port: download.config.port,
-                        uploaded: download_progress.uploaded,
-                        downloaded: download_progress.downloaded,
-                        left: download_progress.left(),
-                        mode: Mode::Compact,
-                        event,
-                        tracker_id: tracker_id.clone(),
-                    }
-                };
+            loop {
+                let request = create_request(
+                    &download,
+                    &rx.borrow_and_update(),
+                    event,
+                    tracker_id.clone(),
+                );
 
                 info!("refreshing list of peers...");
                 let mut response = send_request(request).await?;
@@ -75,25 +65,16 @@ impl Tracker {
                     _ = token_clone.cancelled() => {
                         info!("tracker shutting down...");
                         // Send "stopped" event before shutting down
-                        let request = {
-                            let download_progress = rx.borrow_and_update();
-                            TrackerRequest {
-                                announce: download.torrent.announce.clone(),
-                                info_hash: download.torrent.info.info_hash.clone(),
-                                peer_id: download.config.client_id.clone(),
-                                port: download.config.port,
-                                uploaded: download_progress.uploaded,
-                                downloaded: download_progress.downloaded,
-                                left: download_progress.left(),
-                                mode: Mode::Compact,
-                                event: Some(request::Event::Stopped),
-                                tracker_id: tracker_id.clone(),
-                            }
-                        };
+                        let request = create_request(
+                            &download,
+                            &rx.borrow_and_update(),
+                            Some(request::Event::Stopped),
+                            tracker_id.clone(),
+                        );
                         if let Err(err) = send_request(request).await {
                             error!("error when shutting down tracker: {}", err);
                         }
-                        running = false;
+                        break;
                     }
                 }
             }
@@ -106,12 +87,11 @@ impl Tracker {
         }
     }
 
-    pub fn update_progress(&self, downloaded: usize, uploaded: usize) -> anyhow::Result<()> {
+    pub fn update_progress(&self, downloaded: usize, uploaded: usize) {
         self.tx.send_modify(|progress| {
             progress.downloaded = downloaded;
             progress.uploaded = uploaded;
         });
-        Ok(())
     }
 
     pub async fn shutdown(self) -> anyhow::Result<()> {
@@ -139,6 +119,26 @@ impl DownloadProgress {
 
     fn left(&self) -> usize {
         self.total - self.downloaded
+    }
+}
+
+fn create_request(
+    download: &Download,
+    progress: &DownloadProgress,
+    event: Option<request::Event>,
+    tracker_id: Option<String>,
+) -> TrackerRequest {
+    TrackerRequest {
+        announce: download.torrent.announce.clone(),
+        info_hash: download.torrent.info.info_hash.clone(),
+        peer_id: download.config.client_id.clone(),
+        port: download.config.port,
+        uploaded: progress.uploaded,
+        downloaded: progress.downloaded,
+        left: progress.left(),
+        mode: Mode::Compact,
+        event,
+        tracker_id,
     }
 }
 
