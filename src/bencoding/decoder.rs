@@ -40,7 +40,7 @@ enum State {
     Ready,
     Integer(Option<i64>, i64),
     StringLength(usize),
-    StringContents(Vec<u8>, usize),
+    StringContents(Vec<u8>),
     Done(Value),
 }
 
@@ -112,12 +112,12 @@ impl Parser {
                 *length = *length * 10 + digit;
             }
             (&mut State::StringLength(length), b':') => {
-                let string = Vec::with_capacity(length);
-                self.state = State::StringContents(string, length);
+                let bytes = Vec::with_capacity(length);
+                self.state = State::StringContents(bytes);
             }
-            (State::StringContents(bytes, length), _) => {
+            (State::StringContents(bytes), _) => {
                 bytes.push(byte);
-                if bytes.len() == *length {
+                if bytes.len() == bytes.capacity() {
                     let string = std::mem::take(bytes);
                     self.emit(Value::String(string))?;
                 }

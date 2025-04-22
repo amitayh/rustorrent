@@ -60,7 +60,7 @@ impl TryFrom<Value> for TrackerResponse {
                 }
                 Ok(result)
             }
-            value => Err(anyhow!("unexpected value for peers: {:?}", value)),
+            value => Err(anyhow!("unexpected value for peers: {value:?}")),
         }?;
         Ok(TrackerResponse {
             complete,
