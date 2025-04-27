@@ -111,8 +111,8 @@ impl Parser {
                 let digit = (byte - b'0') as usize;
                 *length = *length * 10 + digit;
             }
-            (&mut State::StringLength(length), b':') => {
-                let bytes = Vec::with_capacity(length);
+            (State::StringLength(length), b':') => {
+                let bytes = Vec::with_capacity(*length);
                 self.state = State::StringContents(bytes);
             }
             (State::StringContents(bytes), _) => {
