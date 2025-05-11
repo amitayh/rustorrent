@@ -1,10 +1,12 @@
 mod config;
 mod download;
 mod notification;
+mod timers;
 
 pub use config::*;
 pub use download::*;
 pub use notification::*;
+use timers::Timers;
 
 use std::sync::Arc;
 
@@ -14,7 +16,6 @@ use tokio::fs::OpenOptions;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinHandle;
-use tokio::time;
 use tokio_util::sync::CancellationToken;
 
 use crate::command::{CommandExecutor, ExecutionResult};
@@ -67,24 +68,16 @@ async fn run(
     notificaitons: Sender<Notification>,
     cancellation_token: CancellationToken,
 ) {
-    let config = &download.config;
-    let (tx, mut rx) = mpsc::channel(config.events_buffer);
+    let (tx, mut rx) = mpsc::channel(download.config.events_buffer);
     let mut handler = EventHandler::new(Arc::clone(&download), has_pieces);
     let mut executor = CommandExecutor::new(Arc::clone(&download), tx, notificaitons);
-
-    let mut keep_alive = time::interval(config.keep_alive_interval);
-    let mut choke = time::interval(config.choking_interval);
-    let mut sweep = time::interval(config.sweep_interval);
-    let mut stats = time::interval(config.update_stats_interval);
+    let mut timers = Timers::new(&download.config);
 
     let mut running = true;
     while running {
         let event = tokio::select! {
             _ = cancellation_token.cancelled() => Event::ShutdownRequested,
-            _ = keep_alive.tick() => Event::KeepAliveTicked,
-            _ = choke.tick() => Event::ChokeTicked,
-            _ = stats.tick() => Event::StatsTicked,
-            now = sweep.tick() => Event::SweepTicked(now),
+            event = timers.tick() => event,
             Some(event) = rx.recv() => event,
             Ok((socket, addr)) = listener.accept() => {
                 Event::ConnectionAccepted(addr, socket)

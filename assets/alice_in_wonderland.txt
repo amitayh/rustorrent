@@ -13,7 +13,7 @@ Title: Alice's Adventures in Wonderland
 Author: Lewis Carroll
 
 Release date: June 27, 2008 [eBook #11]
-                Most recently updated: November 10, 2024
+                Most recently updated: April 7, 2025
 
 Language: English
 
@@ -21,6 +21,7 @@ Credits: Arthur DiBianca and David Widger
 
 
 *** START OF THE PROJECT GUTENBERG EBOOK ALICE'S ADVENTURES IN WONDERLAND ***
+
 [Illustration]
 
 
@@ -1675,7 +1676,7 @@ stays the same year for such a long time together.”
 
 “Which is just the case with _mine_,” said the Hatter.
 
-Alice felt dreadfully puzzled. The Hatter’s remark seemed to have no
+Alice felt dreadfully puzzled, The Hatter’s remark seemed to have no
 sort of meaning in it, and yet it was certainly English. “I don’t quite
 understand you,” she said, as politely as she could.
 
