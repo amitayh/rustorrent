@@ -60,10 +60,11 @@ impl CommandExecutor {
 
             Command::Broadcast(message) => self.connection_manager.broadcast(message),
 
+            Command::RemovePeer(addr) => self.connection_manager.remove(&addr),
+
             Command::Upload(addr, block) => {
-                let peer = self.connection_manager.peer(&addr);
                 let reader = Arc::clone(&self.reader);
-                let tx = peer.tx.clone();
+                let tx = self.connection_manager.peer_tx(&addr);
                 tokio::spawn(async move { reader.read(block, tx).await });
             }
 
@@ -71,8 +72,6 @@ impl CommandExecutor {
                 let writer = Arc::clone(&self.writer);
                 tokio::spawn(async move { writer.lock().await.write(block_data).await });
             }
-
-            Command::RemovePeer(addr) => self.connection_manager.remove(&addr),
 
             Command::UpdateStats(stats) => {
                 self.tracker

@@ -45,8 +45,8 @@ impl ConnectionManager {
         peer.abort();
     }
 
-    pub fn peer(&self, addr: &SocketAddr) -> &Connection {
-        self.peers.get(addr).expect("invalid peer")
+    pub fn peer_tx(&self, addr: &SocketAddr) -> Sender<Message> {
+        self.peer(addr).tx.clone()
     }
 
     pub fn send(&self, addr: &SocketAddr, message: Message) {
@@ -69,5 +69,9 @@ impl ConnectionManager {
                 warn!("error encountered while shutting down: {:?}", err);
             }
         }
+    }
+
+    fn peer(&self, addr: &SocketAddr) -> &Connection {
+        self.peers.get(addr).expect("invalid peer")
     }
 }
