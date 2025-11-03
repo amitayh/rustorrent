@@ -164,20 +164,20 @@ mod tests {
         assert_eq!(
             info,
             Info {
-                info_hash: Sha1::from_hex("10454ad6f532433691a334ae62b71bfb9642a8f3").unwrap(),
+                info_hash: Sha1::from_hex("612e6bd378170e5e94936647f22ead901a84c730").unwrap(),
                 piece_size: 1024 * 32,
                 pieces: vec![
-                    Sha1::from_hex("d86f9ad2bcb661254c75b7ba9da5f66d3fae0904").unwrap(),
-                    Sha1::from_hex("fc447ea16c8e6dfc6db7dc600f69b523bf908251").unwrap(),
-                    Sha1::from_hex("fe393c8be5cb26f39b4be209f7508a90edf767ff").unwrap(),
-                    Sha1::from_hex("0a6393fa42398a3a4bd121d3a8cfe11aec808113").unwrap(),
-                    Sha1::from_hex("e77b844e9552753437ca960c67b554fa5281321f").unwrap(),
-                    Sha1::from_hex("154f5c5e80a881f4b76e9c83e3114af5c194746e").unwrap()
+                    Sha1::from_hex("35d2d43083c603e8afdf9762a6bb29ad6e12d216").unwrap(),
+                    Sha1::from_hex("e0abb4bae6a0bd01fa554138a83450371d552917").unwrap(),
+                    Sha1::from_hex("6bf99993625de463dd7c2c584c7c590767762058").unwrap(),
+                    Sha1::from_hex("0656e1ab2f59bf11f0c11fcbd3c0cab87326ab53").unwrap(),
+                    Sha1::from_hex("5be107ddea900b7710f619beafe81a14164d3dee").unwrap(),
+                    Sha1::from_hex("08a840f1713e297bf07c077fd76e5476ed9b9edd").unwrap()
                 ],
                 download_type: DownloadType::SingleFile {
                     name: "alice_in_wonderland.txt".to_string(),
-                    size: 174355,
-                    md5sum: Some(Md5::from_hex("059e7bb224d7b26072ac6da07e154721").unwrap())
+                    size: 170597,
+                    md5sum: Some(Md5::from_hex("1399df3245f0d70f4b25d4ae748f008e").unwrap())
                 },
             }
         );
