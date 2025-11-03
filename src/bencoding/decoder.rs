@@ -20,9 +20,7 @@ impl AsyncDecoder for Value {
             if read == 0 {
                 break;
             }
-            for byte in &buf[0..read] {
-                parser.consume(*byte)?;
-            }
+            parser.consume_slice(&buf[0..read])?
         }
         parser.result()
     }
@@ -67,6 +65,13 @@ impl Parser {
             stack: Vec::new(),
             position: 0,
         }
+    }
+
+    fn consume_slice(&mut self, bytes: &[u8]) -> Result<()> {
+        for byte in bytes {
+            self.consume(*byte)?;
+        }
+        Ok(())
     }
 
     fn consume(&mut self, byte: u8) -> Result<()> {
