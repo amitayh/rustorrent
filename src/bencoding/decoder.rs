@@ -121,6 +121,7 @@ impl Parser {
                 self.state = State::StringContents(bytes);
             }
             (State::StringContents(bytes), _) => {
+                assert!(bytes.len() < bytes.capacity(), "not enough capacity");
                 bytes.push(byte);
                 if bytes.len() == bytes.capacity() {
                     let string = std::mem::take(bytes);

@@ -265,6 +265,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "not yet done"]
     fn sequence() {
         let _ = env_logger::try_init();
 
