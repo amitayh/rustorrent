@@ -112,7 +112,7 @@ impl AsyncEncoder for Handshake {
 impl TransportMessage for Handshake {
     fn transport_bytes(&self) -> usize {
         1 + // pstr len
-            self.protocol.bytes().len() + // pstr bytes
+            self.protocol.len() + // pstr bytes
             8 + // reserved
             20 + // info hash
             20 // peer id

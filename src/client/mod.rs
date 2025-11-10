@@ -171,7 +171,7 @@ pub mod tests {
 
     async fn mock_tracker(peers: &[SocketAddr]) -> Url {
         let mock_tracker = MockServer::start().await;
-        let peers = Value::List(peers.iter().map(|addr| peer_entry(addr)).collect());
+        let peers = Value::List(peers.iter().map(peer_entry).collect());
         Mock::given(method("GET"))
             .and(path("/announce"))
             .respond_with(move |_: &Request| {

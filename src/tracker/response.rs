@@ -148,7 +148,7 @@ mod tests {
                 Value::list().with_value(
                     Value::dictionary()
                         .with_entry("ip", Value::string("12.34.56.78"))
-                        .with_entry("peer id", Value::string(&peer_id))
+                        .with_entry("peer id", Value::string(peer_id))
                         .with_entry("port", Value::Integer(51413)),
                 ),
             );

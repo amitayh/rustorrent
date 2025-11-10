@@ -1,7 +1,7 @@
 mod request;
 mod response;
 
-use std::io::{Error, ErrorKind};
+use std::io::Error;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -151,7 +151,7 @@ async fn send_request(request: TrackerRequest) -> Result<TrackerResponse> {
     }
     let stream = response
         .bytes_stream()
-        .map(|bytes| bytes.map_err(|err| Error::new(ErrorKind::Other, err)));
+        .map(|bytes| bytes.map_err(Error::other));
     let mut reader = StreamReader::new(stream);
     let value = Value::decode(&mut reader).await?;
     let result = TrackerResponse::try_from(value)?;

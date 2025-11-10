@@ -123,8 +123,7 @@ impl Decoder for MessageCodec {
 
         if length > self.max_length {
             src.advance(LENGTH_SIZE);
-            return Err(Error::new(
-                ErrorKind::Other,
+            return Err(Error::other(
                 format!(
                     "message length {} exceeds maximum of {}",
                     length, self.max_length
