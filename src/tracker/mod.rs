@@ -9,7 +9,6 @@ use log::error;
 use log::info;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 use tokio_util::io::StreamReader;
 use tokio_util::sync::CancellationToken;
@@ -17,15 +16,14 @@ use url::Url;
 
 use crate::bencoding::Value;
 use crate::client::Download;
-use crate::core::AsyncDecoder;
+use crate::core::{AsyncDecoder, GracefulShutdown};
 use crate::event::Event;
 use crate::tracker::request::{Mode, TrackerRequest};
 use crate::tracker::response::TrackerResponse;
 
 pub struct Tracker {
     tx: watch::Sender<DownloadProgress>,
-    join_handle: JoinHandle<anyhow::Result<()>>,
-    cancellation_token: CancellationToken,
+    graceful_shutdown: GracefulShutdown<anyhow::Result<()>>,
 }
 
 impl Tracker {
@@ -80,10 +78,10 @@ impl Tracker {
             }
             Ok(())
         });
+        let graceful_shutdown = GracefulShutdown::new(join_handle, cancellation_token);
         Self {
             tx,
-            join_handle,
-            cancellation_token,
+            graceful_shutdown,
         }
     }
 
@@ -95,9 +93,7 @@ impl Tracker {
     }
 
     pub async fn shutdown(self) -> anyhow::Result<()> {
-        self.cancellation_token.cancel();
-        self.join_handle.await??;
-        Ok(())
+        self.graceful_shutdown.shutdown().await?
     }
 }
 

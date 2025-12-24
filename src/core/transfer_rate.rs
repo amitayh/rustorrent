@@ -22,6 +22,7 @@ impl Display for TransferRate {
 impl TransferRate {
     pub const EMPTY: Self = Self(Size::from_const(0), Duration::ZERO);
 
+    #[allow(dead_code)]
     fn kbps(kbps: i32) -> Self {
         Self(Size::from_kibibytes(kbps), Duration::from_secs(1))
     }

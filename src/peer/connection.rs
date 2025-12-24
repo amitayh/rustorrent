@@ -11,13 +11,13 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout};
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::Download;
+use crate::core::GracefulShutdown;
 use crate::core::{AsyncDecoder, AsyncEncoder, TransferRate, TransportMessage};
 use crate::event::Event;
 use crate::message::{Handshake, Message, MessageCodec};
@@ -25,8 +25,7 @@ use crate::peer::stats::PeerStats;
 
 pub struct Connection {
     pub tx: Sender<Message>,
-    join_handle: JoinHandle<anyhow::Result<()>>,
-    cancellation_token: CancellationToken,
+    graceful_shutdown: GracefulShutdown<anyhow::Result<()>>,
     addr: SocketAddr,
 }
 
@@ -52,10 +51,10 @@ impl Connection {
                 .expect("channel should be open");
             Ok(())
         });
+        let graceful_shutdown = GracefulShutdown::new(join_handle, cancellation_token);
         Self {
             tx,
-            join_handle,
-            cancellation_token,
+            graceful_shutdown,
             addr,
         }
     }
@@ -65,7 +64,7 @@ impl Connection {
             Ok(_) => (),
             Err(TrySendError::Full(_)) => {
                 warn!("[{}] peer unresponsive, shutting down", &self.addr);
-                self.cancellation_token.cancel();
+                self.graceful_shutdown.cancellation_token.cancel();
             }
             Err(TrySendError::Closed(_)) => {
                 error!("[{}] sending message to disconnected peer", &self.addr);
@@ -74,13 +73,11 @@ impl Connection {
     }
 
     pub fn abort(self) {
-        self.join_handle.abort();
+        self.graceful_shutdown.abort();
     }
 
     pub async fn shutdown(self) -> anyhow::Result<()> {
-        self.cancellation_token.cancel();
-        self.join_handle.await??;
-        Ok(())
+        self.graceful_shutdown.shutdown().await?
     }
 }
 

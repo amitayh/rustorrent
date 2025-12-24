@@ -15,16 +15,15 @@ use log::trace;
 use tokio::fs::OpenOptions;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::command::{CommandExecutor, ExecutionResult};
+use crate::core::GracefulShutdown;
 use crate::event::{Event, EventHandler};
 
 pub struct Client {
     pub notifications: Receiver<Notification>,
-    join_handle: JoinHandle<()>,
-    cancellation_token: CancellationToken,
+    graceful_shutdown: GracefulShutdown,
 }
 
 impl Client {
@@ -46,18 +45,16 @@ impl Client {
         let token_clone = cancellation_token.clone();
         let join_handle =
             tokio::spawn(async move { run(listener, download, has_pieces, tx, token_clone).await });
+        let graceful_shutdown = GracefulShutdown::new(join_handle, cancellation_token);
 
         Self {
             notifications: rx,
-            join_handle,
-            cancellation_token,
+            graceful_shutdown,
         }
     }
 
     pub async fn shutdown(self) -> anyhow::Result<()> {
-        self.cancellation_token.cancel();
-        self.join_handle.await?;
-        Ok(())
+        self.graceful_shutdown.shutdown().await
     }
 }
 
