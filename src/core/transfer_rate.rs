@@ -22,6 +22,10 @@ impl Display for TransferRate {
 impl TransferRate {
     pub const EMPTY: Self = Self(Size::from_const(0), Duration::ZERO);
 
+    fn kbps(kbps: i32) -> Self {
+        Self(Size::from_kibibytes(kbps), Duration::from_secs(1))
+    }
+
     fn bps(&self) -> f64 {
         (self.0.bytes() as f64) / self.1.as_secs_f64()
     }
@@ -73,9 +77,9 @@ mod tests {
 
     #[test]
     fn ordering() {
-        let rate_10_kbps = TransferRate(Size::from_kibibytes(10), Duration::from_secs(1));
-        let rate_20_kbps = TransferRate(Size::from_kibibytes(20), Duration::from_secs(1));
-        let rate_30_kbps = TransferRate(Size::from_kibibytes(30), Duration::from_secs(1));
+        let rate_10_kbps = TransferRate::kbps(10);
+        let rate_20_kbps = TransferRate::kbps(20);
+        let rate_30_kbps = TransferRate::kbps(30);
         let mut rates = vec![&rate_10_kbps, &rate_30_kbps, &rate_20_kbps];
         rates.sort();
 
