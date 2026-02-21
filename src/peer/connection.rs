@@ -64,7 +64,7 @@ impl Connection {
             Ok(_) => (),
             Err(TrySendError::Full(_)) => {
                 warn!("[{}] peer unresponsive, shutting down", &self.addr);
-                self.graceful_shutdown.cancellation_token.cancel();
+                self.graceful_shutdown.abort();
             }
             Err(TrySendError::Closed(_)) => {
                 error!("[{}] sending message to disconnected peer", &self.addr);

@@ -2,8 +2,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub struct GracefulShutdown<T = ()> {
-    pub join_handle: JoinHandle<T>,
-    pub cancellation_token: CancellationToken,
+    join_handle: JoinHandle<T>,
+    cancellation_token: CancellationToken,
 }
 
 impl<T> GracefulShutdown<T> {
@@ -14,7 +14,8 @@ impl<T> GracefulShutdown<T> {
         }
     }
 
-    pub fn abort(self) {
+    pub fn abort(&self) {
+        self.cancellation_token.cancel();
         self.join_handle.abort();
     }
 
