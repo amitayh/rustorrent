@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bit_set::BitSet;
-use log::warn;
+use log::{info, warn};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
@@ -238,6 +238,11 @@ impl EventHandler {
                     commands.push(self.request(addr, next_block, now));
                 }
                 commands
+            }
+
+            Message::Port(port) => {
+                info!("peer {} advertised DHT port {}", addr, port);
+                Vec::new()
             }
 
             _ => {

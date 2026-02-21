@@ -14,6 +14,7 @@ mod bencoding;
 mod client;
 mod command;
 mod core;
+mod dht;
 mod event;
 mod message;
 mod peer;

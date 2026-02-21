@@ -101,7 +101,10 @@ impl AsyncEncoder for Handshake {
             .expect("protocol string too long");
         stream.write_u8(len).await?;
         stream.write_all(self.protocol.as_bytes()).await?;
-        stream.write_all(&[0; 8]).await?;
+        // Reserved bytes: set bit 0x01 of byte 7 to indicate DHT support (BEP 5)
+        let mut reserved = [0u8; 8];
+        reserved[7] = 0x01;
+        stream.write_all(&reserved).await?;
         stream.write_all(&self.info_hash.0).await?;
         stream.write_all(&self.peer_id.0).await?;
         stream.flush().await?;

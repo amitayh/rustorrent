@@ -11,6 +11,7 @@ use crate::event::Event;
 use crate::peer::connection_manager::ConnectionManager;
 use crate::storage::FileReader;
 use crate::storage::FileWriter;
+use crate::dht::Dht;
 use crate::tracker::Tracker;
 
 /// Executes commands for managing peer connections, file I/O, and tracker communication
@@ -24,6 +25,8 @@ pub struct CommandExecutor {
     writer: Arc<Mutex<FileWriter>>,
     /// Tracker connection for peer discovery and stats reporting
     tracker: Tracker,
+    /// DHT node for decentralized peer discovery
+    dht: Dht,
     /// Channel for sending notifications about download progress
     notifications: Sender<Notification>,
 }
@@ -40,12 +43,14 @@ impl CommandExecutor {
             events.clone(),
         )));
         let tracker = Tracker::spawn(Arc::clone(&download), events.clone());
+        let dht = Dht::spawn(Arc::clone(&download), events.clone());
         let connection_manager = ConnectionManager::new(download, events);
         Self {
             connection_manager,
             reader,
             writer,
             tracker,
+            dht,
             notifications,
         }
     }
@@ -94,6 +99,9 @@ impl CommandExecutor {
     pub async fn shutdown(self) {
         if let Err(err) = self.tracker.shutdown().await {
             warn!("error encountered while shutting down tracker: {:?}", err);
+        }
+        if let Err(err) = self.dht.shutdown().await {
+            warn!("error encountered while shutting down DHT: {:?}", err);
         }
         self.connection_manager.shutdown().await;
     }

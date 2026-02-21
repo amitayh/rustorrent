@@ -10,6 +10,7 @@ derive_builder = "0.20.2"
 env_logger = "0.11.6"
 futures = "0.3.31"
 hex = "0.4.3"
+mainline = "6.1.1"
 log = { version = "0.4.26", features = ["kv"] }
 md5 = "0.7.0"
 priority-queue = "2.3.1"
