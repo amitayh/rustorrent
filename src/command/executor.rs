@@ -3,15 +3,16 @@ use std::sync::Arc;
 use log::warn;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
+use tokio_util::sync::CancellationToken;
 
 use crate::client::Download;
 use crate::client::Notification;
 use crate::command::Command;
+use crate::dht::Dht;
 use crate::event::Event;
 use crate::peer::connection_manager::ConnectionManager;
 use crate::storage::FileReader;
 use crate::storage::FileWriter;
-use crate::dht::Dht;
 use crate::tracker::Tracker;
 
 /// Executes commands for managing peer connections, file I/O, and tracker communication
@@ -36,15 +37,24 @@ impl CommandExecutor {
         download: Arc<Download>,
         events: Sender<Event>,
         notifications: Sender<Notification>,
+        cancellation_token: CancellationToken,
     ) -> Self {
         let reader = Arc::new(FileReader::new(Arc::clone(&download)));
         let writer = Arc::new(Mutex::new(FileWriter::new(
             Arc::clone(&download),
             events.clone(),
         )));
-        let tracker = Tracker::spawn(Arc::clone(&download), events.clone());
-        let dht = Dht::spawn(Arc::clone(&download), events.clone());
-        let connection_manager = ConnectionManager::new(download, events);
+        let tracker = Tracker::spawn(
+            Arc::clone(&download),
+            events.clone(),
+            cancellation_token.clone(),
+        );
+        let dht = Dht::spawn(
+            Arc::clone(&download),
+            events.clone(),
+            cancellation_token.clone(),
+        );
+        let connection_manager = ConnectionManager::new(download, events, cancellation_token);
         Self {
             connection_manager,
             reader,
@@ -96,14 +106,14 @@ impl CommandExecutor {
         ExecutionResult::Continue
     }
 
-    pub async fn shutdown(self) {
-        if let Err(err) = self.tracker.shutdown().await {
+    pub async fn join(self) {
+        if let Err(err) = self.tracker.join().await {
             warn!("error encountered while shutting down tracker: {:?}", err);
         }
-        if let Err(err) = self.dht.shutdown().await {
+        if let Err(err) = self.dht.join().await {
             warn!("error encountered while shutting down DHT: {:?}", err);
         }
-        self.connection_manager.shutdown().await;
+        self.connection_manager.join().await;
     }
 
     fn send_notification(&self, notification: Notification) {

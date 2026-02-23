@@ -6,6 +6,7 @@ use log::warn;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::client::Download;
 use crate::event::Event;
@@ -16,14 +17,20 @@ pub struct ConnectionManager {
     peers: HashMap<SocketAddr, Connection>,
     download: Arc<Download>,
     events: Sender<Event>,
+    cancellation_token: CancellationToken,
 }
 
 impl ConnectionManager {
-    pub fn new(download: Arc<Download>, events: Sender<Event>) -> Self {
+    pub fn new(
+        download: Arc<Download>,
+        events: Sender<Event>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         Self {
             peers: HashMap::new(),
             download,
             events,
+            cancellation_token,
         }
     }
 
@@ -36,6 +43,7 @@ impl ConnectionManager {
             socket,
             self.events.clone(),
             Arc::clone(&self.download),
+            self.cancellation_token.child_token(),
         );
         self.peers.insert(addr, conn);
     }
@@ -59,10 +67,10 @@ impl ConnectionManager {
         }
     }
 
-    pub async fn shutdown(mut self) {
+    pub async fn join(mut self) {
         let mut join_set = JoinSet::new();
         for (_, peer) in self.peers.drain() {
-            join_set.spawn(async move { peer.shutdown().await });
+            join_set.spawn(async move { peer.join().await });
         }
         while let Some(result) = join_set.join_next().await {
             if let Err(err) = result {

@@ -16,22 +16,24 @@ use url::Url;
 
 use crate::bencoding::Value;
 use crate::client::Download;
-use crate::core::{AsyncDecoder, GracefulShutdown};
+use crate::core::AsyncDecoder;
 use crate::event::Event;
 use crate::tracker::request::{Mode, TrackerRequest};
 use crate::tracker::response::TrackerResponse;
 
 pub struct Tracker {
     tx: watch::Sender<DownloadProgress>,
-    graceful_shutdown: GracefulShutdown<anyhow::Result<()>>,
+    join_handle: tokio::task::JoinHandle<anyhow::Result<()>>,
 }
 
 impl Tracker {
-    pub fn spawn(download: Arc<Download>, events_tx: mpsc::Sender<Event>) -> Self {
+    pub fn spawn(
+        download: Arc<Download>,
+        events_tx: mpsc::Sender<Event>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let (tx, mut rx) =
             watch::channel(DownloadProgress::new(download.torrent.info.total_size()));
-        let cancellation_token = CancellationToken::new();
-        let token_clone = cancellation_token.clone();
         let join_handle = tokio::spawn(async move {
             let mut event = Some(request::Event::Started);
             let mut tracker_id = None;
@@ -60,7 +62,7 @@ impl Tracker {
 
                 tokio::select! {
                     _ = tokio::time::sleep(response.interval) => (),
-                    _ = token_clone.cancelled() => {
+                    _ = cancellation_token.cancelled() => {
                         info!("tracker shutting down...");
                         // Send "stopped" event before shutting down
                         let request = create_request(
@@ -78,11 +80,7 @@ impl Tracker {
             }
             Ok(())
         });
-        let graceful_shutdown = GracefulShutdown::new(join_handle, cancellation_token);
-        Self {
-            tx,
-            graceful_shutdown,
-        }
+        Self { tx, join_handle }
     }
 
     pub fn update_progress(&self, downloaded: usize, uploaded: usize) {
@@ -92,8 +90,9 @@ impl Tracker {
         });
     }
 
-    pub async fn shutdown(self) -> anyhow::Result<()> {
-        self.graceful_shutdown.shutdown().await?
+    pub async fn join(self) -> anyhow::Result<()> {
+        self.join_handle.await??;
+        Ok(())
     }
 }
 

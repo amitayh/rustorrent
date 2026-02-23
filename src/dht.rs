@@ -9,17 +9,18 @@ use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::Download;
-use crate::core::GracefulShutdown;
 use crate::event::Event;
 
 pub struct Dht {
-    graceful_shutdown: GracefulShutdown<Result<()>>,
+    join_handle: tokio::task::JoinHandle<Result<()>>,
 }
 
 impl Dht {
-    pub fn spawn(download: Arc<Download>, events_tx: mpsc::Sender<Event>) -> Self {
-        let cancellation_token = CancellationToken::new();
-        let token_clone = cancellation_token.clone();
+    pub fn spawn(
+        download: Arc<Download>,
+        events_tx: mpsc::Sender<Event>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let join_handle = tokio::spawn(async move {
             let info_hash = Id::from(download.torrent.info.info_hash.0);
             let port = download.config.port;
@@ -64,7 +65,7 @@ impl Dht {
                             }
                         }
                     }
-                    _ = token_clone.cancelled() => {
+                    _ = cancellation_token.cancelled() => {
                         info!("DHT shutting down...");
                         break;
                     }
@@ -73,11 +74,11 @@ impl Dht {
 
             Ok(())
         });
-        let graceful_shutdown = GracefulShutdown::new(join_handle, cancellation_token);
-        Self { graceful_shutdown }
+        Self { join_handle }
     }
 
-    pub async fn shutdown(self) -> Result<()> {
-        self.graceful_shutdown.shutdown().await?
+    pub async fn join(self) -> Result<()> {
+        self.join_handle.await??;
+        Ok(())
     }
 }

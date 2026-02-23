@@ -18,16 +18,20 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 
 use crate::command::{CommandExecutor, ExecutionResult};
-use crate::core::GracefulShutdown;
 use crate::event::{Event, EventHandler};
 
 pub struct Client {
     pub notifications: Receiver<Notification>,
-    graceful_shutdown: GracefulShutdown,
+    join_handle: tokio::task::JoinHandle<()>,
 }
 
 impl Client {
-    pub async fn spawn(listener: TcpListener, download: Arc<Download>, seeding: bool) -> Self {
+    pub async fn spawn(
+        listener: TcpListener,
+        download: Arc<Download>,
+        seeding: bool,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let has_pieces = {
             let total_pieces = download.torrent.info.total_pieces();
             if seeding {
@@ -41,20 +45,19 @@ impl Client {
         }
 
         let (tx, rx) = mpsc::channel(download.config.channel_buffer);
-        let cancellation_token = CancellationToken::new();
-        let token_clone = cancellation_token.clone();
-        let join_handle =
-            tokio::spawn(async move { run(listener, download, has_pieces, tx, token_clone).await });
-        let graceful_shutdown = GracefulShutdown::new(join_handle, cancellation_token);
+        let join_handle = tokio::spawn(async move {
+            run(listener, download, has_pieces, tx, cancellation_token).await
+        });
 
         Self {
             notifications: rx,
-            graceful_shutdown,
+            join_handle,
         }
     }
 
-    pub async fn shutdown(self) -> anyhow::Result<()> {
-        self.graceful_shutdown.shutdown().await
+    pub async fn join(self) -> anyhow::Result<()> {
+        self.join_handle.await?;
+        Ok(())
     }
 }
 
@@ -67,7 +70,12 @@ async fn run(
 ) {
     let (tx, mut rx) = mpsc::channel(download.config.events_buffer);
     let mut handler = EventHandler::new(Arc::clone(&download), has_pieces);
-    let mut executor = CommandExecutor::new(Arc::clone(&download), tx, notificaitons);
+    let mut executor = CommandExecutor::new(
+        Arc::clone(&download),
+        tx,
+        notificaitons,
+        cancellation_token.clone(),
+    );
     let mut timers = Timers::new(&download.config);
 
     let mut running = true;
@@ -89,7 +97,7 @@ async fn run(
         }
     }
 
-    executor.shutdown().await;
+    executor.join().await;
 }
 
 async fn create_empty_file(download: &Download) -> anyhow::Result<()> {
@@ -206,6 +214,7 @@ pub mod tests {
         let announce_url = mock_tracker(&[seeder_addr]).await;
 
         let source_path = "assets/alice_in_wonderland.txt";
+        let cancellation_token = CancellationToken::new();
         let seeder_handle = Client::spawn(
             seeder_listener,
             Arc::new(Download {
@@ -213,6 +222,7 @@ pub mod tests {
                 config: test_config(source_path).with_unchoking_interval(Duration::from_secs(2)),
             }),
             true,
+            cancellation_token.clone(),
         )
         .await;
 
@@ -224,6 +234,7 @@ pub mod tests {
                 config: test_config(download_path),
             }),
             false,
+            cancellation_token.clone(),
         )
         .await;
 
@@ -236,8 +247,9 @@ pub mod tests {
         }
 
         // Shutdown the swarm
-        seeder_handle.shutdown().await.unwrap();
-        leecher_handle.shutdown().await.unwrap();
+        cancellation_token.cancel();
+        seeder_handle.join().await.unwrap();
+        leecher_handle.join().await.unwrap();
 
         // Verify the leecher downloaded the file by comparing MD5 checksums
         let source_md5 = md5sum(source_path).await;

@@ -6,6 +6,7 @@ use bencoding::Value;
 use client::{Client, Config, Download, Notification};
 use log::{info, warn};
 use tokio::{fs::File, net::TcpListener};
+use tokio_util::sync::CancellationToken;
 
 use crate::core::AsyncDecoder;
 use crate::torrent::Torrent;
@@ -47,12 +48,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("starting server...");
     let listener = TcpListener::bind(&address).await?;
     info!("listening on {}", &address);
-    let mut client = Client::spawn(listener, download, false).await;
+    let cancellation_token = CancellationToken::new();
+    let mut client = Client::spawn(listener, download, false, cancellation_token.clone()).await;
 
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 info!("received ctrl-c signal, initiating shutdown...");
+                cancellation_token.cancel();
                 break;
             }
             Some(notification) = client.notifications.recv() => match notification {
@@ -75,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let result = tokio::time::timeout(Duration::from_secs(10), client.shutdown()).await;
+    let result = tokio::time::timeout(Duration::from_secs(10), client.join()).await;
     if result.is_err() {
         warn!("shutdown timed out after 10 seconds");
     }

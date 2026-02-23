@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use futures::SinkExt;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use size::Size;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -17,7 +17,6 @@ use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::Download;
-use crate::core::GracefulShutdown;
 use crate::core::{AsyncDecoder, AsyncEncoder, TransferRate, TransportMessage};
 use crate::event::Event;
 use crate::message::{Handshake, Message, MessageCodec};
@@ -25,7 +24,8 @@ use crate::peer::stats::PeerStats;
 
 pub struct Connection {
     pub tx: Sender<Message>,
-    graceful_shutdown: GracefulShutdown<anyhow::Result<()>>,
+    cancellation_token: CancellationToken,
+    join_handle: tokio::task::JoinHandle<anyhow::Result<()>>,
     addr: SocketAddr,
 }
 
@@ -35,9 +35,9 @@ impl Connection {
         socket: Option<TcpStream>,
         events_tx: Sender<Event>,
         download: Arc<Download>,
+        cancellation_token: CancellationToken,
     ) -> Self {
         let (tx, rx) = mpsc::channel(download.config.channel_buffer);
-        let cancellation_token = CancellationToken::new();
         let token_clone = cancellation_token.clone();
         let join_handle = tokio::spawn(async move {
             let result = run(addr, socket, events_tx.clone(), rx, token_clone, &download).await;
@@ -51,10 +51,10 @@ impl Connection {
                 .expect("channel should be open");
             Ok(())
         });
-        let graceful_shutdown = GracefulShutdown::new(join_handle, cancellation_token);
         Self {
             tx,
-            graceful_shutdown,
+            cancellation_token,
+            join_handle,
             addr,
         }
     }
@@ -64,20 +64,23 @@ impl Connection {
             Ok(_) => (),
             Err(TrySendError::Full(_)) => {
                 warn!("[{}] peer unresponsive, shutting down", &self.addr);
-                self.graceful_shutdown.abort();
+                self.cancellation_token.cancel();
+                self.join_handle.abort();
             }
             Err(TrySendError::Closed(_)) => {
-                error!("[{}] sending message to disconnected peer", &self.addr);
+                warn!("[{}] sending message to disconnected peer", &self.addr);
             }
         }
     }
 
     pub fn abort(self) {
-        self.graceful_shutdown.abort();
+        self.cancellation_token.cancel();
+        self.join_handle.abort();
     }
 
-    pub async fn shutdown(self) -> anyhow::Result<()> {
-        self.graceful_shutdown.shutdown().await?
+    pub async fn join(self) -> anyhow::Result<()> {
+        self.join_handle.await??;
+        Ok(())
     }
 }
 
